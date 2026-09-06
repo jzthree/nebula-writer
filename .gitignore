@@ -1,0 +1,7 @@
+dist/
+node_modules/
+tmp/
+.writer-session-*/
+*.secrets.local
+# ai.test.ts relative-path fixtures (leaked only if a run is killed mid-test)
+.writer-codex-*/

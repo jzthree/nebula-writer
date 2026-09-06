@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Nebula Writer — Word task pane add-in (add-in only manifest).
+  Installed by `npm run word:setup`, which rewrites https://localhost:8443 to
+  the sidecar's configured TLS port and copies the file into Word's sideload
+  folder (~/Library/Containers/com.microsoft.Word/Data/Documents/wef on macOS).
+-->
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+  <Id>2c018512-9280-4c72-9515-1d839a8d5c98</Id>
+  <Version>0.2.0.0</Version>
+  <ProviderName>Nebula</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Nebula Writer" />
+  <Description DefaultValue="Context-aware AI revision for Word: suggestions from your local Claude Code or Codex, anchored to what you are looking at, applied as tracked changes or comments." />
+  <IconUrl DefaultValue="https://localhost:8443/word/icon-64.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:8443/word/icon-128.png" />
+  <SupportUrl DefaultValue="https://localhost:8443/" />
+  <Hosts>
+    <Host Name="Document" />
+  </Hosts>
+  <Requirements>
+    <Sets DefaultMinVersion="1.4">
+      <Set Name="WordApi" MinVersion="1.4" />
+    </Sets>
+  </Requirements>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://localhost:8443/word/taskpane.html" />
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title" />
+            <Description resid="GetStarted.Description" />
+            <LearnMoreUrl resid="Url.Support" />
+          </GetStarted>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="NebulaWriter.Group">
+                <Label resid="Group.Label" />
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16" />
+                  <bt:Image size="32" resid="Icon.32" />
+                  <bt:Image size="80" resid="Icon.80" />
+                </Icon>
+                <Control xsi:type="Button" id="NebulaWriter.OpenPane">
+                  <Label resid="Button.Label" />
+                  <Supertip>
+                    <Title resid="Button.Label" />
+                    <Description resid="Button.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16" />
+                    <bt:Image size="32" resid="Icon.32" />
+                    <bt:Image size="80" resid="Icon.80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>NebulaWriter.Pane</TaskpaneId>
+                    <SourceLocation resid="Url.Taskpane" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="https://localhost:8443/word/icon-16.png" />
+        <bt:Image id="Icon.32" DefaultValue="https://localhost:8443/word/icon-32.png" />
+        <bt:Image id="Icon.80" DefaultValue="https://localhost:8443/word/icon-80.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Url.Taskpane" DefaultValue="https://localhost:8443/word/taskpane.html" />
+        <bt:Url id="Url.Support" DefaultValue="https://localhost:8443/" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Group.Label" DefaultValue="Nebula Writer" />
+        <bt:String id="Button.Label" DefaultValue="Nebula Writer" />
+        <bt:String id="GetStarted.Title" DefaultValue="Nebula Writer is ready" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Button.Tooltip" DefaultValue="Open the Nebula Writer pane: AI suggestions anchored to your selection, caret, and the pages on screen, applied as tracked changes." />
+        <bt:String id="GetStarted.Description" DefaultValue="Open the Nebula Writer pane from the Home tab. Put the caret where you are working, describe the change, and review suggestions before applying them." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

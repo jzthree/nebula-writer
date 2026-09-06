@@ -1,0 +1,25 @@
+{
+  // Nebula Writer cloud role (local-first): writer.zhoulab.io is a PRODUCT PAGE
+  // + the collaboration SYNC BACKEND. It no longer serves the app (Writer runs
+  // locally). The Worker returns the landing page for navigations and runs one
+  // Durable Object per document room for Yjs sync / presence / events / session
+  // metadata. No app bundle, no AI.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nebula-writer",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-05-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM", "class_name": "WriterRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WriterRoom"] }
+  ],
+  "observability": { "enabled": true }
+  // After connecting the repo in the Cloudflare dashboard, add the custom domain
+  // writer.zhoulab.io under Settings -> Domains & Routes (zhoulab.io must be a
+  // zone on this Cloudflare account). Secrets to set (Settings -> Variables):
+  //   SHARE_TOKEN  — capability token collaborators present via #share= links
+  //   BRIDGE_TOKEN — token your local sidecar uses to connect the AI bridge
+}

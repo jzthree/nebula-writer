@@ -1,0 +1,26 @@
+{
+  "name": "create-nebula-writer",
+  "version": "0.1.0",
+  "description": "Get Nebula Writer — local-first AI document editing with a real Claude Code / Codex terminal — running locally in one command.",
+  "type": "module",
+  "bin": {
+    "create-nebula-writer": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "nebula-writer",
+    "docx",
+    "claude-code",
+    "codex",
+    "local-first",
+    "ai"
+  ],
+  "license": "UNLICENSED",
+  "private": true
+}

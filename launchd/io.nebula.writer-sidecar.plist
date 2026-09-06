@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: replace __REPO__ (e.g. /Users/you/Code/nebula-writer) and
+     __HOME__ (e.g. /Users/you). Install via scripts/install-launchd.sh, which
+     substitutes these and loads the agent. The wrapper script loads the bridge
+     token from cloudflare/.secrets.local, so no secret lives in this plist. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.nebula.writer-sidecar</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/writer-sidecar-launchd.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.nebula-agent/writer-sidecar.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.nebula-agent/writer-sidecar.log</string>
+</dict>
+</plist>
