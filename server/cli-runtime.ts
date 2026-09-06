@@ -23,10 +23,11 @@ export type ResolvedCliCommand = {
 export type CliTimeoutConfig = {
   env: "WRITER_CLI_TIMEOUT_MS";
   value: string | null;
+  /** Milliseconds before a provider process is killed; 0 means no timeout. */
   timeoutMs: number;
   defaultMs: number;
   minMs: number;
-  maxMs: number;
+  maxMs: number | null;
   valid: boolean;
   clamped: boolean;
   detail: string;
@@ -34,10 +35,14 @@ export type CliTimeoutConfig = {
 
 const TRUTHY_CLI_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSY_CLI_VALUES = new Set(["0", "false", "no", "off"]);
-const DEFAULT_CLI_TIMEOUT_MS = 180_000;
+// No timeout by default: a Codex/Claude request runs until it finishes or the
+// user stops it. Long global passes routinely take longer than any fixed
+// budget, and a killed run throws away minutes of work — the UI shows live
+// progress instead. WRITER_CLI_TIMEOUT_MS remains an opt-in cap.
+const DEFAULT_CLI_TIMEOUT_MS = 0;
 const MIN_CLI_TIMEOUT_MS = 100;
-const MAX_CLI_TIMEOUT_MS = 10 * 60_000;
 const CLI_TIMEOUT_ENV = "WRITER_CLI_TIMEOUT_MS";
+const DISABLED_CLI_TIMEOUT_VALUES = new Set(["0", "off", "none", "no", "false", "unlimited", "infinite"]);
 
 const PROVIDER_CONFIG: Record<CliProviderName, ProviderConfig> = {
   codex: {
@@ -133,58 +138,73 @@ export function cliEnablementDiagnostic(value = process.env.WRITER_ALLOW_CLI): s
 
 export function resolveCliTimeoutConfig(value = process.env.WRITER_CLI_TIMEOUT_MS): CliTimeoutConfig {
   const rawValue = value?.trim() || null;
+  const base = {
+    env: CLI_TIMEOUT_ENV,
+    value: rawValue,
+    defaultMs: DEFAULT_CLI_TIMEOUT_MS,
+    minMs: MIN_CLI_TIMEOUT_MS,
+    maxMs: null,
+    clamped: false
+  } as const;
   if (!rawValue) {
     return {
-      env: CLI_TIMEOUT_ENV,
-      value: null,
+      ...base,
       timeoutMs: DEFAULT_CLI_TIMEOUT_MS,
-      defaultMs: DEFAULT_CLI_TIMEOUT_MS,
-      minMs: MIN_CLI_TIMEOUT_MS,
-      maxMs: MAX_CLI_TIMEOUT_MS,
       valid: true,
-      clamped: false,
-      detail: `CLI timeout ${formatCliTimeout(DEFAULT_CLI_TIMEOUT_MS)} (default)`
+      detail: "No CLI timeout (default): requests run until they finish or you stop them."
+    };
+  }
+
+  if (DISABLED_CLI_TIMEOUT_VALUES.has(rawValue.toLowerCase())) {
+    return {
+      ...base,
+      timeoutMs: 0,
+      valid: true,
+      detail: `CLI timeout disabled via ${CLI_TIMEOUT_ENV}=${rawValue}`
     };
   }
 
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) {
     return {
-      env: CLI_TIMEOUT_ENV,
-      value: rawValue,
+      ...base,
       timeoutMs: DEFAULT_CLI_TIMEOUT_MS,
-      defaultMs: DEFAULT_CLI_TIMEOUT_MS,
-      minMs: MIN_CLI_TIMEOUT_MS,
-      maxMs: MAX_CLI_TIMEOUT_MS,
       valid: false,
-      clamped: false,
       detail: `${CLI_TIMEOUT_ENV}=${rawValue} is not a valid millisecond timeout; using ${formatCliTimeout(DEFAULT_CLI_TIMEOUT_MS)}.`
     };
   }
 
   const rounded = Math.round(parsed);
-  const timeoutMs = Math.min(MAX_CLI_TIMEOUT_MS, Math.max(MIN_CLI_TIMEOUT_MS, rounded));
+  if (rounded <= 0) {
+    return {
+      ...base,
+      timeoutMs: 0,
+      valid: true,
+      detail: `CLI timeout disabled via ${CLI_TIMEOUT_ENV}=${rawValue}`
+    };
+  }
+  const timeoutMs = Math.max(MIN_CLI_TIMEOUT_MS, rounded);
   const clamped = timeoutMs !== rounded;
   return {
-    env: CLI_TIMEOUT_ENV,
-    value: rawValue,
+    ...base,
     timeoutMs,
-    defaultMs: DEFAULT_CLI_TIMEOUT_MS,
-    minMs: MIN_CLI_TIMEOUT_MS,
-    maxMs: MAX_CLI_TIMEOUT_MS,
     valid: true,
     clamped,
     detail: clamped
-      ? `${CLI_TIMEOUT_ENV}=${rawValue} is outside the supported range; using ${formatCliTimeout(timeoutMs)}.`
+      ? `${CLI_TIMEOUT_ENV}=${rawValue} is below the ${MIN_CLI_TIMEOUT_MS} ms minimum; using ${formatCliTimeout(timeoutMs)}.`
       : `CLI timeout ${formatCliTimeout(timeoutMs)} via ${CLI_TIMEOUT_ENV}`
   };
 }
 
+/** Effective provider timeout in milliseconds; 0 means no timeout. */
 export function cliTimeoutMs(value = process.env.WRITER_CLI_TIMEOUT_MS): number {
   return resolveCliTimeoutConfig(value).timeoutMs;
 }
 
 export function formatCliTimeout(timeoutMs: number): string {
+  if (timeoutMs <= 0) {
+    return "no timeout";
+  }
   const seconds = timeoutMs / 1000;
   return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
 }

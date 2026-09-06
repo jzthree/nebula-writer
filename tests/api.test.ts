@@ -24,7 +24,7 @@ describe("writer sidecar API", () => {
     expect(body.cliTimeout).toMatchObject({
       env: "WRITER_CLI_TIMEOUT_MS",
       value: null,
-      timeoutMs: 180000,
+      timeoutMs: 0,
       valid: true,
       clamped: false
     });
@@ -50,10 +50,10 @@ describe("writer sidecar API", () => {
 
       expect(response.statusCode).toBe(200);
       expect(body.cliTimeout.value).toBe("slow");
-      expect(body.cliTimeout.timeoutMs).toBe(180000);
+      expect(body.cliTimeout.timeoutMs).toBe(0);
       expect(body.cliTimeout.valid).toBe(false);
       expect(body.cliTimeout.detail).toContain("WRITER_CLI_TIMEOUT_MS=slow");
-      expect(body.cliTimeout.detail).toContain("using 180s");
+      expect(body.cliTimeout.detail).toContain("using no timeout");
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.WRITER_CLI_TIMEOUT_MS;

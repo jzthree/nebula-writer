@@ -70,9 +70,15 @@ Port of slides-mcp's connector, adapted:
 - The MCP config launches `writer-mcp` (tsx entry or built bin) with
   `NEBULA_WRITER_URL` pointing back at this sidecar and the document id in
   env, so tool calls hit the right session.
-- Existing single-flight AI queue, timeout (`WRITER_CLI_TIMEOUT_MS`; default
-  raised 180s → 300s for agentic turns), output cap, and SIGTERM→SIGKILL
-  interrupt handling all preserved.
+- Existing single-flight AI queue, output cap, and SIGTERM→SIGKILL interrupt
+  handling all preserved. There is no timeout by default: a turn runs until it
+  finishes or the user stops it (`WRITER_CLI_TIMEOUT_MS` remains an opt-in
+  cap), and the one-shot pipeline now streams the same JSONL events as the
+  agentic engine (`codex exec --json`, `claude --output-format stream-json
+  --include-partial-messages`) so both the web busy pill and the Word pane
+  show live stages — reading, thinking (with Codex's reasoning headline),
+  writing with a running character count — plus elapsed time.
+
 
 ### 3. Request contract — what makes retirement safe
 

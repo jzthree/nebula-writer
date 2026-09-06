@@ -205,7 +205,8 @@ function createAgentProcess(options: AgentTurnOptions, command: string, args: st
       env: { ...CLI_ENV_OVERRIDES } as Record<string, string>,
       // Let the client-side timeout below drive cancellation; give the gateway
       // a looser guard so the client wins the race and produces the nicer error.
-      timeoutMs: (options.timeoutMs ?? cliTimeoutMs()) + 30_000
+      // With no local timeout, ask for the gateway's maximum (it caps at 1h).
+      timeoutMs: gatewayTimeoutMs(options.timeoutMs ?? cliTimeoutMs())
     });
     if (gw) {
       return {
@@ -296,9 +297,11 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
         options.signal.addEventListener("abort", abortHandler, { once: true });
       }
 
-      timeoutTimer = setTimeout(() => {
-        terminate(`${options.provider} timed out after ${formatCliTimeout(timeoutMs)}.`);
-      }, timeoutMs);
+      if (timeoutMs > 0) {
+        timeoutTimer = setTimeout(() => {
+          terminate(`${options.provider} timed out after ${formatCliTimeout(timeoutMs)}.`);
+        }, timeoutMs);
+      }
 
       proc.onStdout((chunk) => {
         if (settled) {
@@ -416,6 +419,12 @@ function summarizeToolInput(toolName: string, input: unknown): string {
   return bare;
 }
 
+const GATEWAY_MAX_TIMEOUT_MS = 60 * 60_000;
+
+function gatewayTimeoutMs(localTimeoutMs: number): number {
+  return localTimeoutMs > 0 ? localTimeoutMs + 30_000 : GATEWAY_MAX_TIMEOUT_MS;
+}
+
 export class ClaudeStreamParser {
   private text = "";
   private cost: number | null = null;
@@ -489,6 +498,22 @@ export class ClaudeStreamParser {
   }
 }
 
+/**
+ * Codex reasoning items carry a short markdown summary ("**Reviewing Aim 2
+ * rationale**\n\nThe paragraph…"). Keep the headline so progress reads as what
+ * the model is doing right now, not a wall of text.
+ */
+export function summarizeReasoning(text: string): string {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[#>*\-\s]+|[*\s]+$/g, "").trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) {
+    return "";
+  }
+  return firstLine.length > 120 ? `${firstLine.slice(0, 117).trimEnd()}…` : firstLine;
+}
+
 export class CodexStreamParser {
   private text = "";
   private sessionId: string | null = null;
@@ -551,7 +576,11 @@ export class CodexStreamParser {
       return [];
     }
     if (item.type === "reasoning") {
-      return completed ? [] : [{ kind: "thinking" }];
+      if (!completed) {
+        return [{ kind: "thinking" }];
+      }
+      const summary = typeof item.text === "string" ? summarizeReasoning(item.text) : "";
+      return summary ? [{ kind: "status", stage: "thinking", detail: summary }] : [];
     }
     if ((item.type === "mcp_tool_call" || item.type === "command_execution") && !completed) {
       const name = typeof item.tool === "string" ? item.tool : item.type === "command_execution" ? "command" : "tool";

@@ -98,7 +98,7 @@ describe("model options validation and CLI arguments", () => {
 
   it("threads the override through the one-shot and agentic argument builders", () => {
     const oneShotCodex = buildCliArgs("codex", "/tmp/schema.json", { model: "gpt-5.6-terra", reasoning: "high" });
-    expect(oneShotCodex.slice(0, 7)).toEqual(["exec", "-c", 'service_tier="fast"', "-m", "gpt-5.6-terra", "-c", 'model_reasoning_effort="high"']);
+    expect(oneShotCodex.slice(0, 8)).toEqual(["exec", "--json", "-c", 'service_tier="fast"', "-m", "gpt-5.6-terra", "-c", 'model_reasoning_effort="high"']);
     expect(oneShotCodex[oneShotCodex.length - 1]).toBe("-");
     expect(buildCliArgs("codex", "/tmp/schema.json")).not.toContain("-m");
 

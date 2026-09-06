@@ -258,7 +258,8 @@ export interface AiProgressSnapshot {
   passTotal: number | null;
   startedAt: string;
   updatedAt: string;
-  timeoutMs: number;
+  /** Configured provider timeout, or null when the run has no time limit. */
+  timeoutMs: number | null;
 }
 
 export async function getAiProgressFromSidecar(apiBase = ""): Promise<{ progress: AiProgressSnapshot | null }> {

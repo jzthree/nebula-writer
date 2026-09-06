@@ -9,13 +9,15 @@ import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunConte
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
-import { runAgentTurn, type AgentEvent } from "./agent-runtime";
+import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
 import { containsAnchoredText, missingProtectedTokens, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation } from "./suggestion-validation";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
-const MAX_CLI_OUTPUT_CHARS = 200_000;
+// Streaming CLI output (JSONL events plus partial deltas) is several times the
+// size of the final reply, so the memory guard is generous.
+const MAX_CLI_OUTPUT_CHARS = 2_000_000;
 const MAX_CLI_DIAGNOSTIC_CHARS = 4_000;
 const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   CLICOLOR: "0",
@@ -39,8 +41,15 @@ interface CliPromptOptions {
   coveragePass?: DocumentCoverageChunk;
 }
 
+/** Live events from a one-shot CLI run: the agent stream events plus how much of the reply has streamed so far. */
+export type CliStreamEvent = AgentEvent | { kind: "output"; chars: number };
+
 interface AiRunOptions {
   signal?: AbortSignal;
+  /** Called with each complete stdout line as it arrives (JSONL streaming). */
+  onStdoutLine?: (line: string) => void;
+  /** Receives parsed stream events while the provider is still running. */
+  onStreamEvent?: (event: CliStreamEvent) => void;
 }
 
 export interface AiProgressSnapshot {
@@ -51,7 +60,8 @@ export interface AiProgressSnapshot {
   passTotal: number | null;
   startedAt: string;
   updatedAt: string;
-  timeoutMs: number;
+  /** Configured provider timeout, or null when the run has no time limit. */
+  timeoutMs: number | null;
 }
 
 // Single-slot progress tracker for the local single-user sidecar. The UI polls
@@ -112,7 +122,7 @@ function setAiProgress(provider: string, stage: string, pass?: { index: number; 
     passTotal: pass?.total ?? null,
     startedAt: currentAiProgress?.startedAt ?? now,
     updatedAt: now,
-    timeoutMs: cliTimeoutMs()
+    timeoutMs: cliTimeoutMs() || null
   };
   publishAiState();
 }
@@ -592,10 +602,15 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     if (shouldUseCoveragePasses(request)) {
       return await runCoveragePasses(provider, request, options);
     }
-    setAiProgress(provider, `Waiting for the ${provider} CLI response`, undefined, request.requestedBy ?? null);
+    setAiProgress(provider, `Starting ${providerLabel(provider)}`, undefined, request.requestedBy ?? null);
     const prompt = buildCliPrompt(request);
-    const result = await runCli(provider, prompt, options, request.modelOptions ?? null);
-    return parseCliResponse(provider, result, request);
+    const result = await runCli(
+      provider,
+      prompt,
+      { ...options, onStreamEvent: createOneShotProgressReporter(provider, request) },
+      request.modelOptions ?? null
+    );
+    return parseCliProgressedResponse(provider, result, request);
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const message = formatCliDiagnostic(rawMessage);
@@ -624,7 +639,7 @@ function cliFailureGuidance(rawMessage: string): string {
     return " The CLI isn't logged in. Sign in on this machine (Claude: run `claude`; Codex: run `codex login`), then resend — no sidecar restart needed.";
   }
   if (/\btimed out after\b/i.test(rawMessage)) {
-    return " For long R01 sections, try a smaller selection or restart the sidecar with a larger WRITER_CLI_TIMEOUT_MS value (for example WRITER_CLI_TIMEOUT_MS=600000 for 10 minutes).";
+    return " The request hit the WRITER_CLI_TIMEOUT_MS limit configured for this sidecar. Raise it, or unset it to let requests run until you stop them (the default), then restart the sidecar.";
   }
   if (/status 127|ENOENT|command not found|no such file|not found on PATH|env: node/i.test(rawMessage)) {
     return " The CLI executable (or its `node` runtime) was not found on PATH. Install it, or point WRITER_CODEX_PATH / WRITER_CLAUDE_PATH at the binary, then restart the sidecar.";
@@ -739,14 +754,20 @@ async function runCoveragePasses(provider: CliProviderName, request: AiRequest, 
 
   for (const chunk of chunks) {
     throwIfAborted(provider, options.signal);
-    setAiProgress(provider, `Coverage pass ${chunk.index} of ${chunk.total}`, { index: chunk.index, total: chunk.total }, request.requestedBy ?? null);
+    const pass = { index: chunk.index, total: chunk.total };
+    setAiProgress(provider, `Starting ${providerLabel(provider)}`, pass, request.requestedBy ?? null);
     const chunkRequest: AiRequest = {
       ...request,
       documentText: chunk.text
     };
     try {
-      const result = await runCli(provider, buildCliPrompt(chunkRequest, { coveragePass: chunk }), options, request.modelOptions ?? null);
-      responses.push(parseCliResponse(provider, result, chunkRequest));
+      const result = await runCli(
+        provider,
+        buildCliPrompt(chunkRequest, { coveragePass: chunk }),
+        { ...options, onStreamEvent: createOneShotProgressReporter(provider, request, pass) },
+        request.modelOptions ?? null
+      );
+      responses.push(parseCliProgressedResponse(provider, result, chunkRequest));
     } catch (error) {
       if (options.signal?.aborted || !responses.length) {
         // Nothing salvageable (or the user interrupted) — let the caller report the failure.
@@ -856,19 +877,22 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   const command = resolvedCommand.command;
   const schemaFile = provider === "codex" ? writeCliSchemaFile() : null;
   const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions);
+  const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
+  const runOptions: AiRunOptions = observer ? { ...options, onStdoutLine: observer.consumeLine } : options;
 
   try {
-    return await runCliCommand(provider, command, primaryArgs, prompt, options);
+    return await runCliCommand(provider, command, primaryArgs, prompt, runOptions);
   } catch (error) {
     const compatibilityArgs = buildCliCompatibilityArgs(provider, primaryArgs, error);
     if (!compatibilityArgs) {
-      throw error;
+      throw observer?.describeFailure(error) ?? error;
     }
     try {
-      return await runCliCommand(provider, command, compatibilityArgs, prompt, options);
+      return await runCliCommand(provider, command, compatibilityArgs, prompt, runOptions);
     } catch (fallbackError) {
       const initialMessage = error instanceof Error ? error.message : String(error);
-      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      const described = observer?.describeFailure(fallbackError) ?? fallbackError;
+      const fallbackMessage = described instanceof Error ? described.message : String(described);
       throw new Error(`${fallbackMessage} (Structured-output compatibility fallback failed after: ${initialMessage})`);
     }
   } finally {
@@ -968,12 +992,31 @@ function runCliCommand(
       }
       return next;
     };
-    timeoutTimer = setTimeout(() => {
-      terminate(`${provider} timed out after ${formatCliTimeout(timeoutMs)}`);
-    }, timeoutMs);
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        terminate(`${provider} timed out after ${formatCliTimeout(timeoutMs)}`);
+      }, timeoutMs);
+    }
 
+    let stdoutLineBuffer = "";
+    const onStdoutLine = options.onStdoutLine;
     stdoutStream.on("data", (chunk) => {
       stdout = appendOutput("stdout", stdout, chunk);
+      if (!onStdoutLine || settled) {
+        return;
+      }
+      stdoutLineBuffer += String(chunk);
+      let newline = stdoutLineBuffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = stdoutLineBuffer.slice(0, newline);
+        stdoutLineBuffer = stdoutLineBuffer.slice(newline + 1);
+        try {
+          onStdoutLine(line);
+        } catch {
+          // Progress reporting is best-effort; never let it break the run.
+        }
+        newline = stdoutLineBuffer.indexOf("\n");
+      }
     });
     stderrStream.on("data", (chunk) => {
       stderr = appendOutput("stderr", stderr, chunk);
@@ -1082,10 +1125,28 @@ function buildCliCompatibilityArgs(provider: CliProviderName, args: string[], er
 
   const text = cliErrorText(error);
   if (provider === "codex") {
-    return text.includes("output-schema") ? removeFlagWithValue(args, "--output-schema") : null;
+    let codexArgs = args;
+    if (text.includes("output-schema")) {
+      codexArgs = removeFlagWithValue(codexArgs, "--output-schema") ?? codexArgs;
+    }
+    if (/--json\b/.test(text) && !text.includes("json-schema")) {
+      codexArgs = removeFlag(codexArgs, "--json") ?? codexArgs;
+    }
+    return codexArgs.length === args.length ? null : codexArgs;
   }
 
   let compatibilityArgs = args;
+  if (text.includes("include-partial-messages")) {
+    compatibilityArgs = removeFlag(compatibilityArgs, "--include-partial-messages") ?? compatibilityArgs;
+  }
+  if (text.includes("stream-json")) {
+    // Older builds: fall back to the buffered JSON envelope (no live progress).
+    compatibilityArgs = removeFlag(compatibilityArgs, "--include-partial-messages") ?? compatibilityArgs;
+    compatibilityArgs = removeFlag(compatibilityArgs, "--verbose") ?? compatibilityArgs;
+    compatibilityArgs = compatibilityArgs.map((value, index) => (value === "stream-json" && compatibilityArgs[index - 1] === "--output-format" ? "json" : value));
+  } else if (/\bverbose\b/.test(text)) {
+    compatibilityArgs = removeFlag(compatibilityArgs, "--verbose") ?? compatibilityArgs;
+  }
   // Older Claude Code builds predate --effort (and, long ago, --model): drop
   // the rejected flag and retry rather than failing the whole request.
   for (const flag of ["--effort", "--model"]) {
@@ -1100,7 +1161,15 @@ function buildCliCompatibilityArgs(provider: CliProviderName, args: string[], er
     compatibilityArgs = removeFlagWithValue(compatibilityArgs, "--tools") ?? compatibilityArgs;
   }
 
-  return compatibilityArgs.length === args.length ? null : compatibilityArgs;
+  return compatibilityArgs.length === args.length && compatibilityArgs.every((value, index) => value === args[index]) ? null : compatibilityArgs;
+}
+
+function removeFlag(args: string[], flag: string): string[] | null {
+  const flagIndex = args.indexOf(flag);
+  if (flagIndex < 0) {
+    return null;
+  }
+  return args.filter((_value, index) => index !== flagIndex);
 }
 
 function isUnsupportedCliFlagError(error: unknown): boolean {
@@ -1161,6 +1230,9 @@ export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string
   if (provider === "codex") {
     return [
       "exec",
+      // JSONL events (thread/turn/item) so the UI can show what Codex is doing
+      // while it works; the final agent_message carries the structured reply.
+      "--json",
       "-c",
       'service_tier="fast"',
       ...modelCliArgs(provider, modelOptions),
@@ -1177,11 +1249,148 @@ export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string
     ...modelCliArgs(provider, modelOptions),
     "--tools",
     "",
+    // stream-json (which requires --verbose) emits init/assistant/result events
+    // as they happen; partial messages add deltas so the UI can show how much
+    // of the reply has been written so far.
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
     "--json-schema",
     JSON.stringify(AI_RESPONSE_SCHEMA)
   ];
+}
+
+function formatCharCount(chars: number): string {
+  return chars < 1000 ? `${chars} characters` : `${(chars / 1000).toFixed(1)}k characters`;
+}
+
+/**
+ * Turns one-shot CLI stream events into the shared progress snapshot every
+ * client renders (web busy pill, Word pane activity list). Stage text is only
+ * republished when it changes, and streamed-output counts are throttled so
+ * the websocket is not flooded by per-token deltas.
+ */
+function createOneShotProgressReporter(
+  provider: CliProviderName,
+  request: AiRequest,
+  pass?: { index: number; total: number }
+): (event: CliStreamEvent) => void {
+  const requestedBy = request.requestedBy ?? null;
+  const label = providerLabel(provider);
+  let lastStage = "";
+  let lastOutputPublishedAt = 0;
+  const publish = (stage: string, force = false) => {
+    if (!force && stage === lastStage) {
+      return;
+    }
+    lastStage = stage;
+    setAiProgress(provider, stage, pass, requestedBy);
+  };
+  return (event) => {
+    switch (event.kind) {
+      case "status":
+        publish(event.stage === "connected" ? `${label} is reading the document` : event.detail ?? capitalizeFirst(event.stage));
+        break;
+      case "thinking":
+        publish("Thinking");
+        break;
+      case "tool":
+        // Claude runs with tools disabled, so its only "tool" is the structured reply.
+        publish(provider === "claude" ? "Writing suggestions" : capitalizeFirst(event.summary));
+        break;
+      case "text":
+        publish("Writing suggestions");
+        break;
+      case "output": {
+        const now = Date.now();
+        if (now - lastOutputPublishedAt < 1000) {
+          return;
+        }
+        lastOutputPublishedAt = now;
+        publish(`Writing suggestions (${formatCharCount(event.chars)} so far)`, true);
+        break;
+      }
+      case "result":
+        publish(event.ok ? "Checking the suggestions" : "Reporting a provider error");
+        break;
+      default:
+        break;
+    }
+  };
+}
+
+interface CliStreamObserver {
+  consumeLine: (line: string) => void;
+  /** When the provider reported a failure in-stream, return an error carrying that message instead of raw JSONL. */
+  describeFailure: (error: unknown) => Error | null;
+}
+
+/** Streamed-delta length for a Claude `stream_event` line, or null when the line is not one. */
+function partialDeltaLength(line: string): number | null {
+  if (!line.includes('"stream_event"')) {
+    return null;
+  }
+  let event: Record<string, unknown>;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (event.type !== "stream_event") {
+    return null;
+  }
+  const inner = event.event as Record<string, unknown> | undefined;
+  if (inner?.type !== "content_block_delta") {
+    return 0;
+  }
+  const delta = inner.delta as Record<string, unknown> | undefined;
+  if (typeof delta?.text === "string") {
+    return delta.text.length;
+  }
+  if (typeof delta?.partial_json === "string") {
+    return delta.partial_json.length;
+  }
+  return 0;
+}
+
+function createCliStreamObserver(provider: CliProviderName, onEvent: (event: CliStreamEvent) => void): CliStreamObserver {
+  const parser = provider === "claude" ? new ClaudeStreamParser() : new CodexStreamParser();
+  let outputChars = 0;
+  return {
+    consumeLine(line) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("{")) {
+        return;
+      }
+      const deltaLength = partialDeltaLength(trimmed);
+      if (deltaLength !== null) {
+        if (deltaLength > 0) {
+          outputChars += deltaLength;
+          onEvent({ kind: "output", chars: outputChars });
+        }
+        return;
+      }
+      for (const event of parser.consume(trimmed)) {
+        onEvent(event);
+      }
+    },
+    describeFailure(error) {
+      const outcome = parser.outcome();
+      if (!outcome.sawResult || outcome.ok || !outcome.text.trim()) {
+        return null;
+      }
+      const code = error instanceof CliInvocationError ? error.code : null;
+      const signal = error instanceof CliInvocationError ? error.signal : null;
+      return new CliInvocationError(`${provider}: ${outcome.text.trim()}`, { code, signal, output: outcome.text.trim() });
+    }
+  };
+}
+
+/** Parse the reply and publish the validation step so the UI never sits on a stale "writing" stage. */
+function parseCliProgressedResponse(provider: CliProviderName, raw: string, request: AiRequest): AiResponse {
+  setAiProgress(provider, "Checking the suggestions against the document", undefined, request.requestedBy ?? null);
+  return parseCliResponse(provider, raw, request);
 }
 
 function writeCliSchemaFile(): { dir: string; path: string } {

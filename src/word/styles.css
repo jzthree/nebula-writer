@@ -599,3 +599,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-activity-log summary { cursor: pointer; list-style: none; font-weight: 600; color: var(--accent-text); }
 .wp-activity-log summary::-webkit-details-marker { display: none; }
 .wp-activity-log .wp-activity { margin-top: 4px; padding: 6px 8px; border-radius: 7px; background: var(--surface-soft); }
+
+/* Elapsed time next to a running turn */
+.wp-elapsed {
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}

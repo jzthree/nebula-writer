@@ -65,7 +65,7 @@ import { HeadingEnter } from "./headingEnter";
 import { UndoGuard } from "./undoGuard";
 import { applyReplacementAsSuggestionMarks, resolveSuggestionMarks, SuggestingRouter, SuggestionDeletion, SuggestionInsertion } from "./suggesting";
 import { RetainedSelection } from "./retainedSelection";
-import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, isLocalHostname, type AiAttachment, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary } from "./shared";
+import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, formatElapsedSince, isLocalHostname, type AiAttachment, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary } from "./shared";
 import { generalBuiltInRoutines, r01BuiltInRoutines, r01RoutineSequence, type WritingRoutine } from "./writingRoutines";
 
 type InteractiveProviderName = Exclude<AiProviderName, "demo">;
@@ -645,6 +645,9 @@ export function App() {
   const [suggestionSyncFailureCount, setSuggestionSyncFailureCount] = useState(0);
   const [suggestionSyncRetrying, setSuggestionSyncRetrying] = useState(false);
   const [aiProgressNote, setAiProgressNote] = useState<string | null>(null);
+  // Latest stage of the AI request this tab is waiting on: pushed over the
+  // /events socket as it changes, with GET /api/ai/progress as the fallback.
+  const liveAiProgressRef = useRef<{ stage: string; passIndex: number | null; passTotal: number | null; startedAt: string } | null>(null);
   const [remoteAiProgress, setRemoteAiProgress] = useState<{ provider: string; requestedBy: string | null; stage: string } | null>(null);
   const [remoteAiQueue, setRemoteAiQueue] = useState<Array<{ provider: string; requestedBy: string | null }>>([]);
   const [documentNoteDetail, setDocumentNoteDetail] = useState("");
@@ -1556,6 +1559,10 @@ export function App() {
           setRemoteAiProgress(progress && progress.provider && progress.stage
             ? { provider: progress.provider, requestedBy: progress.requestedBy ?? null, stage: progress.stage }
             : null);
+          const live = payload.progress as { stage?: string; passIndex?: number | null; passTotal?: number | null; startedAt?: string } | null;
+          liveAiProgressRef.current = live && live.stage
+            ? { stage: live.stage, passIndex: live.passIndex ?? null, passTotal: live.passTotal ?? null, startedAt: live.startedAt ?? new Date().toISOString() }
+            : null;
           const queue = (payload as { queue?: Array<{ provider?: string; requestedBy?: string | null }> }).queue;
           setRemoteAiQueue(Array.isArray(queue)
             ? queue.filter((entry) => entry?.provider).map((entry) => ({ provider: entry.provider as string, requestedBy: entry.requestedBy ?? null }))
@@ -1984,6 +1991,21 @@ export function App() {
       return;
     }
     let cancelled = false;
+    // Stage changes arrive live over the /events socket (see connectEvents);
+    // a 1s tick keeps the elapsed time honest between them, matching the Word
+    // pane's running turn. Polling remains the fallback when the push channel
+    // is down.
+    const render = () => {
+      const progress = liveAiProgressRef.current;
+      if (!progress) {
+        setAiProgressNote(null);
+        return;
+      }
+      const pass = progress.passIndex !== null && progress.passTotal !== null && progress.passTotal > 1
+        ? ` (pass ${progress.passIndex} of ${progress.passTotal})`
+        : "";
+      setAiProgressNote(`${progress.stage}${pass} (${formatElapsedSince(progress.startedAt)} elapsed)`);
+    };
     const poll = async () => {
       try {
         const result = localAiActiveRef.current ? await getLocalAiProgress() : await getAiProgress();
@@ -1991,18 +2013,16 @@ export function App() {
           return;
         }
         const progress = result.progress;
-        if (!progress) {
-          setAiProgressNote(null);
-          return;
-        }
-        const elapsedSec = Math.max(0, Math.round((Date.now() - new Date(progress.startedAt).getTime()) / 1000));
-        const elapsed = elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s` : `${elapsedSec}s`;
-        setAiProgressNote(`${progress.stage} (${elapsed} elapsed)`);
+        liveAiProgressRef.current = progress
+          ? { stage: progress.stage, passIndex: progress.passIndex, passTotal: progress.passTotal, startedAt: progress.startedAt }
+          : null;
+        render();
       } catch {
         // Sidecar unreachable mid-request; keep the plain busy label.
       }
     };
     void poll();
+    const tick = window.setInterval(render, 1000);
     // 5s, not 2s: on a metered cloud host the local user's own AI progress
     // polls the Worker during minutes-long passes; a slightly coarser note is
     // a fine trade. (Local-runner progress hits localhost and is free either way.)
@@ -2014,7 +2034,9 @@ export function App() {
     }, 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(tick);
       window.clearInterval(interval);
+      liveAiProgressRef.current = null;
       setAiProgressNote(null);
     };
   }, [busy]);

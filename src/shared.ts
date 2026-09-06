@@ -339,7 +339,8 @@ export interface CliTimeoutHealth {
   timeoutMs: number;
   defaultMs: number;
   minMs: number;
-  maxMs: number;
+  /** Upper bound on the configurable timeout, or null when unbounded. */
+  maxMs: number | null;
   valid: boolean;
   clamped: boolean;
   detail: string;
@@ -529,4 +530,17 @@ export interface WriterAutosavedSessionSummary {
   sourceDocumentPath: string | null;
   suggestionCount: number;
   title: string;
+}
+
+/**
+ * How long an AI request has been running ("42s", "3m 7s"). Shared by the web
+ * busy pill and the Word pane's running turn so both tick the same way.
+ */
+export function formatElapsedSince(startedAt: string | number, now: number = Date.now()): string {
+  const started = typeof startedAt === "number" ? startedAt : new Date(startedAt).getTime();
+  const seconds = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : 0;
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

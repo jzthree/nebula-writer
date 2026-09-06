@@ -36,7 +36,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AiActivityEntry, AiAttachment, AiModelChoice, AiProviderCatalog, AiReasoningChoice, AiSuggestion, LocalAiProviderName } from "../shared";
+import { formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
@@ -711,7 +711,7 @@ function TurnView(props: {
       ) : null}
       {turn.status === "running" ? (
         <>
-          <p className="wp-turn-text quiet" role="status">{turn.progress ?? "Working…"}</p>
+          <p className="wp-turn-text quiet" role="status">{turn.progress ?? "Working…"} <ElapsedSince at={turn.at} /></p>
           {turn.activity.length ? (
             <ol className="wp-activity live" aria-label="Tool calls so far">
               {turn.activity.slice(-4).map((entry, index) => <li key={`${entry.at}-${index}`} className={entry.kind}>{entry.summary}</li>)}
@@ -818,6 +818,16 @@ function SentDetails(props: { sent: SentSummary }) {
       </dl>
     </details>
   );
+}
+
+/** Ticking "42s" next to a running turn: the request has no time limit, so show that it is still alive. */
+function ElapsedSince(props: { at: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="wp-elapsed" aria-label="elapsed">{formatElapsedSince(props.at, now)}</span>;
 }
 
 function StatusLine(props: { notice: Notice | null; busyLabel: string | null }) {

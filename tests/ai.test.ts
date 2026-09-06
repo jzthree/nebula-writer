@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, isMissingSessionError, parseCliResponse, proposeChanges } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -869,7 +869,7 @@ describe("proposeChanges", () => {
       expect(response.provider).toBe("codex");
       expect(response.suggestions).toHaveLength(0);
       expect(response.message).toContain("timed out after 0.1s");
-      expect(response.message).toContain("try a smaller selection");
+      expect(response.message).toContain("Raise it, or unset it");
       expect(response.message).toContain("WRITER_CLI_TIMEOUT_MS");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -959,6 +959,8 @@ describe("proposeChanges", () => {
         "trap '' TERM",
         "i=0",
         "chunk=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        // 1,000-char chunks x 2,200 = 2.2M, just past the 2M streaming-output guard.
+        "chunk=\"$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk\"",
         "while [ \"$i\" -lt 2200 ]; do printf '%s' \"$chunk\"; i=$((i + 1)); done",
         "while :; do sleep 1; done"
       ].join("\n"),
@@ -974,7 +976,7 @@ describe("proposeChanges", () => {
       const response = await pending;
       expect(response.provider).toBe("codex");
       expect(response.suggestions).toHaveLength(0);
-      expect(response.message).toContain("produced more than 200000 characters on stdout");
+      expect(response.message).toContain("produced more than 2000000 characters on stdout");
 
       await waitForProcessExit(providerPid, 2_500);
     } finally {
@@ -1617,6 +1619,7 @@ describe("proposeChanges", () => {
 
     expect(args).toEqual([
       "exec",
+      "--json",
       "-c",
       'service_tier="fast"',
       "--skip-git-repo-check",
@@ -1628,14 +1631,115 @@ describe("proposeChanges", () => {
     ]);
   });
 
+  it("parses the structured reply out of Codex exec --json event lines", () => {
+    const request: AiRequest = { ...baseRequest, provider: "codex", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null };
+    const payload = { message: "Tightened one phrase.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    const raw = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "**Scanning the sentence**\n\nOne intensifier." } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } })
+    ].join("\n");
+
+    const response = parseCliResponse("codex", raw, request);
+
+    expect(response.message).toContain("Tightened one phrase.");
+    expect(response.suggestions).toHaveLength(1);
+    expect(response.suggestions[0].replacement).toBe("unique");
+  });
+
+  it("parses the structured reply out of Claude stream-json event lines", () => {
+    const request: AiRequest = { ...baseRequest, provider: "claude", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null };
+    const payload = { message: "Tightened one phrase.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    const raw = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s-1" }),
+      JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{\"message\":" } } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "StructuredOutput", input: payload }] } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "", structured_output: payload, session_id: "s-1" })
+    ].join("\n");
+
+    const response = parseCliResponse("claude", raw, request);
+
+    expect(response.message).toContain("Tightened one phrase.");
+    expect(response.suggestions).toHaveLength(1);
+    expect(response.suggestions[0].original).toBe("very unique");
+  });
+
+  it("publishes live progress from Codex event lines while the CLI is still running", async () => {
+    const previousAllow = process.env.WRITER_ALLOW_CLI;
+    const previousOverride = process.env.WRITER_CODEX_PATH;
+    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-stream-"));
+    const fakeCodexPath = join(tempDir, "fake-codex");
+    const payload = { message: "Tightened one phrase.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    writeFileSync(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        `const lines = ${JSON.stringify([
+          JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+          JSON.stringify({ type: "turn.started" }),
+          JSON.stringify({ type: "item.started", item: { type: "reasoning" } }),
+          JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "**Reviewing the opening sentence**\n\nOne intensifier." } }),
+          JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }),
+          JSON.stringify({ type: "turn.completed", usage: {} })
+        ])};`,
+        "let index = 0;",
+        "const tick = () => {",
+        "  if (index >= lines.length) { process.exit(0); }",
+        "  process.stdout.write(lines[index++] + '\\n');",
+        "  setTimeout(tick, 60);",
+        "};",
+        "process.stdin.resume();",
+        "setTimeout(tick, 20);"
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.WRITER_ALLOW_CLI = "1";
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
+
+    const stages: string[] = [];
+    const sampler = setInterval(() => {
+      const progress = getAiProgress();
+      if (progress && stages[stages.length - 1] !== progress.stage) {
+        stages.push(progress.stage);
+      }
+    }, 5);
+    try {
+      const response = await proposeChanges({ ...baseRequest, provider: "codex", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null });
+      clearInterval(sampler);
+      expect(response.suggestions).toHaveLength(1);
+      expect(stages).toContain("Codex CLI is reading the document");
+      expect(stages).toContain("Thinking");
+      expect(stages).toContain("Reviewing the opening sentence");
+      expect(stages.indexOf("Thinking")).toBeLessThan(stages.indexOf("Reviewing the opening sentence"));
+      expect(getAiProgress()).toBeNull();
+    } finally {
+      clearInterval(sampler);
+      rmSync(tempDir, { recursive: true, force: true });
+      if (previousAllow === undefined) {
+        delete process.env.WRITER_ALLOW_CLI;
+      } else {
+        process.env.WRITER_ALLOW_CLI = previousAllow;
+      }
+      if (previousOverride === undefined) {
+        delete process.env.WRITER_CODEX_PATH;
+      } else {
+        process.env.WRITER_CODEX_PATH = previousOverride;
+      }
+    }
+  });
+
   it("runs Claude Code CLI with inline structured output schema", () => {
     const args = buildCliArgs("claude");
     const schemaArg = args[args.indexOf("--json-schema") + 1];
 
     expect(args).toContain("-p");
     expect(args).toContain("--tools");
-    expect(args).toContain("--output-format");
-    expect(args).toContain("json");
+    expect(args[args.indexOf("--output-format") + 1]).toBe("stream-json");
+    expect(args).toContain("--verbose");
+    expect(args).toContain("--include-partial-messages");
     expect(args).toContain("--json-schema");
     expect(JSON.parse(schemaArg)).toMatchObject({
       type: "object",
