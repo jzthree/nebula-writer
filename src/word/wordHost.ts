@@ -465,58 +465,237 @@ export async function locateSuggestion(snapshot: WordDocumentSnapshot, suggestio
 
 /** Replace the original text with the suggestion, as a Word tracked change when requested. */
 export async function applySuggestion(snapshot: WordDocumentSnapshot, suggestion: Pick<AiSuggestion, "original" | "replacement">, options: ApplyOptions): Promise<ApplyResult> {
+  const [outcome] = await applySuggestions(snapshot, [{ id: "single", suggestion, matchIndex: options.matchIndex }], { trackChanges: options.trackChanges });
+  if (!outcome.ok) {
+    throw new Error(outcome.error);
+  }
+  return outcome.result;
+}
+
+export interface BatchApplyItem {
+  id: string;
+  suggestion: Pick<AiSuggestion, "original" | "replacement">;
+  /** Occurrence to act on when the text appears more than once; null = choose by `preferredOffset` (one extra round trip only when ambiguous). */
+  matchIndex: number | null;
+  preferredOffset?: number | null;
+}
+
+export type BatchApplyOutcome =
+  | { id: string; ok: true; result: ApplyResult }
+  | { id: string; ok: false; error: string };
+
+export interface BatchApplyOptions {
+  trackChanges: ApplyOptions["trackChanges"];
+}
+
+/**
+ * Apply several suggestions with a handful of round trips into Word instead
+ * of a handful per suggestion: every search is queued and flushed in one
+ * sync, every target is verified in one sync, Track Changes is switched once,
+ * and every replacement is queued and flushed in one sync (from the end of
+ * the document backwards, so earlier ranges are never disturbed). A change
+ * that overlaps an earlier one in the same pass waits for the next pass,
+ * which searches the updated text; anything still conflicting after three
+ * passes is reported, not guessed.
+ */
+export async function applySuggestions(snapshot: WordDocumentSnapshot, items: BatchApplyItem[], options: BatchApplyOptions): Promise<BatchApplyOutcome[]> {
   const word = requireWord();
-  return word.run(async (context) => {
-    const found = await findRanges(context, suggestion.original);
-    if (!found.ranges.length) {
-      throw new Error("Word could not find this suggestion's original text — the passage may have changed since the suggestion was made.");
+  const outcomes = new Map<string, BatchApplyOutcome>();
+  let pending = items;
+  for (let pass = 0; pass < 3 && pending.length; pass += 1) {
+    const remaining = pending;
+    pending = await word.run((context) => runApplyPass(context, snapshot, remaining, options, outcomes));
+  }
+  for (const item of pending) {
+    outcomes.set(item.id, { id: item.id, ok: false, error: "This change overlaps another change in the same batch; apply it on its own." });
+  }
+  return items.map((item) => outcomes.get(item.id) ?? { id: item.id, ok: false, error: "Not applied." });
+}
+
+async function runApplyPass(
+  context: Word.RequestContext,
+  snapshot: WordDocumentSnapshot,
+  items: BatchApplyItem[],
+  options: BatchApplyOptions,
+  outcomes: Map<string, BatchApplyOutcome>
+): Promise<BatchApplyItem[]> {
+  type Target = { item: BatchApplyItem; range: Word.Range; matches: number; matchIndex: number };
+  const found = await findRangesBatch(context, items.map((item) => item.suggestion.original));
+  const targets: Target[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const ranges = found[index].ranges;
+    if (!ranges.length) {
+      outcomes.set(item.id, { id: item.id, ok: false, error: "Word could not find this suggestion's original text — the passage may have changed since the suggestion was made." });
+      continue;
     }
-    const index = clampIndex(options.matchIndex, found.ranges.length);
-    const target = found.ranges[index];
-    target.load("text");
-    const document = context.document;
-    let previousMode: string | null = null;
-    if (options.trackChanges === "always") {
-      document.load("changeTrackingMode");
+    let matchIndex = item.matchIndex;
+    if (matchIndex === null) {
+      matchIndex = ranges.length > 1 ? chooseMatchIndex(await describeMatches(context, snapshot, ranges), item.preferredOffset ?? null) : 0;
+    }
+    matchIndex = clampIndex(matchIndex, ranges.length);
+    targets.push({ item, range: ranges[matchIndex], matches: ranges.length, matchIndex });
+  }
+  if (!targets.length) {
+    return [];
+  }
+
+  const document = context.document;
+  for (const target of targets) {
+    target.range.load("text");
+  }
+  document.load("changeTrackingMode");
+  const comparisons: Array<{ a: Target; b: Target; result: OfficeExtension.ClientResult<Word.LocationRelation> }> = [];
+  for (let a = 0; a < targets.length; a += 1) {
+    for (let b = a + 1; b < targets.length; b += 1) {
+      comparisons.push({ a: targets[a], b: targets[b], result: targets[a].range.compareLocationWith(targets[b].range) });
+    }
+  }
+  await context.sync();
+
+  const verified = new Set<Target>();
+  for (const target of targets) {
+    if (collapseWhitespace(normalizeWordText(target.range.text ?? "")) !== collapseWhitespace(target.item.suggestion.original)) {
+      outcomes.set(target.item.id, { id: target.item.id, ok: false, error: "The text Word found no longer matches the suggestion's original passage. Re-read the document and ask again." });
+    } else {
+      verified.add(target);
+    }
+  }
+  const deferred = new Set<Target>();
+  const precedingCount = new Map<Target, number>();
+  for (const comparison of comparisons) {
+    if (!verified.has(comparison.a) || !verified.has(comparison.b)) {
+      continue;
+    }
+    const order = relationOrder(String(comparison.result.value));
+    if (order === 0) {
+      deferred.add(comparison.b);
+    } else if (order < 0) {
+      precedingCount.set(comparison.b, (precedingCount.get(comparison.b) ?? 0) + 1);
+    } else {
+      precedingCount.set(comparison.a, (precedingCount.get(comparison.a) ?? 0) + 1);
+    }
+  }
+  // Last in the document first: replacing later text never moves earlier ranges.
+  const ready = [...verified].filter((target) => !deferred.has(target)).sort((x, y) => (precedingCount.get(y) ?? 0) - (precedingCount.get(x) ?? 0));
+  if (!ready.length) {
+    return [...deferred].map((target) => target.item);
+  }
+
+  let previousMode: string | null = null;
+  let trackedChange: boolean;
+  if (options.trackChanges === "always") {
+    previousMode = String(document.changeTrackingMode ?? "Off");
+    if (previousMode === "Off") {
+      document.changeTrackingMode = "TrackAll";
+      await context.sync();
+    }
+    trackedChange = true;
+  } else {
+    trackedChange = String(document.changeTrackingMode ?? "Off") !== "Off";
+  }
+  try {
+    const strategies = new Map<Target, ApplyResult["strategy"]>();
+    let earliest: Word.Range | null = null;
+    for (const target of ready) {
+      const { suggestion } = target.item;
+      if (await applyPerParagraph(context, target.range, suggestion)) {
+        strategies.set(target, "paragraphs");
+        earliest = target.range;
+        continue;
+      }
+      strategies.set(target, "range");
+      if (suggestion.replacement.trim() === "") {
+        target.range.delete();
+        earliest = target.range;
+      } else {
+        earliest = target.range.insertText(suggestion.replacement, "Replace");
+      }
+    }
+    if (earliest) {
+      // One selection for the whole batch: Word scrolls once, to the first change.
+      earliest.select("Select");
     }
     await context.sync();
-    if (collapseWhitespace(normalizeWordText(target.text ?? "")) !== collapseWhitespace(suggestion.original)) {
-      throw new Error("The text Word found no longer matches the suggestion's original passage. Re-read the document and ask again.");
+    for (const target of ready) {
+      outcomes.set(target.item.id, {
+        id: target.item.id,
+        ok: true,
+        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range" }
+      });
     }
-    let trackedChange = false;
-    if (options.trackChanges === "always") {
-      previousMode = String(document.changeTrackingMode ?? "Off");
-      if (previousMode === "Off") {
-        document.changeTrackingMode = "TrackAll";
-        await context.sync();
-      }
-      trackedChange = true;
-    } else {
-      document.load("changeTrackingMode");
+  } finally {
+    if (previousMode === "Off") {
+      document.changeTrackingMode = "Off";
       await context.sync();
-      trackedChange = String(document.changeTrackingMode ?? "Off") !== "Off";
     }
-    let strategy: ApplyResult["strategy"] = "range";
-    try {
-      const perParagraph = await applyPerParagraph(context, target, suggestion);
-      if (perParagraph) {
-        strategy = "paragraphs";
-      } else if (suggestion.replacement.trim() === "") {
-        target.select("Select");
-        target.delete();
-      } else {
-        const inserted = target.insertText(suggestion.replacement, "Replace");
-        inserted.select("Select");
-      }
-      await context.sync();
-    } finally {
-      if (previousMode === "Off") {
-        document.changeTrackingMode = "Off";
-        await context.sync();
-      }
+  }
+  return [...deferred].map((target) => target.item);
+}
+
+/** -1: a precedes b; 1: a follows b; 0: they touch or overlap (or Word could not tell). */
+function relationOrder(relation: string): -1 | 0 | 1 {
+  switch (relation) {
+    case "Before":
+    case "AdjacentBefore":
+    case "Unrelated":
+      return -1;
+    case "After":
+    case "AdjacentAfter":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Search for every original at once: the simple ones (one paragraph, within
+ * Word's search-length limit) are queued and flushed in a single sync; the
+ * rest, and any case-sensitive misses, take the full per-anchor path.
+ */
+async function findRangesBatch(context: Word.RequestContext, originals: string[]): Promise<FoundRanges[]> {
+  const results: Array<FoundRanges | null> = originals.map(() => null);
+  const queued: Array<{ index: number; collection: Word.RangeCollection }> = [];
+  originals.forEach((original, index) => {
+    const normalizedText = normalizeWordText(original).trim();
+    const normalized = collapseWhitespace(normalizedText);
+    if (!normalized) {
+      results[index] = { ranges: [], strategy: "none" };
+      return;
     }
-    return { trackedChange, matches: found.ranges.length, matchIndex: index, strategy };
+    if (normalizedText.includes("\n") || normalized.length > WORD_SEARCH_MAX_CHARS) {
+      return;
+    }
+    const query = toWordSearchText(normalized);
+    if (!query) {
+      results[index] = { ranges: [], strategy: "search" };
+      return;
+    }
+    const collection = context.document.body.search(query, { matchCase: true, ignoreSpace: true, ignorePunct: false, matchWholeWord: false, matchWildcards: false });
+    collection.load("items");
+    queued.push({ index, collection });
   });
+  if (queued.length) {
+    try {
+      await context.sync();
+      for (const entry of queued) {
+        if (entry.collection.items.length) {
+          results[entry.index] = { ranges: entry.collection.items, strategy: "search" };
+        }
+      }
+    } catch (error) {
+      if (!isSearchStringError(error)) {
+        throw error;
+      }
+      // One rejected query fails the whole batch; each falls back below.
+    }
+  }
+  for (let index = 0; index < originals.length; index += 1) {
+    if (!results[index]) {
+      results[index] = await findRanges(context, originals[index]);
+    }
+  }
+  return results as FoundRanges[];
 }
 
 /**

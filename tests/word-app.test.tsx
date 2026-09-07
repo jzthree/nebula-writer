@@ -422,6 +422,7 @@ describe("Word task pane", () => {
     expect(screen.getByText("3 pending")).toBeInTheDocument();
 
     expect(screen.getByLabelText("Apply all 2 in this reply")).toBeInTheDocument();
+    const runsBefore = mock.runCount;
     fireEvent.click(screen.getByLabelText("Apply all 2 in Significance"));
     await waitFor(() => expect(mock.trackedChanges.length).toBe(2), { timeout: 8_000 });
     expect(mock.text).toContain(REPLACEMENT);
@@ -429,6 +430,8 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.getByText(/Applied 2 suggestions as tracked changes/)).toBeInTheDocument());
     expect(screen.getByText("1 pending")).toBeInTheDocument();
     expect(captured.statusUpdates.filter((update) => update.status === "accepted").length).toBe(2);
+    // One batch: a read before, the batch itself, a read after (plus a focus read), not a full cycle per suggestion.
+    expect(mock.runCount - runsBefore).toBeLessThanOrEqual(6);
   });
 
   it("re-reads the document when Word changes outside the pane", async () => {

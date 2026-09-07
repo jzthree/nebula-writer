@@ -60,6 +60,12 @@ and Codex resumes its recorded thread (`codex exec resume`), so "continue" or
 made on each suggestion. The thread lives until you start a new conversation
 or clear the pane.
 
+Applying is batched: a card's Apply, and "Apply all" for a section or a
+reply, run as one exchange with Word (every search queued into one sync, one
+Track Changes toggle, every replacement queued into one sync, from the end of
+the document backwards), followed by a single re-read. A change that
+overlaps another in the same batch is retried against the updated text.
+
 Two buttons sit above the transcript once it has turns. **Start a new
 conversation** forgets the provider session and the earlier turns (the AI
 starts fresh) but keeps pending suggestion cards — they are carried into the

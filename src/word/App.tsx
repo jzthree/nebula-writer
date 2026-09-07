@@ -32,7 +32,7 @@ import {
   type WordFocusState
 } from "./wordContext";
 import {
-  applySuggestion,
+  applySuggestions,
   chooseMatchIndex,
   commentSuggestion,
   detectCapabilities,
@@ -840,28 +840,56 @@ export function App() {
     }
   }, []);
 
-  /** Apply one suggestion inside an already-running busy scope; returns true on success. */
-  const applyOne = useCallback(async (suggestion: AiSuggestion, snap: WordDocumentSnapshot): Promise<boolean> => {
-    try {
-      const state = await ensureMatches(suggestion, snap, true);
-      if (!state.matches) {
-        return false;
+  /**
+   * Apply suggestions inside an already-running busy scope, all in one batch
+   * (a few round trips into Word, whatever the count). Cards are updated per
+   * outcome; decisions are recorded in parallel afterwards.
+   */
+  const applyMany = useCallback(async (group: AiSuggestion[], snap: WordDocumentSnapshot): Promise<{ applied: AiSuggestion[]; failed: Array<{ suggestion: AiSuggestion; error: string }> }> => {
+    const items = group.map((suggestion) => {
+      const state = cardsRef.current[suggestion.id];
+      return {
+        id: suggestion.id,
+        suggestion,
+        matchIndex: state && state.matches !== null ? state.matchIndex : null,
+        preferredOffset: preferredOffset(suggestion, snap)
+      };
+    });
+    const outcomes = await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges });
+    const byId = new Map(group.map((suggestion) => [suggestion.id, suggestion]));
+    const applied: Array<{ suggestion: AiSuggestion; trackedChange: boolean }> = [];
+    const failed: Array<{ suggestion: AiSuggestion; error: string }> = [];
+    for (const outcome of outcomes) {
+      const suggestion = byId.get(outcome.id);
+      if (!suggestion) {
+        continue;
       }
-      const result = await applySuggestion(snap, suggestion, { matchIndex: state.matchIndex, trackChanges: settingsRef.current.trackChanges });
-      patchCard(suggestion.id, { outcome: "applied", detail: result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)", error: null });
-      await recordDecision(suggestion, "accepted", result.trackedChange ? "Applied in Word as a tracked change" : "Applied in Word");
+      if (outcome.ok) {
+        patchCard(suggestion.id, {
+          outcome: "applied",
+          detail: outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)",
+          error: null,
+          matches: outcome.result.matches,
+          matchIndex: outcome.result.matchIndex
+        });
+        applied.push({ suggestion, trackedChange: outcome.result.trackedChange });
+      } else {
+        patchCard(suggestion.id, { error: outcome.error });
+        failed.push({ suggestion, error: outcome.error });
+      }
+    }
+    if (applied.length) {
       lastPushedTextRef.current = null;
+      const appliedIds = new Set(applied.map((entry) => entry.suggestion.id));
       for (const other of suggestionsRef.current) {
-        if (other.id !== suggestion.id && !cardsRef.current[other.id]?.outcome) {
+        if (!appliedIds.has(other.id) && !cardsRef.current[other.id]?.outcome) {
           patchCard(other.id, { matches: null });
         }
       }
-      return true;
-    } catch (error) {
-      patchCard(suggestion.id, { error: errorMessage(error) });
-      return false;
+      await Promise.all(applied.map((entry) => recordDecision(entry.suggestion, "accepted", entry.trackedChange ? "Applied in Word as a tracked change" : "Applied in Word")));
     }
-  }, [ensureMatches, patchCard, recordDecision]);
+    return { applied: applied.map((entry) => entry.suggestion), failed };
+  }, [patchCard, preferredOffset, recordDecision]);
 
   const apply = useCallback((suggestion: AiSuggestion) => {
     const snap = snapshotRef.current;
@@ -870,49 +898,40 @@ export function App() {
     }
     setActiveId(suggestion.id);
     void runBusy("Applying in Word…", async () => {
-      const ok = await applyOne(suggestion, snap);
-      if (ok) {
+      const { applied, failed } = await applyMany([suggestion], snap);
+      if (applied.length) {
         const detail = cardsRef.current[suggestion.id]?.detail ?? "";
         showNotice("success", detail.startsWith("tracked") ? "Applied as a tracked change — review it in Word." : "Applied directly (Word's Track Changes is off).");
       } else {
-        showNotice("error", cardsRef.current[suggestion.id]?.error ?? "Could not apply this suggestion.");
+        showNotice("error", failed[0]?.error ?? "Could not apply this suggestion.");
       }
       await refreshSnapshot();
     });
-  }, [applyOne, hostStatus, refreshSnapshot, runBusy, showNotice]);
+  }, [applyMany, hostStatus, refreshSnapshot, runBusy, showNotice]);
 
-  /** Apply a whole section of the reply, one suggestion after another (each re-reads Word before the next). */
+  /** Apply a whole section of the reply as one batch: one read of Word before, one after. */
   const applyGroup = useCallback((group: AiSuggestion[]) => {
     if (hostStatus !== "ready" || !group.length) {
       return;
     }
-    void runBusy(`Applying 1 of ${group.length}…`, async () => {
-      let applied = 0;
-      const failed: string[] = [];
-      for (let index = 0; index < group.length; index += 1) {
-        const suggestion = group[index];
-        if (cardsRef.current[suggestion.id]?.outcome || suggestion.commentOnly) {
-          continue;
-        }
-        setBusyLabel(`Applying ${index + 1} of ${group.length}…`);
-        setActiveId(suggestion.id);
-        const snap = (await refreshSnapshot()) ?? snapshotRef.current;
-        if (!snap) {
-          failed.push(suggestion.title);
-          continue;
-        }
-        if (await applyOne(suggestion, snap)) {
-          applied += 1;
-        } else {
-          failed.push(suggestion.title);
-        }
+    const candidates = group.filter((suggestion) => !cardsRef.current[suggestion.id]?.outcome && !suggestion.commentOnly);
+    if (!candidates.length) {
+      return;
+    }
+    void runBusy(`Applying ${candidates.length} change${candidates.length === 1 ? "" : "s"} in Word…`, async () => {
+      const snap = (await refreshSnapshot()) ?? snapshotRef.current;
+      if (!snap) {
+        showNotice("error", "Could not read the document from Word.");
+        return;
       }
+      setActiveId(candidates[0].id);
+      const { applied, failed } = await applyMany(candidates, snap);
       await refreshSnapshot();
       showNotice(failed.length ? "error" : "success", failed.length
-        ? `Applied ${applied} of ${group.length}; could not apply: ${failed.join(", ")}.`
-        : `Applied ${applied} suggestion${applied === 1 ? "" : "s"} as ${settingsRef.current.trackChanges === "always" ? "tracked changes" : "edits"}.`);
+        ? `Applied ${applied.length} of ${candidates.length}; could not apply: ${failed.map((entry) => entry.suggestion.title).join(", ")}.`
+        : `Applied ${applied.length} suggestion${applied.length === 1 ? "" : "s"} as ${settingsRef.current.trackChanges === "always" ? "tracked changes" : "edits"}.`);
     });
-  }, [applyOne, hostStatus, refreshSnapshot, runBusy, showNotice]);
+  }, [applyMany, hostStatus, refreshSnapshot, runBusy, showNotice]);
 
   const comment = useCallback((suggestion: AiSuggestion) => {
     const snap = snapshotRef.current;

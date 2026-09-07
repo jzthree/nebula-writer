@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockWordHost, sampleGrantDocument } from "../src/word/mockOffice";
 import {
   applySuggestion,
+  applySuggestions,
   chooseMatchIndex,
   commentSuggestion,
   detectCapabilities,
@@ -275,3 +276,59 @@ describe("word host: anchors that span paragraphs", () => {
   });
 });
 
+describe("word host: batch apply", () => {
+  function uniqueSentence(index: number): string {
+    const sentence = mock.paragraphs[index].text.split(/(?<=\.)\s/)[0];
+    expect(mock.text.indexOf(sentence)).toBe(mock.text.lastIndexOf(sentence));
+    return sentence;
+  }
+
+  it("applies several suggestions in one Word.run, last-in-document first, and selects the earliest", async () => {
+    const { snapshot } = await boot();
+    const items = [3, 5, 7].map((index, order) => {
+      const original = uniqueSentence(index);
+      return { id: `s${order}`, suggestion: { original, replacement: `Revised sentence ${order}.` }, matchIndex: 0 };
+    });
+    const runsBefore = mock.runCount;
+    const outcomes = await applySuggestions(snapshot, items, { trackChanges: "always" });
+    expect(mock.runCount - runsBefore).toBe(1);
+    expect(outcomes.every((outcome) => outcome.ok)).toBe(true);
+    expect(mock.trackedChanges.map((change) => change.replacement)).toEqual(["Revised sentence 2.", "Revised sentence 1.", "Revised sentence 0."]);
+    for (const item of items) {
+      expect(mock.text).not.toContain(item.suggestion.original);
+      expect(mock.text).toContain(item.suggestion.replacement);
+    }
+    expect(mock.changeTrackingMode).toBe("Off");
+    expect(mock.text.slice(mock.selection.from, mock.selection.to)).toBe("Revised sentence 0.");
+  });
+
+  it("defers a change that overlaps an earlier one to a later pass and reports it when the text is gone", async () => {
+    const { snapshot } = await boot();
+    const sentence = uniqueSentence(3);
+    const words = sentence.split(" ");
+    const first = words.slice(0, 4).join(" ");
+    const overlapping = words.slice(2, 6).join(" ");
+    const outcomes = await applySuggestions(snapshot, [
+      { id: "a", suggestion: { original: first, replacement: "FIRST" }, matchIndex: 0 },
+      { id: "b", suggestion: { original: overlapping, replacement: "SECOND" }, matchIndex: 0 }
+    ], { trackChanges: "word" });
+    expect(outcomes[0]).toMatchObject({ id: "a", ok: true });
+    expect(outcomes[1].ok).toBe(false);
+    if (!outcomes[1].ok) {
+      expect(outcomes[1].error).toContain("could not find");
+    }
+    expect(mock.text).toContain("FIRST");
+    expect(mock.text).not.toContain("SECOND");
+  });
+
+  it("reports a stale target without touching the document", async () => {
+    const { snapshot } = await boot();
+    const original = uniqueSentence(5);
+    const index = mock.text.indexOf(original);
+    mock.replaceRange(index, index + original.length, "Something else entirely.");
+    const [outcome] = await applySuggestions(snapshot, [{ id: "x", suggestion: { original, replacement: "Nope" }, matchIndex: 0 }], { trackChanges: "always" });
+    expect(outcome.ok).toBe(false);
+    expect(mock.edits.length).toBe(1);
+    expect(mock.changeTrackingMode).toBe("Off");
+  });
+});
