@@ -519,7 +519,7 @@ export class CodexStreamParser {
   private sessionId: string | null = null;
   private sawResult = false;
   private ok = false;
-  private readonly seenSearches = new Set<string>();
+  private readonly seenSearches = new Map<string, "start" | "query">();
 
   consume(line: string): AgentEvent[] {
     const trimmed = line.trim();
@@ -588,14 +588,17 @@ export class CodexStreamParser {
       return [{ kind: "tool", tool: stripMcpPrefix(name), summary: summarizeToolInput(name, item.arguments ?? item) }];
     }
     if (item.type === "web_search") {
-      // Emitted on start when Codex reports one, else on completion — once per item.
+      // Codex announces the search on start with an empty query and fills the
+      // query in on completion: report once at start, and again with the query
+      // when it becomes known (never twice with the same information).
       const id = typeof item.id === "string" ? item.id : `${item.type}:${JSON.stringify(item.query ?? "")}`;
-      if (this.seenSearches.has(id)) {
+      const query = typeof item.query === "string" ? item.query.trim() : "";
+      const seen = this.seenSearches.get(id);
+      if (seen === "query" || (seen === "start" && !query)) {
         return [];
       }
-      this.seenSearches.add(id);
-      const query = typeof item.query === "string" ? item.query.trim() : "";
-      return [{ kind: "tool", tool: "web_search", summary: query ? `Searching the web for "${query.length > 80 ? `${query.slice(0, 77)}…` : query}"` : "Searching the web" }];
+      this.seenSearches.set(id, query ? "query" : "start");
+      return [{ kind: "tool", tool: "web_search", summary: query ? `Searched the web for "${query.length > 80 ? `${query.slice(0, 77)}…` : query}"` : "Searching the web" }];
     }
     return [];
   }

@@ -47,10 +47,13 @@ describe("live progress text", () => {
     expect(parser.consume(JSON.stringify({ type: "item.completed", item: { type: "reasoning" } }))).toEqual([]);
   });
 
-  it("reports Codex web searches as tool activity, once per search", () => {
+  it("reports Codex web searches as tool activity: announced on start, named on completion", () => {
     const parser = new CodexStreamParser();
-    expect(parser.consume(JSON.stringify({ type: "item.started", item: { id: "ws1", type: "web_search", query: "NIH Pioneer Award criteria" } })))
-      .toEqual([{ kind: "tool", tool: "web_search", summary: 'Searching the web for "NIH Pioneer Award criteria"' }]);
+    // Real codex-cli 0.153 shape: the query is empty on item.started and filled in on item.completed.
+    expect(parser.consume(JSON.stringify({ type: "item.started", item: { id: "ws1", type: "web_search", query: "", action: { type: "other" } } })))
+      .toEqual([{ kind: "tool", tool: "web_search", summary: "Searching the web" }]);
+    expect(parser.consume(JSON.stringify({ type: "item.completed", item: { id: "ws1", type: "web_search", query: "NIH Pioneer Award criteria" } })))
+      .toEqual([{ kind: "tool", tool: "web_search", summary: 'Searched the web for "NIH Pioneer Award criteria"' }]);
     expect(parser.consume(JSON.stringify({ type: "item.completed", item: { id: "ws1", type: "web_search", query: "NIH Pioneer Award criteria" } }))).toEqual([]);
     expect(parser.consume(JSON.stringify({ type: "item.completed", item: { type: "web_search" } }))).toEqual([{ kind: "tool", tool: "web_search", summary: "Searching the web" }]);
   });
