@@ -243,6 +243,29 @@ function sharedSuggestionsAreAdditionsOnly(sharedSuggestions: AiSuggestion[], lo
   return localSuggestions.every((suggestion) => sharedStatuses.get(suggestion.id) === suggestion.status);
 }
 
+/** The original and revised text of a decided suggestion, as the review card showed it. */
+function DecidedChange({ suggestion }: { suggestion: AiSuggestion }) {
+  const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
+  return (
+    <div className="review-activity-change">
+      {segments ? (
+        <p className="diff-inline">
+          {segments.map((segment, index) => segment.type === "same"
+            ? <span key={index}>{segment.text}</span>
+            : segment.type === "del"
+              ? <del key={index}>{segment.text}</del>
+              : <ins key={index}>{segment.text}</ins>)}
+        </p>
+      ) : null}
+      <div className="diff-block">
+        <p className="original">{suggestion.original}</p>
+        {suggestion.commentOnly ? null : <p className="replacement">{suggestion.replacement || "(deleted)"}</p>}
+      </div>
+      {suggestion.rationale ? <p className="rationale">{suggestion.rationale}</p> : null}
+    </div>
+  );
+}
+
 function createSystemMessage(content = readyMessage): ChatMessage {
   return {
     id: `system-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2475,6 +2498,7 @@ export function App() {
       .slice(0, 12)
       .map((suggestion) => ({
         id: suggestion.id,
+        suggestion,
         text: `${suggestion.decidedBy ?? "Someone"} ${suggestion.status} "${suggestion.title}"`,
         time: suggestion.decidedAt ? formatDecisionTime(suggestion.decidedAt) : ""
       }));
@@ -7142,8 +7166,15 @@ export function App() {
                   <ul id="review-activity-list" className="review-activity-list">
                     {reviewActivity.map((entry) => (
                       <li key={entry.id}>
-                        <span>{entry.text}</span>
-                        {entry.time ? <small>{entry.time}</small> : null}
+                        {/* The decision keeps its full proposed change on hand: the
+                            author often edits after accepting and wants to look back. */}
+                        <details className="review-activity-entry">
+                          <summary>
+                            <span>{entry.text}</span>
+                            {entry.time ? <small>{entry.time}</small> : null}
+                          </summary>
+                          <DecidedChange suggestion={entry.suggestion} />
+                        </details>
                       </li>
                     ))}
                   </ul>

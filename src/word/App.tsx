@@ -786,6 +786,18 @@ export function App() {
     if (!snap || hostStatus !== "ready") {
       return;
     }
+    if (cardsRef.current[suggestion.id]?.outcome === "applied" && !suggestion.commentOnly && suggestion.replacement.trim()) {
+      // Once applied, the original is gone from Word: jump to the revised text.
+      void runBusy("Locating in Word…", async () => {
+        try {
+          await locateSuggestion(snap, { original: suggestion.replacement }, 0);
+          patchCard(suggestion.id, { error: null });
+        } catch (error) {
+          patchCard(suggestion.id, { error: errorMessage(error) });
+        }
+      });
+      return;
+    }
     void runBusy("Locating in Word…", async () => {
       try {
         const state = await ensureMatches(suggestion, snap);

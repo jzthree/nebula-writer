@@ -246,6 +246,18 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
     await waitFor(() => expect(captured.statusUpdates).toEqual([{ id: "s-1", status: "accepted", note: "Applied in Word as a tracked change" }]));
     expect(screen.getByText("Nothing pending")).toBeInTheDocument();
+
+    // The applied card still holds the full proposed change for later reference.
+    expect(screen.queryByText(REPLACEMENT)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Show change/ }));
+    expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Copy original/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Copy revised/ })).toBeInTheDocument();
+    const handledCard = screen.getByLabelText("Handled suggestion: Tighten the opening claim");
+    expect(handledCard.textContent).toContain("actually");
+    expect(handledCard.textContent).toContain("key determinant");
+    fireEvent.click(screen.getByRole("button", { name: /Hide change/ }));
+    expect(screen.queryByRole("button", { name: /Copy original/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Applied as a tracked change/)).toBeInTheDocument();
   });
 

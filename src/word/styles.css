@@ -605,3 +605,22 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   opacity: 0.65;
   font-variant-numeric: tabular-nums;
 }
+
+/* Proposed change: full text; very long changes start folded */
+.wp-change.clamped { max-height: 11.5em; overflow: hidden; position: relative; }
+.wp-change.clamped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.6em;
+  background: linear-gradient(to bottom, transparent, var(--paper));
+  pointer-events: none;
+}
+.wp-card.handled .wp-change.clamped::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
+.wp-change-toggle { align-self: flex-start; }
+.wp-card.handled.open { padding: 8px 10px; }
+.wp-card.handled .wp-card-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.wp-card.handled .wp-card-outcome { flex-wrap: wrap; }
+.wp-outcome-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }

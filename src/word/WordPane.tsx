@@ -17,6 +17,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Crosshair,
   Eye,
   FileText,
@@ -925,20 +926,47 @@ function SuggestionCard(props: {
 }) {
   const { suggestion, state } = props;
   const handled = state.outcome !== null;
-  const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
   const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
+  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<"original" | "revised" | null>(null);
+  const copy = async (which: "original" | "revised") => {
+    const ok = await copyText(which === "original" ? suggestion.original : suggestion.replacement);
+    setCopied(ok ? which : null);
+    window.setTimeout(() => setCopied(null), 1500);
+  };
   if (handled) {
+    // The record of what was proposed stays available after the decision —
+    // the author often keeps editing after accepting and wants to look back.
     return (
-      <li className="wp-card handled" data-suggestion-id={suggestion.id} aria-label={`Handled suggestion: ${suggestion.title || "Suggested revision"}`}>
+      <li className={`wp-card handled ${open ? "open" : ""}`} data-suggestion-id={suggestion.id} aria-label={`Handled suggestion: ${suggestion.title || "Suggested revision"}`}>
         <div className="wp-card-outcome">
           <span>
             {state.outcome === "applied" ? <Check size={12} aria-hidden="true" /> : state.outcome === "commented" ? <MessageSquarePlus size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />}
             <strong>{suggestion.title || "Suggested revision"}</strong> — {outcomeLabel(state.outcome)}{state.detail ? ` · ${state.detail}` : ""}
           </span>
-          {state.outcome === "dismissed" ? (
-            <button type="button" className="wp-text-button" onClick={props.onRestore} disabled={props.busy}><RotateCcw size={12} aria-hidden="true" /> Restore</button>
-          ) : null}
+          <span className="wp-outcome-actions">
+            {state.outcome === "dismissed" ? (
+              <button type="button" className="wp-text-button" onClick={props.onRestore} disabled={props.busy}><RotateCcw size={12} aria-hidden="true" /> Restore</button>
+            ) : null}
+            <button type="button" className="wp-text-button" onClick={() => setOpen((current) => !current)} aria-expanded={open} title={open ? "Hide the proposed change" : "Show what was proposed: the original and the revised text"}>
+              {open ? <ChevronLeft size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />} {open ? "Hide change" : "Show change"}
+            </button>
+          </span>
         </div>
+        {open ? (
+          <div className="wp-card-body">
+            <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
+            <p className="wp-rationale">{tidy(suggestion.rationale)}</p>
+            <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
+              <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title={state.outcome === "applied" && !deletion ? "Select the revised text in Word" : "Select this passage in Word"}><Crosshair size={13} aria-hidden="true" /> Locate</button>
+              <button type="button" onClick={() => void copy("original")} title="Copy the original text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "original" ? "Copied" : "Copy original"}</button>
+              {suggestion.commentOnly || deletion ? null : (
+                <button type="button" onClick={() => void copy("revised")} title="Copy the revised text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "revised" ? "Copied" : "Copy revised"}</button>
+              )}
+            </div>
+          </div>
+        ) : null}
       </li>
     );
   }
@@ -974,25 +1002,8 @@ function SuggestionCard(props: {
           </span>
         ) : state.matches === 0 ? <span className="tag warn">not found in Word</span> : null}
       </p>
-      {suggestion.commentOnly ? (
-        <blockquote className="wp-quote">{withParagraphBreaks(compact(suggestion.original, 320))}</blockquote>
-      ) : segments ? (
-        <p className="wp-diff">
-          {segments.map((segment, index) => (
-            segment.type === "same"
-              ? <span key={index}>{withParagraphBreaks(segment.text)}</span>
-              : segment.type === "del"
-                ? <del key={index}>{withParagraphBreaks(segment.text)}</del>
-                : <ins key={index}>{withParagraphBreaks(segment.text)}</ins>
-          ))}
-        </p>
-      ) : (
-        <div className="wp-diff-blocks">
-          <p className="original"><del>{withParagraphBreaks(compact(suggestion.original, 320))}</del></p>
-          {deletion ? <p className="replacement quiet">(delete this text)</p> : <p className="replacement"><ins>{withParagraphBreaks(compact(suggestion.replacement, 320))}</ins></p>}
-        </div>
-      )}
-      <p className="wp-rationale">{compact(suggestion.rationale, 360)}</p>
+      <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
+      <p className="wp-rationale">{tidy(suggestion.rationale)}</p>
       {state.error ? <p className="wp-card-error" role="alert"><AlertTriangle size={12} aria-hidden="true" /> {state.error}</p> : null}
       <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
         <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title="Select this passage in Word"><Crosshair size={13} aria-hidden="true" /> Locate</button>
@@ -1049,9 +1060,75 @@ function confidenceLabel(confidence: number): string {
 }
 
 /** Collapse runs of spaces but keep paragraph breaks, which the card shows as ¶. */
-function compact(text: string, maxLength: number): string {
-  const normalized = text.replace(/\r\n?/g, "\n").replace(/[^\S\n]+/g, " ").replace(/\n+/g, "\n").trim();
-  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+/** Whitespace-normalised, never truncated: the card is where the whole proposed change is read. */
+function tidy(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/[^\S\n]+/g, " ").replace(/\n+/g, "\n").trim();
+}
+
+/** Changes longer than this start folded, with a control that reveals all of it. */
+const LONG_CHANGE_CHARS = 900;
+
+/** The proposed change itself: an inline word diff when one reads well, else the original and the revised text in full. */
+function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; onToggle: () => void }) {
+  const { suggestion } = props;
+  const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
+  const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
+  const length = suggestion.original.length + suggestion.replacement.length;
+  const long = length > LONG_CHANGE_CHARS;
+  const clamped = long && !props.expanded;
+  const body = suggestion.commentOnly ? (
+    <blockquote className="wp-quote">{withParagraphBreaks(tidy(suggestion.original))}</blockquote>
+  ) : segments ? (
+    <p className="wp-diff">
+      {segments.map((segment, index) => (
+        segment.type === "same"
+          ? <span key={index}>{withParagraphBreaks(segment.text)}</span>
+          : segment.type === "del"
+            ? <del key={index}>{withParagraphBreaks(segment.text)}</del>
+            : <ins key={index}>{withParagraphBreaks(segment.text)}</ins>
+      ))}
+    </p>
+  ) : (
+    <div className="wp-diff-blocks">
+      <p className="original"><del>{withParagraphBreaks(tidy(suggestion.original))}</del></p>
+      {deletion ? <p className="replacement quiet">(delete this text)</p> : <p className="replacement"><ins>{withParagraphBreaks(tidy(suggestion.replacement))}</ins></p>}
+    </div>
+  );
+  return (
+    <>
+      <div className={`wp-change ${clamped ? "clamped" : ""}`}>{body}</div>
+      {long ? (
+        <button type="button" className="wp-text-button wp-change-toggle" onClick={(event) => { event.stopPropagation(); props.onToggle(); }} aria-expanded={props.expanded}>
+          {props.expanded ? "Show less" : `Show the full change (${length.toLocaleString()} characters)`}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the selection-based copy (older webviews).
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Render "\n" inside suggestion text as a visible paragraph mark plus a line break. */

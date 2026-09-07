@@ -9,7 +9,9 @@ export type DiffSegment = { type: "same" | "del" | "ins"; text: string };
 export function wordDiffSegments(original: string, replacement: string): DiffSegment[] | null {
   const a = original.split(/(\s+)/).filter((part) => part !== "");
   const b = replacement.split(/(\s+)/).filter((part) => part !== "");
-  if (a.length + b.length > 600) {
+  // LCS is quadratic in tokens; 3,000 tokens (a couple of pages) costs a few
+  // milliseconds and covers the longest suggestions the engines produce.
+  if (a.length + b.length > 3000) {
     return null;
   }
   const rows = a.length + 1;
