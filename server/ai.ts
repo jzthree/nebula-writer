@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse } from "../src/shared";
@@ -44,12 +44,21 @@ interface CliPromptOptions {
 /** Live events from a one-shot CLI run: the agent stream events plus how much of the reply has streamed so far. */
 export type CliStreamEvent = AgentEvent | { kind: "output"; chars: number };
 
+export interface CliTranscript {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
 interface AiRunOptions {
   signal?: AbortSignal;
   /** Called with each complete stdout line as it arrives (JSONL streaming). */
   onStdoutLine?: (line: string) => void;
   /** Receives parsed stream events while the provider is still running. */
   onStreamEvent?: (event: CliStreamEvent) => void;
+  /** Called once with everything the process wrote, when it exits (diagnostics). */
+  onTranscript?: (transcript: CliTranscript) => void;
 }
 
 export interface AiProgressSnapshot {
@@ -652,9 +661,72 @@ function cliFailureGuidance(rawMessage: string): string {
     return " The CLI executable (or its `node` runtime) was not found on PATH. Install it, or point WRITER_CODEX_PATH / WRITER_CLAUDE_PATH at the binary, then restart the sidecar.";
   }
   if (/exited with status \d+|terminated by signal/i.test(rawMessage)) {
-    return " Run the provider smoke test (the activity button next to the provider picker) to diagnose, and check the sidecar terminal for the full CLI output.";
+    return ` Run the provider smoke test (the activity button next to the provider picker) to diagnose, and read the full CLI transcript${lastTranscriptPath ? ` at ${lastTranscriptPath}` : ` under ${cliTranscriptDir() ?? "~/.nebula-writer/cli-transcripts"}`}.`;
   }
   return "";
+}
+
+/* ------------------------- CLI transcripts (diagnostics) ------------------------- */
+
+// Every one-shot run leaves its prompt and raw output on disk so a bad reply can
+// be inspected after the fact ("why did I only get one sentence?"). Local only,
+// last N runs, off with WRITER_CLI_TRANSCRIPTS=off.
+const CLI_TRANSCRIPT_KEEP = 30;
+const CLI_TRANSCRIPT_SECTION_LIMIT = 2_500_000;
+let lastTranscriptPath: string | null = null;
+
+export function cliTranscriptDir(): string | null {
+  const configured = process.env.WRITER_CLI_TRANSCRIPTS?.trim();
+  if (configured && /^(0|off|no|false|none)$/i.test(configured)) {
+    return null;
+  }
+  return configured || join(homedir(), ".nebula-writer", "cli-transcripts");
+}
+
+export function lastCliTranscriptPath(): string | null {
+  return lastTranscriptPath;
+}
+
+function recordCliTranscript(provider: CliProviderName, prompt: string, transcript: CliTranscript): void {
+  const dir = cliTranscriptDir();
+  if (!dir) {
+    return;
+  }
+  try {
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = join(dir, `${stamp}-${provider}.log`);
+    const clipSection = (text: string) => (text.length > CLI_TRANSCRIPT_SECTION_LIMIT ? `${text.slice(0, CLI_TRANSCRIPT_SECTION_LIMIT)}\n... truncated ...` : text);
+    writeFileSync(
+      path,
+      [
+        `# Nebula Writer CLI transcript — ${provider} — ${new Date().toISOString()}`,
+        `# exit code: ${transcript.code === null ? "none" : transcript.code}${transcript.signal ? ` (signal ${transcript.signal})` : ""}`,
+        "",
+        "## prompt",
+        clipSection(prompt),
+        "",
+        "## stdout",
+        clipSection(transcript.stdout),
+        "",
+        "## stderr",
+        clipSection(transcript.stderr),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    lastTranscriptPath = path;
+    const stale = readdirSync(dir)
+      .filter((name) => name.endsWith(".log"))
+      .map((name) => ({ name, mtime: statSync(join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(CLI_TRANSCRIPT_KEEP);
+    for (const entry of stale) {
+      unlinkSync(join(dir, entry.name));
+    }
+  } catch {
+    // Diagnostics are best-effort.
+  }
 }
 
 export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {}): string {
@@ -664,6 +736,8 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "You are an editorial assistant embedded in a DOCX-compatible writing tool.",
     "Return strict JSON only. The local CLI will validate the final answer against a JSON schema.",
     "Do not wrap the JSON in Markdown.",
+    "This is a single turn and your reply is final: deliver the complete answer now. Never reply with a plan, a preamble, or a promise of what you will do next.",
+    "If the instruction asks a question or for an assessment (a review, a score, a judgement), answer it fully in message — several paragraphs with `## ` sections are welcome — and add suggestions only where a concrete edit follows from the answer.",
     "Every suggestion must use exact text from the provided Text block.",
     "Set original to a verbatim substring of the Text block. Do not paraphrase original.",
     "When a Document context block is present, use it to understand the Text block in the context of the whole document — answer questions and judge consistency from it — but original must still quote the Text block only.",
@@ -924,19 +998,40 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   }
   const command = resolvedCommand.command;
   const schemaFile = provider === "codex" ? writeCliSchemaFile() : null;
-  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions);
+  // Codex writes its final agent message to this file: the authoritative
+  // answer even when earlier (schema-shaped) preambles appeared in the stream.
+  const lastMessagePath = schemaFile ? join(schemaFile.dir, "last-message.txt") : null;
+  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined);
   const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
-  const runOptions: AiRunOptions = observer ? { ...options, onStdoutLine: observer.consumeLine } : options;
+  const runOptions: AiRunOptions = {
+    ...options,
+    ...(observer ? { onStdoutLine: observer.consumeLine } : {}),
+    onTranscript: (transcript) => {
+      options.onTranscript?.(transcript);
+      recordCliTranscript(provider, prompt, transcript);
+    }
+  };
+  const preferLastMessage = (output: string): string => {
+    if (!lastMessagePath) {
+      return output;
+    }
+    try {
+      const final = existsSync(lastMessagePath) ? readFileSync(lastMessagePath, "utf8").trim() : "";
+      return final && parseStructuredResponse(final) ? final : output;
+    } catch {
+      return output;
+    }
+  };
 
   try {
-    return await runCliCommand(provider, command, primaryArgs, prompt, runOptions);
+    return preferLastMessage(await runCliCommand(provider, command, primaryArgs, prompt, runOptions));
   } catch (error) {
     const compatibilityArgs = buildCliCompatibilityArgs(provider, primaryArgs, error);
     if (!compatibilityArgs) {
       throw observer?.describeFailure(error) ?? error;
     }
     try {
-      return await runCliCommand(provider, command, compatibilityArgs, prompt, runOptions);
+      return preferLastMessage(await runCliCommand(provider, command, compatibilityArgs, prompt, runOptions));
     } catch (fallbackError) {
       const initialMessage = error instanceof Error ? error.message : String(error);
       const described = observer?.describeFailure(fallbackError) ?? fallbackError;
@@ -1079,6 +1174,11 @@ function runCliCommand(
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
       }
+      try {
+        options.onTranscript?.({ stdout, stderr, code, signal });
+      } catch {
+        // Diagnostics must never affect the run.
+      }
       if (settled) {
         return;
       }
@@ -1177,6 +1277,9 @@ function buildCliCompatibilityArgs(provider: CliProviderName, args: string[], er
     if (text.includes("output-schema")) {
       codexArgs = removeFlagWithValue(codexArgs, "--output-schema") ?? codexArgs;
     }
+    if (text.includes("output-last-message")) {
+      codexArgs = removeFlagWithValue(codexArgs, "--output-last-message") ?? codexArgs;
+    }
     if (/--json\b/.test(text) && !text.includes("json-schema")) {
       codexArgs = removeFlag(codexArgs, "--json") ?? codexArgs;
     }
@@ -1274,7 +1377,7 @@ function selectCliFailureOutput(stdout: string, stderr: string): string {
   return stdout.trim();
 }
 
-export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string, modelOptions: AiModelOptions | null = null): string[] {
+export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string, modelOptions: AiModelOptions | null = null, codexLastMessagePath?: string): string[] {
   if (provider === "codex") {
     return [
       "exec",
@@ -1288,6 +1391,7 @@ export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string
       "--sandbox",
       "read-only",
       ...(codexSchemaPath ? ["--output-schema", codexSchemaPath] : []),
+      ...(codexLastMessagePath ? ["--output-last-message", codexLastMessagePath] : []),
       "-"
     ];
   }
@@ -1496,15 +1600,12 @@ type CliSuggestionPayload = {
 };
 
 function parseStructuredResponse(raw: string): CliSuggestionPayload | null {
-  try {
-    const direct = payloadFromValue(JSON.parse(extractJson(raw)));
-    if (direct) {
-      return direct;
-    }
-  } catch {
-    // Fall through to line-delimited JSON parsing.
-  }
-
+  // Streamed output can carry several payload-shaped messages: with a JSON
+  // output schema in force, a model's "I'll assess this…" preamble arrives as
+  // {message, suggestions: []} before the real answer. So scan every line,
+  // keep every payload, and let the final one win — preferring the last that
+  // actually carries suggestions over a trailing "done" note.
+  const payloads: CliSuggestionPayload[] = [];
   const streamedTextFragments: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const candidates = parseJsonLineCandidates(line);
@@ -1513,13 +1614,27 @@ function parseStructuredResponse(raw: string): CliSuggestionPayload | null {
         const parsedValue = JSON.parse(candidate);
         const payload = payloadFromValue(parsedValue);
         if (payload) {
-          return payload;
+          payloads.push(payload);
+          continue;
         }
         streamedTextFragments.push(...extractStreamedTextFragments(parsedValue));
       } catch {
         // Ignore malformed fragments from mixed output.
       }
     }
+  }
+  if (payloads.length) {
+    return selectFinalPayload(payloads);
+  }
+
+  // A single (possibly pretty-printed or fenced) JSON document.
+  try {
+    const direct = payloadFromValue(JSON.parse(extractJson(raw)));
+    if (direct) {
+      return direct;
+    }
+  } catch {
+    // Fall through to streamed fragments.
   }
 
   if (streamedTextFragments.length > 0) {
@@ -1530,6 +1645,12 @@ function parseStructuredResponse(raw: string): CliSuggestionPayload | null {
   }
 
   return null;
+}
+
+export function selectFinalPayload(payloads: CliSuggestionPayload[]): CliSuggestionPayload {
+  const withSuggestions = payloads.filter((payload) => Array.isArray(payload.suggestions) && payload.suggestions.length > 0);
+  const pool = withSuggestions.length ? withSuggestions : payloads;
+  return pool[pool.length - 1];
 }
 
 function parseJsonLineCandidates(line: string): string[] {

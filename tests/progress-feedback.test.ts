@@ -47,6 +47,14 @@ describe("live progress text", () => {
     expect(parser.consume(JSON.stringify({ type: "item.completed", item: { type: "reasoning" } }))).toEqual([]);
   });
 
+  it("reports Codex web searches as tool activity, once per search", () => {
+    const parser = new CodexStreamParser();
+    expect(parser.consume(JSON.stringify({ type: "item.started", item: { id: "ws1", type: "web_search", query: "NIH Pioneer Award criteria" } })))
+      .toEqual([{ kind: "tool", tool: "web_search", summary: 'Searching the web for "NIH Pioneer Award criteria"' }]);
+    expect(parser.consume(JSON.stringify({ type: "item.completed", item: { id: "ws1", type: "web_search", query: "NIH Pioneer Award criteria" } }))).toEqual([]);
+    expect(parser.consume(JSON.stringify({ type: "item.completed", item: { type: "web_search" } }))).toEqual([{ kind: "tool", tool: "web_search", summary: "Searching the web" }]);
+  });
+
   it("formats elapsed time the same way for the web pill and the Word pane", () => {
     const start = Date.parse("2026-09-06T10:00:00.000Z");
     expect(formatElapsedSince("2026-09-06T10:00:00.000Z", start + 42_000)).toBe("42s");

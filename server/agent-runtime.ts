@@ -519,6 +519,7 @@ export class CodexStreamParser {
   private sessionId: string | null = null;
   private sawResult = false;
   private ok = false;
+  private readonly seenSearches = new Set<string>();
 
   consume(line: string): AgentEvent[] {
     const trimmed = line.trim();
@@ -585,6 +586,16 @@ export class CodexStreamParser {
     if ((item.type === "mcp_tool_call" || item.type === "command_execution") && !completed) {
       const name = typeof item.tool === "string" ? item.tool : item.type === "command_execution" ? "command" : "tool";
       return [{ kind: "tool", tool: stripMcpPrefix(name), summary: summarizeToolInput(name, item.arguments ?? item) }];
+    }
+    if (item.type === "web_search") {
+      // Emitted on start when Codex reports one, else on completion — once per item.
+      const id = typeof item.id === "string" ? item.id : `${item.type}:${JSON.stringify(item.query ?? "")}`;
+      if (this.seenSearches.has(id)) {
+        return [];
+      }
+      this.seenSearches.add(id);
+      const query = typeof item.query === "string" ? item.query.trim() : "";
+      return [{ kind: "tool", tool: "web_search", summary: query ? `Searching the web for "${query.length > 80 ? `${query.slice(0, 77)}…` : query}"` : "Searching the web" }];
     }
     return [];
   }

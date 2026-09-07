@@ -17,3 +17,8 @@ if (typeof window !== "undefined") {
     }
   });
 }
+
+// Tests spawn fake CLIs constantly; keep their transcripts out of the
+// developer's real ~/.nebula-writer/cli-transcripts. Individual tests that
+// exercise transcript writing point this at a temp dir themselves.
+process.env.WRITER_CLI_TRANSCRIPTS ??= "off";

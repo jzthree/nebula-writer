@@ -51,6 +51,9 @@ exactly what was sent** — click *Sent …* to expand it:
 - Window state: caret paragraph, the heading above it, pages on screen,
   selection size, how many recent stops and headings were attached.
 
+If a reply looks truncated or odd, the raw CLI transcript for that run is in
+`~/.nebula-writer/cli-transcripts/` (prompt, stdout, stderr; last 30 runs).
+
 Two buttons sit above the transcript once it has turns. **Start a new
 conversation** forgets the provider session and the earlier turns (the AI
 starts fresh) but keeps pending suggestion cards — they are carried into the

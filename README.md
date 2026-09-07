@@ -72,6 +72,7 @@ WRITER_ALLOW_CLI=0 npm run sidecar
 | `WRITER_CLAUDE_PATH` | `claude` on `PATH` | Specific Claude Code executable |
 | `WRITER_CLI_TIMEOUT_MS` | unset (no timeout) | Optional cap on one provider request, in milliseconds (minimum 100). By default a request runs until it finishes or you press Stop; the UI shows what the CLI is doing and how long it has been running. |
 | `WRITER_ALLOW_CLI` | `1` | Set `0` to lock out local CLI execution |
+| `WRITER_CLI_TRANSCRIPTS` | `~/.nebula-writer/cli-transcripts` | Where each one-shot CLI run leaves its prompt and raw output (last 30 kept) so a bad reply can be inspected. `off` disables. |
 | `WRITER_SIDECAR_PORT` | `8787` | Sidecar port |
 | `WRITER_EMF_CONVERTER` | `emf2svg-conv` | Converter used to preview EMF images in the browser |
 | `WRITER_RECOVERY_MAX_AGE_DAYS` | `14` | Delete `tmp/` artifacts older than this |

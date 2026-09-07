@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, selectFinalPayload } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -1647,6 +1647,92 @@ describe("proposeChanges", () => {
     expect(response.message).toContain("Tightened one phrase.");
     expect(response.suggestions).toHaveLength(1);
     expect(response.suggestions[0].replacement).toBe("unique");
+  });
+
+  it("takes the final answer, not a schema-shaped preamble, from Codex event lines", () => {
+    const request: AiRequest = { ...baseRequest, provider: "codex", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null };
+    const preamble = { message: "I'll assess this as a Pioneer Award essay, check the review criteria, and propose edits.", suggestions: [] };
+    const answer = { message: "## Verdict\nNot yet a 1-2: the premise is asserted, not argued.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    const raw = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(preamble) } }),
+      JSON.stringify({ type: "item.completed", item: { type: "web_search", query: "NIH Pioneer Award review criteria" } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(answer) } }),
+      JSON.stringify({ type: "turn.completed", usage: {} })
+    ].join("\n");
+
+    const response = parseCliResponse("codex", raw, request);
+    expect(response.message).toContain("Not yet a 1-2");
+    expect(response.suggestions).toHaveLength(1);
+
+    // A pure question: the last payload wins even without suggestions.
+    const verdictOnly = { message: "I would score this a 3. To reach a 2, argue the premise.", suggestions: [] };
+    const questionRaw = [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(preamble) } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(verdictOnly) } })
+    ].join("\n");
+    expect(parseCliResponse("codex", questionRaw, request).message).toContain("score this a 3");
+    expect(selectFinalPayload([answer, { message: "Done.", suggestions: [] }])).toBe(answer);
+  });
+
+  it("leaves a transcript of each one-shot run for diagnosis", async () => {
+    const previousAllow = process.env.WRITER_ALLOW_CLI;
+    const previousOverride = process.env.WRITER_CODEX_PATH;
+    const previousTranscripts = process.env.WRITER_CLI_TRANSCRIPTS;
+    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-transcript-"));
+    const transcriptDir = join(tempDir, "transcripts");
+    const fakeCodexPath = join(tempDir, "fake-codex");
+    const payload = { message: "Tightened one phrase.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    writeFileSync(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('codex: warming up\\n');",
+        `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }))} + '\\n');`
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.WRITER_ALLOW_CLI = "1";
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
+    process.env.WRITER_CLI_TRANSCRIPTS = transcriptDir;
+    try {
+      const response = await proposeChanges({ ...baseRequest, provider: "codex", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null });
+      expect(response.suggestions).toHaveLength(1);
+      const files = readdirSync(transcriptDir).filter((name) => name.endsWith("-codex.log"));
+      expect(files).toHaveLength(1);
+      const transcript = readFileSync(join(transcriptDir, files[0]), "utf8");
+      expect(transcript).toContain("# exit code: 0");
+      expect(transcript).toContain("## prompt");
+      expect(transcript).toContain("The results were very unique.");
+      expect(transcript).toContain("## stdout");
+      expect(transcript).toContain("Tightened one phrase.");
+      expect(transcript).toContain("## stderr");
+      expect(transcript).toContain("codex: warming up");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      if (previousAllow === undefined) {
+        delete process.env.WRITER_ALLOW_CLI;
+      } else {
+        process.env.WRITER_ALLOW_CLI = previousAllow;
+      }
+      if (previousOverride === undefined) {
+        delete process.env.WRITER_CODEX_PATH;
+      } else {
+        process.env.WRITER_CODEX_PATH = previousOverride;
+      }
+      if (previousTranscripts === undefined) {
+        delete process.env.WRITER_CLI_TRANSCRIPTS;
+      } else {
+        process.env.WRITER_CLI_TRANSCRIPTS = previousTranscripts;
+      }
+    }
+  });
+
+  it("asks Codex to write its final message to a file and tolerates old builds without the flag", () => {
+    const args = buildCliArgs("codex", "/tmp/schema.json", null, "/tmp/last.txt");
+    expect(args.slice(-3)).toEqual(["--output-last-message", "/tmp/last.txt", "-"]);
+    expect(buildCliArgs("codex", "/tmp/schema.json")).not.toContain("--output-last-message");
   });
 
   it("parses the structured reply out of Claude stream-json event lines", () => {
