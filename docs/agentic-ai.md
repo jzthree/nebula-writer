@@ -35,8 +35,7 @@ The agent's whole world. Additions:
 - **`writer_stage_suggestions`** — the only write. Batch of
   `{ title, original, replacement, rationale, confidence, commentOnly? }`.
   The sidecar validates each item with the *existing* safety checks
-  (`containsAnchoredText`, `missingProtectedTokens`, whitespace-only diff
-  rejection) and answers per-item accept/reject with reasons. Accepted items
+  (`containsAnchoredText`, whitespace-only diff rejection) and answers per-item accept/reject with reasons. Accepted items
   land in the shared review queue tagged with the run id and `proposedBy`.
 - **`writer_read_attachment`** — windowed read of a file under
   `tmp/attachments/` (path-validated against that directory; DOCX
@@ -74,7 +73,8 @@ Port of slides-mcp's connector, adapted:
   handling all preserved. There is no timeout by default: a turn runs until it
   finishes or the user stops it (`WRITER_CLI_TIMEOUT_MS` remains an opt-in
   cap), and the one-shot pipeline now streams the same JSONL events as the
-  agentic engine (`codex exec --json`, `claude --output-format stream-json
+  agentic engine (`codex exec --json`, resumed per conversation with
+  `codex exec resume <thread>`; `claude --output-format stream-json
   --include-partial-messages`) so both the web busy pill and the Word pane
   show live stages — reading, thinking (with Codex's reasoning headline),
   writing with a running character count — plus elapsed time.
@@ -96,8 +96,7 @@ Port of slides-mcp's connector, adapted:
 Prompt template (ported from `buildAgentPrompt`): role, the tool workflow
 ("inspect before editing; stage in small batches; the staging tool tells you
 if an anchor missed — fix and retry"), selection scope when present,
-attachment names+paths, suggestion-quality guidance (protected tokens etc. —
-now also tool-enforced), and "finish with 1–2 plain sentences."
+attachment names+paths, suggestion-quality guidance (change only what was asked, etc.), and "finish with 1–2 plain sentences."
 
 ### 4. Progress and multi-tab UX
 
@@ -130,8 +129,7 @@ stream parsers, staging validation, prompt builder).
 ## Rollout
 
 1. **Tools** — writer-mcp additions + sidecar endpoints, unit-tested
-   (staging validation matrix: anchor miss, protected-token violation,
-   whitespace-only, happy path).
+   (staging validation matrix: anchor miss, whitespace-only, happy path).
 2. **Runner** — `agent-runtime.ts` + switch `/api/ai/suggest`, `/api/word/suggest`,
    bridge, smoke to it. `WRITER_AI_ENGINE=oneshot` env escape hatch, one
    release only.

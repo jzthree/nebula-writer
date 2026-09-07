@@ -75,7 +75,7 @@ describe("agent run context", () => {
         title: "Drops citation",
         original: "The sample size is adequate [@smith2020].",
         replacement: "The sample size is fine.",
-        rationale: "Should be rejected for dropping the citation."
+        rationale: "Staged like any other edit — the reviewer sees the dropped marker in the diff."
       },
       {
         title: "Whitespace no-op",
@@ -88,13 +88,13 @@ describe("agent run context", () => {
     expect(outcome.results[0].staged).toBe(true);
     expect(outcome.results[1].staged).toBe(false);
     expect(outcome.results[1].reason).toContain("not an exact substring");
-    expect(outcome.results[2].staged).toBe(false);
-    expect(outcome.results[2].reason).toContain("protected token");
+    expect(outcome.results[2].staged).toBe(true);
     expect(outcome.results[3].staged).toBe(false);
     expect(outcome.results[3].reason).toContain("whitespace");
-    expect(outcome.stagedCount).toBe(1);
-    expect(run.staged).toHaveLength(1);
+    expect(outcome.stagedCount).toBe(2);
+    expect(run.staged).toHaveLength(2);
     expect(run.staged[0]).toMatchObject({ status: "pending", target: "global" });
+    expect(run.staged[1]).toMatchObject({ title: "Drops citation", ref: "S2" });
     deleteAgentRun(run.id);
   });
 
@@ -171,40 +171,54 @@ describe("agent run context", () => {
     }
   });
 
-  it("still protects citations and formulas from deletion suggestions", () => {
+  it("does not second-guess edits to cited text — deleting a cited sentence is the reviewer's call", () => {
     const verdict = validateSuggestionCandidate(
       {
         title: "Delete cited sentence",
         original: "The sample size is adequate [@smith2020].",
         replacement: "",
-        rationale: "Trying to drop a citation."
+        rationale: "The claim is unsupported."
       },
       baseRequest
     );
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.reason).toContain("protected token");
+    expect(verdict.ok).toBe(true);
+    if (verdict.ok) {
+      expect(verdict.suggestion.replacement).toBe("");
     }
   });
 
-  it("validates selection-scoped anchors against the selection", () => {
+  it("treats the selection as the focus, not a fence: in-selection edits keep their range, document edits are accepted, unknown text is rejected", () => {
     const selectionRequest: AiRequest = {
       ...baseRequest,
       mode: "selection",
+      documentText: "The study will enroll participants. Formula $E=mc^2$ stays intact.",
       selection: { from: 0, to: 35, text: "The study will enroll participants." }
     };
-    const verdict = validateSuggestionCandidate(
-      {
-        title: "Outside selection",
-        original: "Formula $E=mc^2$ stays intact.",
-        replacement: "Formula $E=mc^2$ is kept.",
-        rationale: "Anchors outside the selection."
-      },
+    const outside = validateSuggestionCandidate(
+      { title: "Outside selection", original: "Formula $E=mc^2$ stays intact.", replacement: "Formula $E=mc^2$ is kept.", rationale: "Anchors outside the selection." },
       selectionRequest
     );
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.reason).toContain("selected text");
+    expect(outside.ok).toBe(true);
+    if (outside.ok) {
+      expect(outside.suggestion.target).toBe("global");
+      expect(outside.suggestion.range).toBeNull();
+    }
+    const inside = validateSuggestionCandidate(
+      { title: "Inside selection", original: "will enroll participants", replacement: "enrolls participants", rationale: "Tighter." },
+      selectionRequest
+    );
+    expect(inside.ok).toBe(true);
+    if (inside.ok) {
+      expect(inside.suggestion.target).toBe("selection");
+      expect(inside.suggestion.range).toEqual(selectionRequest.selection);
+    }
+    const nowhere = validateSuggestionCandidate(
+      { title: "Nowhere", original: "This sentence is not in the document.", replacement: "x", rationale: "Bogus." },
+      selectionRequest
+    );
+    expect(nowhere.ok).toBe(false);
+    if (!nowhere.ok) {
+      expect(nowhere.reason).toContain("exact substring of the document");
     }
   });
 
@@ -439,7 +453,7 @@ describe("agent task prompt", () => {
     const run = createAgentRun(request);
     const prompt = buildAgentTaskPrompt(request, run);
 
-    expect(prompt).toContain("propose edits ONLY within it");
+    expect(prompt).toContain("it is the focus of the request");
     expect(prompt).toContain("The study will enroll participants.");
     expect(prompt).toContain("notes.md");
     expect(prompt).toContain("writer_read_attachment");

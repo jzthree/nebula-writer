@@ -1097,33 +1097,6 @@ describe("proposeChanges", () => {
     expect(response.message).toContain("skipped");
   });
 
-  it("rejects CLI suggestions that drop citation markers", () => {
-    const citationRequest: AiRequest = {
-      ...baseRequest,
-      documentText: "This is actually very wordy [@smith2020].",
-      selection: {
-        from: 1,
-        to: 41,
-        text: "This is actually very wordy [@smith2020]."
-      }
-    };
-    const response = parseCliResponse("codex", JSON.stringify({
-      message: "Dropped citation",
-      suggestions: [
-        {
-          title: "Tighten sentence",
-          original: "This is actually very wordy [@smith2020].",
-          replacement: "This is wordy.",
-          rationale: "Removes filler.",
-          confidence: 0.9
-        }
-      ]
-    }), citationRequest);
-
-    expect(response.suggestions).toHaveLength(0);
-    expect(response.message).toContain("protected reference/formula text");
-  });
-
   it("keeps CLI suggestions that preserve citation markers", () => {
     const citationRequest: AiRequest = {
       ...baseRequest,
@@ -1181,33 +1154,6 @@ describe("proposeChanges", () => {
     });
   });
 
-  it("rejects CLI suggestions that drop LaTeX citation and reference commands", () => {
-    const latexReferenceRequest: AiRequest = {
-      ...baseRequest,
-      documentText: "This is actually very wordy \\citep{smith2020} and follows Eq. \\eqref{eq:loss}.",
-      selection: {
-        from: 1,
-        to: 80,
-        text: "This is actually very wordy \\citep{smith2020} and follows Eq. \\eqref{eq:loss}."
-      }
-    };
-    const response = parseCliResponse("codex", JSON.stringify({
-      message: "Dropped LaTeX references",
-      suggestions: [
-        {
-          title: "Tighten sentence",
-          original: "This is actually very wordy \\citep{smith2020} and follows Eq. \\eqref{eq:loss}.",
-          replacement: "This is wordy and follows the loss equation.",
-          rationale: "Removes filler.",
-          confidence: 0.87
-        }
-      ]
-    }), latexReferenceRequest);
-
-    expect(response.suggestions).toHaveLength(0);
-    expect(response.message).toContain("protected reference/formula text");
-  });
-
   it("keeps CLI suggestions that preserve LaTeX citation and reference commands", () => {
     const latexReferenceRequest: AiRequest = {
       ...baseRequest,
@@ -1233,33 +1179,6 @@ describe("proposeChanges", () => {
 
     expect(response.suggestions).toHaveLength(1);
     expect(response.suggestions[0].replacement).toBe("This is wordy \\citep{smith2020} and follows Eq. \\eqref{eq:loss}.");
-  });
-
-  it("rejects CLI suggestions that drop inline formula tokens", () => {
-    const formulaRequest: AiRequest = {
-      ...baseRequest,
-      documentText: "The energy is $E=mc^2$ in this model.",
-      selection: {
-        from: 1,
-        to: 40,
-        text: "The energy is $E=mc^2$ in this model."
-      }
-    };
-    const response = parseCliResponse("codex", JSON.stringify({
-      message: "Dropped formula",
-      suggestions: [
-        {
-          title: "Tighten formula sentence",
-          original: "The energy is $E=mc^2$ in this model.",
-          replacement: "The energy appears in this model.",
-          rationale: "Smooths the sentence.",
-          confidence: 0.86
-        }
-      ]
-    }), formulaRequest);
-
-    expect(response.suggestions).toHaveLength(0);
-    expect(response.message).toContain("protected reference/formula text");
   });
 
   it("rejects no-op CLI suggestions", () => {
@@ -1729,6 +1648,65 @@ describe("proposeChanges", () => {
     }
   });
 
+  it("accepts an edit outside the selection when the instruction needs it, keeping in-selection edits ranged", () => {
+    const documentText = "Intro says results were very unique. Later the method was actually very novel.";
+    const request: AiRequest = {
+      ...baseRequest,
+      provider: "codex",
+      mode: "selection",
+      documentText,
+      documentHtml: `<p>${documentText}</p>`,
+      selection: { from: 0, to: 37, text: "Intro says results were very unique." }
+    };
+    const raw = JSON.stringify({
+      message: "One edit sits outside the selection.",
+      suggestions: [
+        { title: "Inside", original: "very unique", replacement: "unique", rationale: "Absolute term.", confidence: 0.9 },
+        { title: "Outside", original: "actually very novel", replacement: "novel", rationale: "Wordy.", confidence: 0.8 },
+        { title: "Nowhere", original: "not in the document", replacement: "x", rationale: "Bogus.", confidence: 0.5 }
+      ]
+    });
+    const response = parseCliResponse("codex", raw, request);
+    expect(response.suggestions.map((suggestion) => [suggestion.title, suggestion.target, suggestion.range !== null])).toEqual([
+      ["Inside", "selection", true],
+      ["Outside", "global", false]
+    ]);
+    expect(response.message).toContain("1 suggestion was skipped");
+  });
+
+  it("treats edits to citation markers, links, and formulas like any other edit — the reviewer sees the diff", () => {
+    const documentText = "Puffin gives a compact account of where transcription initiates [2], see https://example.org and $E=mc^2$.";
+    const raw = JSON.stringify({ message: "Renumbered.", suggestions: [
+      { title: "Renumber", original: "initiates [2]", replacement: "initiates [1]", rationale: "First appearance.", confidence: 0.9 },
+      { title: "Drop the link", original: "see https://example.org and", replacement: "and", rationale: "Dead link.", confidence: 0.7 },
+      { title: "Plain words", original: "$E=mc^2$", replacement: "mass–energy equivalence", rationale: "Prose section.", confidence: 0.6 }
+    ] });
+    const base: AiRequest = { ...baseRequest, provider: "codex", mode: "global", documentText, documentHtml: `<p>${documentText}</p>`, selection: null };
+    expect(parseCliResponse("codex", raw, { ...base, instruction: "tighten the prose" }).suggestions).toHaveLength(3);
+  });
+
+  it("explains every skipped suggestion by title and reason", () => {
+    const documentText = "The results were very unique.";
+    const raw = JSON.stringify({ message: "Done.", suggestions: [
+      { title: "Misquoted passage", original: "results were extremely unique", replacement: "results were unique", rationale: "x", confidence: 0.9 },
+      { title: "Second misquote", original: "not here", replacement: "still not here", rationale: "x", confidence: 0.9 },
+      { title: "No-op", original: "very unique", replacement: "very  unique", rationale: "x", confidence: 0.9 },
+      { title: "Broken", original: "very unique", rationale: "x", confidence: 0.9 }
+    ] });
+    const response = parseCliResponse("codex", raw, { ...baseRequest, provider: "codex", mode: "global", documentText, documentHtml: `<p>${documentText}</p>`, selection: null });
+    expect(response.suggestions).toHaveLength(0);
+    expect(response.message).toContain("4 suggestions were skipped: 2 because their original text was not found verbatim in the document (\"Misquoted passage\", \"Second misquote\"); 1 because it changed nothing (\"No-op\"); 1 because it was malformed (no replacement text) (\"Broken\").");
+  });
+
+  it("resumes a Codex thread with exec resume and reports the thread id", () => {
+    expect(buildCliArgs("codex", "/tmp/schema.json", null, undefined, "thread-9").slice(0, 4)).toEqual(["exec", "resume", "thread-9", "--json"]);
+    // codex-cli 0.153: `exec resume` rejects --sandbox (the session keeps its own); fresh runs still pass it.
+    expect(buildCliArgs("codex", "/tmp/schema.json", null, undefined, "thread-9")).not.toContain("--sandbox");
+    expect(buildCliArgs("codex", "/tmp/schema.json")).toContain("--sandbox");
+    expect(buildCliArgs("codex", "/tmp/schema.json")[0]).toBe("exec");
+    expect(buildCliArgs("codex", "/tmp/schema.json")[1]).toBe("--json");
+  });
+
   it("asks Codex to write its final message to a file and tolerates old builds without the flag", () => {
     const args = buildCliArgs("codex", "/tmp/schema.json", null, "/tmp/last.txt");
     expect(args.slice(-3)).toEqual(["--output-last-message", "/tmp/last.txt", "-"]);
@@ -1762,6 +1740,7 @@ describe("proposeChanges", () => {
       fakeCodexPath,
       [
         "#!/usr/bin/env node",
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(tempDir, "argv.json"))}, JSON.stringify(process.argv.slice(2)));`,
         `const lines = ${JSON.stringify([
           JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
           JSON.stringify({ type: "turn.started" }),
@@ -1795,12 +1774,19 @@ describe("proposeChanges", () => {
     try {
       const response = await proposeChanges({ ...baseRequest, provider: "codex", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null });
       clearInterval(sampler);
-      expect(response.suggestions).toHaveLength(1);
+      expect(response.suggestions, response.message).toHaveLength(1);
       expect(stages).toContain("Codex CLI is reading the document");
       expect(stages).toContain("Thinking");
       expect(stages).toContain("Reviewing the opening sentence");
       expect(stages.indexOf("Thinking")).toBeLessThan(stages.indexOf("Reviewing the opening sentence"));
       expect(getAiProgress()).toBeNull();
+      expect(response.agentSessionId).toBe("thread-1");
+      expect(JSON.parse(readFileSync(join(tempDir, "argv.json"), "utf8"))[0]).toBe("exec");
+      expect(JSON.parse(readFileSync(join(tempDir, "argv.json"), "utf8"))).not.toContain("resume");
+
+      const followUp = await proposeChanges({ ...baseRequest, provider: "codex", instruction: "continue", agentSessionId: "thread-1", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null });
+      expect(followUp.agentSessionId).toBe("thread-1");
+      expect(JSON.parse(readFileSync(join(tempDir, "argv.json"), "utf8")).slice(0, 3)).toEqual(["exec", "resume", "thread-1"]);
     } finally {
       clearInterval(sampler);
       rmSync(tempDir, { recursive: true, force: true });

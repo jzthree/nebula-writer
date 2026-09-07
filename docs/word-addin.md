@@ -36,7 +36,7 @@ terminal or MCP agent working the same document gets it from
 | Scope | Sends |
 | --- | --- |
 | **Auto** | Selection if you have one, otherwise the whole document with your position attached (the prompt tells the AI to prioritise the caret and visible pages unless the instruction is document-wide) |
-| **Selection** | The selected text is the only place edits may land, but the AI is free to read the rest of the document when the selection alone is not enough: Claude reads it with the tools below (up to the whole document), Codex receives the whole document — or a window around the selection — as read-only context in its prompt |
+| **Selection** | The selected text is the *focus*: edits land there unless the instruction cannot be carried out inside it (it names other passages, asks for document-wide work, or the selection holds nothing relevant), in which case the AI edits elsewhere and says so. It always has the rest of the document: Claude reads it with the tools below, Codex receives the whole document — or a window around the selection — in its prompt |
 | **Paragraph** | The paragraph at the caret (short paragraphs widen to their neighbours) |
 | **Visible** | The pages currently on screen |
 | **Document** | Everything |
@@ -53,6 +53,12 @@ exactly what was sent** — click *Sent …* to expand it:
 
 If a reply looks truncated or odd, the raw CLI transcript for that run is in
 `~/.nebula-writer/cli-transcripts/` (prompt, stdout, stderr; last 30 runs).
+
+Follow-ups keep the provider's own conversation: Claude resumes its session
+and Codex resumes its recorded thread (`codex exec resume`), so "continue" or
+"yes, do it" carries the earlier turns, the document, and the decisions you
+made on each suggestion. The thread lives until you start a new conversation
+or clear the pane.
 
 Two buttons sit above the transcript once it has turns. **Start a new
 conversation** forgets the provider session and the earlier turns (the AI

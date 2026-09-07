@@ -520,63 +520,7 @@ describe("writer sidecar API", () => {
       expect(body.provider).toBe("codex");
       expect(body.ok).toBe(true);
       expect(body.suggestionCount).toBe(1);
-      expect(body.message).toContain("Codex CLI returned 1 exact-source, protected-token-safe suggestion");
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      delete process.env.WRITER_AI_ENGINE;
-      if (previousAllow === undefined) {
-        delete process.env.WRITER_ALLOW_CLI;
-      } else {
-        process.env.WRITER_ALLOW_CLI = previousAllow;
-      }
-      if (previousOverride === undefined) {
-        delete process.env.WRITER_CODEX_PATH;
-      } else {
-        process.env.WRITER_CODEX_PATH = previousOverride;
-      }
-    }
-  });
-
-  it("fails provider smoke tests when protected citation or formula tokens are dropped", async () => {
-    const previousAllow = process.env.WRITER_ALLOW_CLI;
-    const previousOverride = process.env.WRITER_CODEX_PATH;
-    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-smoke-"));
-    const fakeCodexPath = join(tempDir, "fake-codex");
-    writeFileSync(
-      fakeCodexPath,
-      [
-        "#!/bin/sh",
-        "cat >/dev/null",
-        "printf '%s\\n' '{\"message\":\"Smoke dropped tokens\",\"suggestions\":[{\"title\":\"Tighten sentence\",\"original\":\"This is actually very wordy [@smith2020] while $E=mc^2$ stays.\",\"replacement\":\"This is wordy.\",\"rationale\":\"Drops protected tokens.\",\"confidence\":0.92}]}'"
-      ].join("\n"),
-      "utf8"
-    );
-    chmodSync(fakeCodexPath, 0o755);
-    process.env.WRITER_ALLOW_CLI = "1";
-    process.env.WRITER_AI_ENGINE = "oneshot"; // legacy pipeline test; rewritten agentically when one-shot is deleted
-    process.env.WRITER_CODEX_PATH = relative(process.cwd(), fakeCodexPath);
-
-    try {
-      const response = await requestBuffer(
-        "POST",
-        "/api/ai/smoke",
-        {
-          "Content-Type": "application/json"
-        },
-        JSON.stringify({ provider: "codex" })
-      );
-      const body = JSON.parse(response.body.toString("utf8")) as {
-        provider: string;
-        ok: boolean;
-        suggestionCount: number;
-        message: string;
-      };
-
-      expect(response.statusCode).toBe(200);
-      expect(body.provider).toBe("codex");
-      expect(body.ok).toBe(false);
-      expect(body.suggestionCount).toBe(0);
-      expect(body.message).toContain("protected reference/formula text");
+      expect(body.message).toContain("Codex CLI returned 1 exact-source suggestion");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
       delete process.env.WRITER_AI_ENGINE;

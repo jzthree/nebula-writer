@@ -11,7 +11,7 @@ import { ensureWriterCliHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
-import { containsAnchoredText, missingProtectedTokens, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation } from "./suggestion-validation";
+import { containsAnchoredText, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation } from "./suggestion-validation";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
@@ -49,6 +49,8 @@ export interface CliTranscript {
   stderr: string;
   code: number | null;
   signal: NodeJS.Signals | null;
+  /** Why the sidecar ended the process early (user stop, timeout, output cap), or null when it exited on its own. */
+  ended: string | null;
 }
 
 interface AiRunOptions {
@@ -215,7 +217,7 @@ export async function smokeTestProvider(provider: CliProviderName): Promise<Prov
   const startedAt = Date.now();
   const response = await cliProvider(provider, {
     provider,
-    instruction: "Smoke test this local provider by making the selected sentence shorter while preserving the citation marker and formula exactly. Return one exact-source suggestion.",
+    instruction: "Smoke test this local provider by making the selected sentence shorter. Return one exact-source suggestion.",
     mode: "selection",
     documentHtml: `<p>${SMOKE_TEST_TEXT}</p>`,
     documentText: SMOKE_TEST_TEXT,
@@ -228,7 +230,6 @@ export async function smokeTestProvider(provider: CliProviderName): Promise<Prov
   const safeSuggestions = response.suggestions.filter((suggestion) =>
     containsAnchoredText(SMOKE_TEST_TEXT, suggestion.original)
     && normalizeWhitespace(suggestion.original) !== normalizeWhitespace(suggestion.replacement)
-    && missingProtectedTokens(suggestion.original, suggestion.replacement).length === 0
   );
   const ok = safeSuggestions.length > 0;
 
@@ -236,7 +237,7 @@ export async function smokeTestProvider(provider: CliProviderName): Promise<Prov
     provider,
     ok,
     message: ok
-      ? `${providerLabel(provider)} returned ${safeSuggestions.length} exact-source, protected-token-safe suggestion${safeSuggestions.length === 1 ? "" : "s"}.`
+      ? `${providerLabel(provider)} returned ${safeSuggestions.length} exact-source suggestion${safeSuggestions.length === 1 ? "" : "s"}.`
       : response.message,
     latencyMs: Date.now() - startedAt,
     suggestionCount: safeSuggestions.length
@@ -453,6 +454,10 @@ async function retryWithoutSession(
   return runTurn(null);
 }
 
+function isMissingCodexThreadError(text: string): boolean {
+  return isMissingSessionError(text) || /no (?:recorded )?session|session (?:file )?(?:not|could not be) (?:found|loaded|read)|failed to (?:load|resume) (?:the )?(?:session|thread)|thread(?: id)? [^\n]{0,40}(?:not found|does not exist|unknown)/i.test(text);
+}
+
 export function isMissingSessionError(text: string): boolean {
   return /no conversation found|conversation (was )?not found|session[^.\n]{0,40}(not found|does not exist|expired|invalid|unknown)|unknown session|thread[^.\n]{0,40}(not found|does not exist)|invalid session id|could not resume|failed to resume|cannot resume/i.test(text);
 }
@@ -578,13 +583,13 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     ...(request.mode === "selection"
       ? selectionText.length <= AGENT_SELECTION_INLINE_LIMIT
         ? [
-            "The user selected this passage; propose edits ONLY within it (every `original` is copied from the selection):",
+            "The user selected this passage; it is the focus of the request. Propose edits within it unless the instruction cannot be carried out there (it names other passages, asks for document-wide changes, or the selection holds nothing relevant) — then edit elsewhere in the document and say so in your reply:",
             "<<<selection",
             selectionText,
             ">>>",
             READ_BEYOND_SELECTION
           ]
-        : ["The user selected a passage; read it with writer_get_selection and propose edits ONLY within it.", READ_BEYOND_SELECTION]
+        : ["The user selected a passage; read it with writer_get_selection. It is the focus of the request: propose edits within it unless the instruction cannot be carried out there — then edit elsewhere in the document and say so in your reply.", READ_BEYOND_SELECTION]
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request),
@@ -594,7 +599,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     "- For anything else, read windows with writer_read_document and locate passages with writer_search_document. Read what the instruction needs: start with the passage in scope, then widen freely — the section, the pages around it, or the entire document (writer_read_context({ what: \"document\" }) returns up to 60,000 characters at once) — whenever the scoped text is not enough to answer well. Never guess at content you could have read.",
     "- If the request is a question about the document rather than a request for edits, read what you need and answer it in your reply; stage nothing, or only commentOnly notes.",
     "- Propose edits with writer_stage_suggestions, in small batches as you go. Each item's `original` must be copied VERBATIM from the " + (request.mode === "selection" ? "selection" : "document") + " — the tool validates every item and tells you which were rejected and why; fix those and retry.",
-    "- Preserve citation markers, reference numbers, URLs, DOIs, equation labels, and math/formula tokens exactly. The validator enforces this.",
+    "- Change only what the instruction asks for: carry every other token of original — markers, numbers, labels, links, formulas — into replacement unchanged.",
     "- Use commentOnly: true for advisory notes that need the author's judgment rather than a text change.",
     "- For broad review requests, spread edits across the document instead of only editing the opening.",
     run.maxSuggestions !== null
@@ -619,14 +624,32 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       return await runCoveragePasses(provider, request, options);
     }
     setAiProgress(provider, `Starting ${providerLabel(provider)}`, undefined, request.requestedBy ?? null);
-    const prompt = buildCliPrompt(request);
-    const result = await runCli(
-      provider,
-      prompt,
-      { ...options, onStreamEvent: createOneShotProgressReporter(provider, request) },
-      request.modelOptions ?? null
-    );
-    return parseCliProgressedResponse(provider, result, request);
+    const reporter = createOneShotProgressReporter(provider, request);
+    let threadId: string | null = null;
+    const onStreamEvent = (event: CliStreamEvent) => {
+      if (event.kind === "session") {
+        threadId = event.sessionId;
+      }
+      reporter(event);
+    };
+    // Codex keeps a thread per conversation (Claude's one-shot mode has no
+    // resume; its agentic engine resumes sessions instead).
+    const resumeId = provider === "codex" ? request.agentSessionId ?? null : null;
+    let result: string;
+    try {
+      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent }, request.modelOptions ?? null, resumeId);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
+        throw error;
+      }
+      // The recorded thread is gone (Codex home cleaned, different machine): start over without it.
+      setAiProgress(provider, "Earlier conversation is gone — starting a fresh one", undefined, request.requestedBy ?? null);
+      threadId = null;
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent }, request.modelOptions ?? null, null);
+    }
+    const response = parseCliProgressedResponse(provider, result, request);
+    return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const message = formatCliDiagnostic(rawMessage);
@@ -702,6 +725,7 @@ function recordCliTranscript(provider: CliProviderName, prompt: string, transcri
       [
         `# Nebula Writer CLI transcript — ${provider} — ${new Date().toISOString()}`,
         `# exit code: ${transcript.code === null ? "none" : transcript.code}${transcript.signal ? ` (signal ${transcript.signal})` : ""}`,
+        `# ended by: ${transcript.ended ?? "the process exiting on its own"}`,
         "",
         "## prompt",
         clipSection(prompt),
@@ -738,9 +762,9 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "Do not wrap the JSON in Markdown.",
     "This is a single turn and your reply is final: deliver the complete answer now. Never reply with a plan, a preamble, or a promise of what you will do next.",
     "If the instruction asks a question or for an assessment (a review, a score, a judgement), answer it fully in message — several paragraphs with `## ` sections are welcome — and add suggestions only where a concrete edit follows from the answer.",
-    "Every suggestion must use exact text from the provided Text block.",
-    "Set original to a verbatim substring of the Text block. Do not paraphrase original.",
-    "When a Document context block is present, use it to understand the Text block in the context of the whole document — answer questions and judge consistency from it — but original must still quote the Text block only.",
+    "Every suggestion must use exact text from the document: normally from the Text block (the user's current focus).",
+    "Set original to a verbatim substring of the source text. Do not paraphrase original.",
+    "When a Document context block is present, the Text block is the user's current focus: prefer edits there. If the instruction cannot be carried out inside it — it names other passages, asks for document-wide changes, or the focus contains nothing relevant — take original verbatim from the Document context instead and say in message that the edit is outside the selection. Never ask the user to select more text: you already have the whole document.",
     "Avoid generic repeated source-text targets such as headings, \"Rationale.\", \"Preliminary studies.\", or one-word placeholders by themselves; include nearby unique context in original so the DOCX review export can place the suggestion in the intended section.",
     "Do not edit Writer display metadata such as \"DOCX image preview unavailable\" placeholders; those mark preserved DOCX media and should remain untouched.",
     suggestionLimit === null
@@ -748,8 +772,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
       : `Return up to ${suggestionLimit} high-confidence, non-overlapping exact-source suggestion${suggestionLimit === 1 ? "" : "s"}.`,
     "For a broad global R01 review, spread edits across the document instead of only editing the opening.",
     "To propose deleting a passage, set replacement to an empty string (\"\"). Never write a placeholder or filler sentence as the replacement for a deletion — the user's document would receive it verbatim.",
-    "Preserve citation markers, reference numbers, URLs, DOIs, equation labels, and math/formula tokens exactly.",
-    "Do not rewrite citation keys, LaTeX reference commands, or formulas. If a requested change would alter them, leave those protected tokens unchanged.",
+    "Change only what the instruction asks for: every other token of original — markers, numbers, labels, links, formulas — must appear unchanged in replacement.",
     "If you cannot find safe exact source text, return an empty suggestions array.",
     "Do not include unrelated commentary outside JSON.",
     "In message, you may organize the suggestions into sections: a line starting with `## ` is a section heading and a line `[S3]` places the third suggestion of your array (1-based) under it; reference each suggestion once. Keep the rest to 1-2 sentences per section.",
@@ -769,6 +792,9 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "",
     `Instruction: ${request.instruction}`,
     `Scope: ${request.mode}`,
+    request.agentSessionId && !options.coveragePass
+      ? "This continues the earlier conversation in this thread. The Text and Document context blocks below are the CURRENT document, which may have changed since your earlier turns; rely on them, not on earlier copies."
+      : null,
     ...buildSelectionContextLines(request, options),
     options.coveragePass
       ? `Complete-document coverage pass ${options.coveragePass.index} of ${options.coveragePass.total}. The Text block is a contiguous chunk covering characters ${options.coveragePass.start + 1}-${options.coveragePass.end} of ${options.coveragePass.totalLength}. Across all passes, the sidecar covers the full document. Use only exact source text visible in this chunk.`
@@ -796,7 +822,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
   }
   if (document.length <= budget) {
     return [
-      "Document context (read-only: the entire document, so the selection can be understood in context — never quote it in original):",
+      "Document context (the entire document; the Text block below is the user's focus — edit here only when the instruction cannot be carried out within the Text block):",
       "<<<document",
       document,
       ">>>"
@@ -813,7 +839,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
   const start = Math.max(0, anchor - half);
   const end = Math.min(document.length, Math.max(anchor + selectionText.length + half, start + windowChars));
   return [
-    `Document context (read-only window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()} — never quote it in original):`,
+    `Document context (a window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()}; the Text block below is the user's focus — edit here only when the instruction cannot be carried out within the Text block):`,
     "<<<document",
     document.slice(start, end),
     ">>>"
@@ -991,7 +1017,7 @@ function mergeCoverageResponses(provider: CliProviderName, chunks: DocumentCover
   };
 }
 
-async function runCli(provider: CliProviderName, prompt: string, options: AiRunOptions = {}, modelOptions: AiModelOptions | null = null): Promise<string> {
+async function runCli(provider: CliProviderName, prompt: string, options: AiRunOptions = {}, modelOptions: AiModelOptions | null = null, resumeThreadId: string | null = null): Promise<string> {
   const resolvedCommand = resolveCliCommand(provider);
   if (!resolvedCommand.available || !resolvedCommand.command) {
     throw new Error(resolvedCommand.detail);
@@ -1001,7 +1027,7 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   // Codex writes its final agent message to this file: the authoritative
   // answer even when earlier (schema-shaped) preambles appeared in the stream.
   const lastMessagePath = schemaFile ? join(schemaFile.dir, "last-message.txt") : null;
-  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined);
+  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null);
   const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
   const runOptions: AiRunOptions = {
     ...options,
@@ -1108,8 +1134,10 @@ function runCliCommand(
     let stdout = "";
     let stderr = "";
     let stdinError: Error | null = null;
+    let endedBy: string | null = null;
     const timeoutMs = cliTimeoutMs();
     const terminate = (message: string) => {
+      endedBy = message;
       child.kill("SIGTERM");
       forceKillTimer = setTimeout(() => {
         child.kill("SIGKILL");
@@ -1175,7 +1203,7 @@ function runCliCommand(
         clearTimeout(forceKillTimer);
       }
       try {
-        options.onTranscript?.({ stdout, stderr, code, signal });
+        options.onTranscript?.({ stdout, stderr, code, signal, ended: endedBy });
       } catch {
         // Diagnostics must never affect the run.
       }
@@ -1377,10 +1405,19 @@ function selectCliFailureOutput(stdout: string, stderr: string): string {
   return stdout.trim();
 }
 
-export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string, modelOptions: AiModelOptions | null = null, codexLastMessagePath?: string): string[] {
+export function buildCliArgs(
+  provider: CliProviderName,
+  codexSchemaPath?: string,
+  modelOptions: AiModelOptions | null = null,
+  codexLastMessagePath?: string,
+  codexResumeThreadId?: string | null
+): string[] {
   if (provider === "codex") {
     return [
-      "exec",
+      // `exec resume <thread>` continues the conversation Codex recorded for
+      // the earlier turns (its home is Writer's own, see cli-home.ts), so a
+      // follow-up like "continue" or "yes, do it" carries the whole context.
+      ...(codexResumeThreadId ? ["exec", "resume", codexResumeThreadId] : ["exec"]),
       // JSONL events (thread/turn/item) so the UI can show what Codex is doing
       // while it works; the final agent_message carries the structured reply.
       "--json",
@@ -1388,8 +1425,8 @@ export function buildCliArgs(provider: CliProviderName, codexSchemaPath?: string
       'service_tier="fast"',
       ...modelCliArgs(provider, modelOptions),
       "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
+      // `exec resume` keeps the session's sandbox and rejects the flag.
+      ...(codexResumeThreadId ? [] : ["--sandbox", "read-only"]),
       ...(codexSchemaPath ? ["--output-schema", codexSchemaPath] : []),
       ...(codexLastMessagePath ? ["--output-last-message", codexLastMessagePath] : []),
       "-"
@@ -1558,34 +1595,64 @@ export function parseCliResponse(provider: CliProviderName, raw: string, request
   if (!parsed) {
     return {
       provider,
-      message: formatCliDiagnostic(cleanedRaw) || `The ${provider} provider returned an empty response.`,
+      message: isEventStreamWithoutAnswer(cleanedRaw)
+        ? `The ${provider} CLI ended the turn without an answer${lastTranscriptPath ? ` (transcript: ${lastTranscriptPath})` : ""}. Send the request again.`
+        : formatCliDiagnostic(cleanedRaw) || `The ${provider} provider returned an empty response.`,
       suggestions: []
     };
   }
 
-  const candidates = (parsed.suggestions ?? [])
-    // An explicit empty replacement is a deletion; only a missing one is malformed.
-    .filter((item) => item.original && typeof item.replacement === "string");
+  // Every candidate is examined so malformed ones are reported, not lost
+  // (normalizeSuggestion treats an explicit empty replacement as a deletion
+  // and only a missing one as malformed).
+  const candidates = (parsed.suggestions ?? []).filter((item): item is Partial<AiSuggestion> => Boolean(item) && typeof item === "object");
   const suggestionLimit = requestedSuggestionLimit(request);
   const limitedCandidates = suggestionLimit === null ? candidates : candidates.slice(0, suggestionLimit);
   // Refs follow the model's own array order so `[S3]` in its message means
   // the third suggestion it wrote, even when an earlier one was filtered out.
-  const suggestions = limitedCandidates
-    .map((item, index): AiSuggestion | null => {
-      const normalized = normalizeSuggestion(item, request);
-      return normalized ? { ...normalized, ref: `S${index + 1}` } : null;
-    })
-    .filter((item): item is AiSuggestion => item !== null);
-  const rejectedCount = limitedCandidates.length - suggestions.length;
+  const suggestions: AiSuggestion[] = [];
+  const skipped: Array<{ title: string; reason: SkipReason }> = [];
+  limitedCandidates.forEach((item, index) => {
+    const outcome = normalizeSuggestion(item, request);
+    if ("suggestion" in outcome) {
+      suggestions.push({ ...outcome.suggestion, ref: `S${index + 1}` });
+    } else {
+      skipped.push({ title: String(item.title ?? "").trim() || `suggestion ${index + 1}`, reason: outcome.skipped });
+    }
+  });
   const message = formatCliDiagnostic(parsed.message || `The ${provider} provider returned ${suggestions.length} exact-source suggestion${suggestions.length === 1 ? "" : "s"}.`);
 
   return {
     provider,
-    message: rejectedCount
-      ? `${message} ${rejectedCount} suggestion${rejectedCount === 1 ? " was" : "s were"} skipped because it was not safely placed, was a no-op, or would drop protected reference/formula text.`
-      : message,
+    message: skipped.length ? `${message} ${describeSkippedSuggestions(skipped)}` : message,
     suggestions
   };
+}
+
+type SkipReason = "not-found" | "no-change" | "malformed";
+
+/**
+ * Name what was dropped and why, so a reviewer can tell "the model misquoted
+ * three passages" from "it proposed nothing new" instead of guessing.
+ */
+function describeSkippedSuggestions(skipped: Array<{ title: string; reason: SkipReason }>): string {
+  const byReason = new Map<SkipReason, string[]>();
+  for (const entry of skipped) {
+    byReason.set(entry.reason, [...(byReason.get(entry.reason) ?? []), entry.title]);
+  }
+  const label: Record<SkipReason, (count: number) => string> = {
+    "not-found": (count) => `${count} because ${count === 1 ? "its" : "their"} original text was not found verbatim in the document`,
+    "no-change": (count) => `${count} because ${count === 1 ? "it" : "they"} changed nothing`,
+    "malformed": (count) => `${count} because ${count === 1 ? "it was" : "they were"} malformed (no replacement text)`
+  };
+  const parts = (["not-found", "no-change", "malformed"] as SkipReason[])
+    .filter((reason) => byReason.has(reason))
+    .map((reason) => {
+      const titles = byReason.get(reason) ?? [];
+      const shown = titles.slice(0, 3).map((title) => `"${title.length > 60 ? `${title.slice(0, 57)}…` : title}"`).join(", ");
+      return `${label[reason](titles.length)} (${shown}${titles.length > 3 ? `, +${titles.length - 3} more` : ""})`;
+    });
+  return `${skipped.length} suggestion${skipped.length === 1 ? " was" : "s were"} skipped: ${parts.join("; ")}.`;
 }
 
 function requestedSuggestionLimit(request: AiRequest): number | null {
@@ -1645,6 +1712,28 @@ function parseStructuredResponse(raw: string): CliSuggestionPayload | null {
   }
 
   return null;
+}
+
+/** True when the output is only stream events (thread/turn started…) with no answer in them — an interrupted or empty turn. */
+function isEventStreamWithoutAnswer(raw: string): boolean {
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) {
+    return false;
+  }
+  for (const line of lines) {
+    if (!line.startsWith("{")) {
+      return false;
+    }
+    try {
+      const event = JSON.parse(line) as { type?: unknown; item?: { type?: unknown } };
+      if (typeof event.type !== "string" || event.type === "result" || event.item?.type === "agent_message") {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function selectFinalPayload(payloads: CliSuggestionPayload[]): CliSuggestionPayload {
@@ -1922,12 +2011,12 @@ function isDisguisedDeletion(item: Partial<AiSuggestion>, original: string, repl
   return shared <= 1;
 }
 
-function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): AiSuggestion | null {
+function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): { suggestion: AiSuggestion } | { skipped: SkipReason } {
   const original = String(item.original ?? "").trim();
   let replacement = String(item.replacement ?? "").trim();
   let deletionRescued = false;
   if (!original) {
-    return null;
+    return { skipped: "malformed" };
   }
   if (isDisguisedDeletion(item, original, replacement, request.documentText)) {
     replacement = "";
@@ -1936,22 +2025,20 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): A
   // An explicit empty string proposes deleting the original (same contract as
   // the agentic staging tool); a missing field is malformed.
   if (!replacement && typeof item.replacement !== "string" && !deletionRescued) {
-    return null;
+    return { skipped: "malformed" };
   }
   if (normalizeWhitespace(original) === normalizeWhitespace(replacement)) {
-    return null;
+    return { skipped: "no-change" };
   }
 
-  const scopeText = request.mode === "selection" ? request.selection?.text ?? "" : request.documentText;
-  if (!containsAnchoredText(scopeText, original)) {
-    return null;
-  }
-  if (missingProtectedTokens(original, replacement).length > 0) {
-    return null;
+  const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
+  const inSelection = request.mode === "selection" && containsAnchoredText(selectionText, original);
+  if (!inSelection && !containsAnchoredText(request.documentText, original)) {
+    return { skipped: "not-found" };
   }
 
   const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(replacement);
-  return {
+  return { suggestion: {
     ...(commentOnly ? { commentOnly: true } : {}),
     id: randomUUID(),
     title: item.title || "Revise passage",
@@ -1959,10 +2046,10 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): A
     replacement,
     rationale: `${item.rationale || "Proposed by the selected local AI provider."}${deletionRescued ? " (The provider wrote placeholder text instead of an empty replacement; it was discarded and this is proposed as a deletion.)" : ""}`,
     confidence: normalizeConfidence(item.confidence),
-    target: request.mode,
-    range: request.mode === "selection" ? request.selection ?? null : null,
+    target: inSelection ? "selection" : "global",
+    range: inSelection ? request.selection ?? null : null,
     status: "pending"
-  };
+  } };
 }
 
 

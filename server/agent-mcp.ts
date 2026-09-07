@@ -6,7 +6,7 @@
  * (http://127.0.0.1:<port>/api/agent-run/<runId>). The agent's entire
  * capability surface is these tools: read/search the document snapshot the
  * user's request was made on, read chat attachments, and stage suggestions —
- * which the sidecar validates (exact anchor, protected tokens, no-op) and
+ * which the sidecar validates (exact anchor, no-op) and
  * answers per item so the agent can correct and retry.
  *
  * Self-contained JSON-RPC 2.0 over stdio; no dependencies beyond Node.
@@ -67,7 +67,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_stage_suggestions",
-      description: "Stage revision suggestions into the user's review queue. Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document (or of the selection, for selection-scoped requests) — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
+      description: "Stage revision suggestions into the user's review queue. Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document; for selection-scoped requests prefer the selection, but a passage elsewhere is accepted when the instruction requires it — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
       inputSchema: {
         type: "object",
         properties: {
