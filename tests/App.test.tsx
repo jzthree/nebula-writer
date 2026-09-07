@@ -424,6 +424,16 @@ describe("App suggestion review", () => {
     expect(screen.queryByRole("button", { name: "Reject others" })).not.toBeInTheDocument();
   });
 
+  it("starts a new AI conversation from the chat header", async () => {
+    render(<App />);
+
+    const button = await screen.findByRole("button", { name: "Start a new conversation" });
+    expect(button).toHaveAttribute("title", expect.stringContaining("pending suggestions and attachments stay"));
+    fireEvent.click(button);
+
+    expect(await screen.findByText(/New conversation — earlier turns are no longer sent to the AI/)).toBeInTheDocument();
+  });
+
   it("lets users dismiss the high-pressure backlog panel", async () => {
     vi.mocked(requestAiSuggestion).mockResolvedValueOnce({
       provider: "codex",

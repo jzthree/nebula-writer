@@ -545,6 +545,11 @@ function capitalizeFirst(value: string): string {
 }
 
 const AGENT_SELECTION_INLINE_LIMIT = 2_000;
+const READ_BEYOND_SELECTION = "Reading is NOT limited to the selection: whenever it alone does not tell you enough — a term defined elsewhere, a cross-reference, a question about consistency with another section — read more of the document, up to all of it, before answering.";
+// One-shot providers have no tools, so a selection-scoped prompt carries the
+// surrounding document as read-only context: the whole document when it fits
+// the budget, otherwise a window around the selection.
+const SELECTION_CONTEXT_WINDOW_CHARS = 60_000;
 
 export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments">): string {
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
@@ -564,19 +569,21 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     ...(request.mode === "selection"
       ? selectionText.length <= AGENT_SELECTION_INLINE_LIMIT
         ? [
-            "The user selected this passage; propose edits ONLY within it:",
+            "The user selected this passage; propose edits ONLY within it (every `original` is copied from the selection):",
             "<<<selection",
             selectionText,
-            ">>>"
+            ">>>",
+            READ_BEYOND_SELECTION
           ]
-        : ["The user selected a passage; read it with writer_get_selection and propose edits ONLY within it."]
+        : ["The user selected a passage; read it with writer_get_selection and propose edits ONLY within it.", READ_BEYOND_SELECTION]
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request),
     "",
     "How to work:",
     "- Read by structure with writer_read_context: { what: \"paragraph\" } is the paragraph at the author's caret (before/after add neighbours), \"section\" the whole section under the nearest heading, \"page\" exactly what is on screen, \"outline\" every heading with offsets, \"document\" the size and outline. The window state is live: the author may move while you work, so re-read before staging when the request says \"here\" or \"this\".",
-    "- For anything else, read windows with writer_read_document and locate passages with writer_search_document. Read what the instruction needs — often that is not the whole document.",
+    "- For anything else, read windows with writer_read_document and locate passages with writer_search_document. Read what the instruction needs: start with the passage in scope, then widen freely — the section, the pages around it, or the entire document (writer_read_context({ what: \"document\" }) returns up to 60,000 characters at once) — whenever the scoped text is not enough to answer well. Never guess at content you could have read.",
+    "- If the request is a question about the document rather than a request for edits, read what you need and answer it in your reply; stage nothing, or only commentOnly notes.",
     "- Propose edits with writer_stage_suggestions, in small batches as you go. Each item's `original` must be copied VERBATIM from the " + (request.mode === "selection" ? "selection" : "document") + " — the tool validates every item and tells you which were rejected and why; fix those and retry.",
     "- Preserve citation markers, reference numbers, URLs, DOIs, equation labels, and math/formula tokens exactly. The validator enforces this.",
     "- Use commentOnly: true for advisory notes that need the author's judgment rather than a text change.",
@@ -659,6 +666,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "Do not wrap the JSON in Markdown.",
     "Every suggestion must use exact text from the provided Text block.",
     "Set original to a verbatim substring of the Text block. Do not paraphrase original.",
+    "When a Document context block is present, use it to understand the Text block in the context of the whole document — answer questions and judge consistency from it — but original must still quote the Text block only.",
     "Avoid generic repeated source-text targets such as headings, \"Rationale.\", \"Preliminary studies.\", or one-word placeholders by themselves; include nearby unique context in original so the DOCX review export can place the suggestion in the intended section.",
     "Do not edit Writer display metadata such as \"DOCX image preview unavailable\" placeholders; those mark preserved DOCX media and should remain untouched.",
     suggestionLimit === null
@@ -687,6 +695,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "",
     `Instruction: ${request.instruction}`,
     `Scope: ${request.mode}`,
+    ...buildSelectionContextLines(request, options),
     options.coveragePass
       ? `Complete-document coverage pass ${options.coveragePass.index} of ${options.coveragePass.total}. The Text block is a contiguous chunk covering characters ${options.coveragePass.start + 1}-${options.coveragePass.end} of ${options.coveragePass.totalLength}. Across all passes, the sidecar covers the full document. Use only exact source text visible in this chunk.`
       : null,
@@ -696,6 +705,45 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "Text:",
     promptText.text
   ].filter((line): line is string => line !== null).join("\n");
+}
+
+export function buildSelectionContextLines(request: AiRequest, options: CliPromptOptions = {}): string[] {
+  if (options.coveragePass || request.mode !== "selection") {
+    return [];
+  }
+  const selectionText = request.selection?.text ?? "";
+  const document = request.documentText ?? "";
+  if (!selectionText.trim() || !document.trim() || document.trim() === selectionText.trim()) {
+    return [];
+  }
+  const budget = AI_CONTEXT_CHAR_LIMIT - Math.min(selectionText.length, AI_CONTEXT_CHAR_LIMIT);
+  if (budget < 1_000) {
+    return [];
+  }
+  if (document.length <= budget) {
+    return [
+      "Document context (read-only: the entire document, so the selection can be understood in context — never quote it in original):",
+      "<<<document",
+      document,
+      ">>>"
+    ];
+  }
+  const found = document.indexOf(selectionText);
+  const anchor = found >= 0
+    ? found
+    : typeof request.selection?.from === "number" && request.selection.from >= 0 && request.selection.from < document.length
+      ? request.selection.from
+      : 0;
+  const windowChars = Math.min(budget, SELECTION_CONTEXT_WINDOW_CHARS);
+  const half = Math.floor(windowChars / 2);
+  const start = Math.max(0, anchor - half);
+  const end = Math.min(document.length, Math.max(anchor + selectionText.length + half, start + windowChars));
+  return [
+    `Document context (read-only window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()} — never quote it in original):`,
+    "<<<document",
+    document.slice(start, end),
+    ">>>"
+  ];
 }
 
 // Attached reference files: content is inlined because Claude runs with tools

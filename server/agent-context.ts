@@ -80,18 +80,24 @@ export function readAgentRunContext(run: AgentRunContext, params: ContextReadPar
   const after = clampCount(params.after);
 
   if (what === "document") {
+    // The whole document (bounded like every other read) so an agent whose
+    // scoped passage is not enough can widen to everything in one call.
     const outline = outlineOf(text, paragraphs, hostContext);
+    const body = bounded(text);
+    const complete = body.length >= text.length;
     return {
       ...base,
       what,
       from: 0,
-      to: text.length,
-      text: "",
-      paragraphs: [],
+      to: body.length,
+      text: body,
+      paragraphs: paragraphs.filter((paragraph) => paragraph.offset < body.length),
       heading: null,
       outline,
       pages: hostContext?.viewport?.pages ?? [],
-      note: `The document is ${text.length.toLocaleString()} characters in ${paragraphs.length} paragraphs. Read a window with writer_read_document(offset, limit), a structural piece with writer_read_context({ what: "section" | "paragraph" | "page" }), or search with writer_search_document.`
+      note: complete
+        ? `The document is ${text.length.toLocaleString()} characters in ${paragraphs.length} paragraphs — this is all of it.`
+        : `The document is ${text.length.toLocaleString()} characters in ${paragraphs.length} paragraphs; this is the first ${TEXT_LIMIT.toLocaleString()}. Read the rest with writer_read_document(offset=${TEXT_LIMIT}, limit=${TEXT_LIMIT}) and onwards, or locate passages with writer_search_document.`
     };
   }
 

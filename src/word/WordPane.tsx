@@ -157,6 +157,7 @@ export interface WordPaneProps {
   onApplyGroup: (suggestions: AiSuggestion[]) => void;
   onAsk: () => void;
   onClearConversation: () => void;
+  onNewConversation: () => void;
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
@@ -241,6 +242,7 @@ export function WordPane(props: WordPaneProps) {
         onApply={props.onApply}
         onApplyGroup={props.onApplyGroup}
         onClear={props.onClearConversation}
+        onNew={props.onNewConversation}
         onComment={props.onComment}
         onCycleMatch={props.onCycleMatch}
         onDismiss={props.onDismiss}
@@ -560,6 +562,7 @@ function Transcript(props: {
   onApply: (suggestion: AiSuggestion) => void;
   onApplyGroup: (suggestions: AiSuggestion[]) => void;
   onClear: () => void;
+  onNew: () => void;
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
@@ -590,6 +593,9 @@ function Transcript(props: {
               <button type="button" className="wp-icon-button" onClick={() => props.onNavigate(-1)} title="Previous pending suggestion (↑)" aria-label="Previous pending suggestion"><ArrowUp size={14} aria-hidden="true" /></button>
               <button type="button" className="wp-icon-button" onClick={() => props.onNavigate(1)} title="Next pending suggestion (↓)" aria-label="Next pending suggestion"><ArrowDown size={14} aria-hidden="true" /></button>
             </>
+          ) : null}
+          {props.turns.length ? (
+            <button type="button" className="wp-icon-button" onClick={props.onNew} disabled={props.busy} title="Start a new conversation (the AI forgets earlier turns; pending suggestions and attachments stay)" aria-label="Start a new conversation"><MessageSquarePlus size={14} aria-hidden="true" /></button>
           ) : null}
           {props.turns.length ? (
             <button type="button" className="wp-icon-button" onClick={props.onClear} disabled={props.busy} title="Clear the conversation (pending suggestions are dismissed)" aria-label="Clear the conversation"><Trash2 size={14} aria-hidden="true" /></button>

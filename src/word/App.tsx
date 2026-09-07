@@ -935,6 +935,33 @@ export function App() {
     void recordDecision(suggestion, "pending", "");
   }, [patchCard, recordDecision]);
 
+  /** Forget the provider sessions and the transcript, but keep pending cards (carried into the new conversation) and attachments. */
+  const startNewConversation = useCallback(() => {
+    const pending = suggestionsRef.current.filter((suggestion) => !cardsRef.current[suggestion.id]?.outcome);
+    agentSessionsRef.current = {};
+    const now = new Date().toISOString();
+    const carried: ChatTurn[] = pending.length
+      ? [{
+          id: turnId(),
+          role: "assistant",
+          at: now,
+          text: `Carried over ${pending.length} pending suggestion${pending.length === 1 ? "" : "s"} from the previous conversation.`,
+          status: "done",
+          engine: describeProposers(pending),
+          suggestionIds: pending.map((suggestion) => suggestion.id),
+          progress: null,
+          origin: "session",
+          activity: []
+        }]
+      : [];
+    setTurns([
+      { id: turnId(), role: "system", at: now, text: "New conversation — earlier turns are no longer sent to the AI.", tone: "info" },
+      ...carried
+    ]);
+    setRequestState("idle");
+    setActiveId(pending[0]?.id ?? null);
+  }, []);
+
   const clearConversation = useCallback(() => {
     for (const suggestion of suggestionsRef.current) {
       if (!cardsRef.current[suggestion.id]?.outcome) {
@@ -1154,6 +1181,7 @@ export function App() {
       onApplyGroup={applyGroup}
       onAsk={() => void ask()}
       onClearConversation={clearConversation}
+      onNewConversation={startNewConversation}
       onComment={comment}
       onCycleMatch={cycleMatch}
       onDismiss={dismiss}
@@ -1250,7 +1278,7 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
   for (const turn of turns) {
     if (turn.role === "user") {
       digest.push({ role: "user", content: turn.text });
-    } else if (turn.role === "assistant" && turn.status !== "running") {
+    } else if (turn.role === "assistant" && turn.status !== "running" && turn.origin !== "session") {
       const decisions = turn.suggestionIds
         .map((id) => byId.get(id))
         .filter((suggestion): suggestion is AiSuggestion => suggestion !== undefined)

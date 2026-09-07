@@ -117,10 +117,12 @@ describe("writer_read_context", () => {
     if ("error" in summary) {
       throw new Error(summary.error);
     }
-    expect(summary.text).toBe("");
+    expect(summary.text).toBe(documentText);
+    expect(summary.to).toBe(documentText.length);
     expect(summary.totalLength).toBe(documentText.length);
     expect(summary.paragraphCount).toBe(PARAGRAPHS.length);
-    expect(summary.note).toContain("writer_read_document");
+    expect(summary.paragraphs).toHaveLength(PARAGRAPHS.length);
+    expect(summary.note).toContain("all of it");
     expect(readAgentRunContext(run, { what: "nope" })).toHaveProperty("error");
     deleteAgentRun(run.id);
   });

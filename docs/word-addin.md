@@ -36,7 +36,7 @@ terminal or MCP agent working the same document gets it from
 | Scope | Sends |
 | --- | --- |
 | **Auto** | Selection if you have one, otherwise the whole document with your position attached (the prompt tells the AI to prioritise the caret and visible pages unless the instruction is document-wide) |
-| **Selection** | Only the selected text |
+| **Selection** | The selected text is the only place edits may land, but the AI is free to read the rest of the document when the selection alone is not enough: Claude reads it with the tools below (up to the whole document), Codex receives the whole document — or a window around the selection — as read-only context in its prompt |
 | **Paragraph** | The paragraph at the caret (short paragraphs widen to their neighbours) |
 | **Visible** | The pages currently on screen |
 | **Document** | Everything |
@@ -50,6 +50,13 @@ exactly what was sent** — click *Sent …* to expand it:
   and character counts, offsets, and an excerpt of the start and end.
 - Window state: caret paragraph, the heading above it, pages on screen,
   selection size, how many recent stops and headings were attached.
+
+Two buttons sit above the transcript once it has turns. **Start a new
+conversation** forgets the provider session and the earlier turns (the AI
+starts fresh) but keeps pending suggestion cards — they are carried into the
+new conversation — and attachments. **Clear** wipes everything and dismisses
+pending suggestions. The web app has the same new-conversation button in its
+chat header.
 - Engine: provider, model, and reasoning level (with "(default)" when the
   CLI's own default applies).
 
@@ -71,7 +78,7 @@ caret, selection, and visible pages as you move.
 
 | Tool | Reads |
 | --- | --- |
-| `writer_read_context({ what })` | `paragraph` (at the caret; `before`/`after` add neighbours), `section` (from the heading above the caret to the next heading of that level), `page` (exactly what is on screen), `selection`, `outline` (headings with offsets), `document` (size and outline only). Anchor elsewhere with `around` (offset) or `paragraph_index`. |
+| `writer_read_context({ what })` | `paragraph` (at the caret; `before`/`after` add neighbours), `section` (from the heading above the caret to the next heading of that level), `page` (exactly what is on screen), `selection`, `outline` (headings with offsets), `document` (the full text, up to 60k characters, plus the outline) |
 | `writer_read_document` / `writer_search_document` | Windowed text and exact-text search, as before. |
 | `writer_get_selection` | The live window state (caret, section, viewport, trail, outline). |
 

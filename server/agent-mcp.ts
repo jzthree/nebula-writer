@@ -36,7 +36,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_read_document",
-      description: "Read a window of the document under revision. Returns { text, offset, limit, totalLength }. Call repeatedly with increasing offset to read long documents in slices; you rarely need the whole document to act on a focused instruction.",
+      description: "Read a window of the document under revision. Returns { text, offset, limit, totalLength }. Call repeatedly with increasing offset to read long documents in slices. Read as much as the instruction needs: the whole document is fair game whenever the passage in scope does not tell you enough.",
       inputSchema: {
         type: "object",
         properties: {
@@ -121,7 +121,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_read_context",
-      description: "Read the document by structure, relative to where the author is: what = 'paragraph' (the paragraph at the caret; `before`/`after` add neighbours), 'section' (from the heading above the caret to the next heading of the same level), 'page' (exactly what is on screen in Word), 'selection', 'outline' (all headings with offsets), or 'document' (size and outline only). Returns { what, from, to, text, paragraphs: [{ index, offset, length, level }], heading, live, note }. Offsets are document offsets, so `text` can be quoted verbatim into writer_stage_suggestions. The window state is LIVE while the Word add-in is open — the author may have moved since your last call, so re-read before staging when the instruction says 'here' or 'this'. Use `around` (a character offset) or `paragraph_index` to read elsewhere than the caret.",
+      description: "Read the document by structure, relative to where the author is: what = 'paragraph' (the paragraph at the caret; `before`/`after` add neighbours), 'section' (from the heading above the caret to the next heading of the same level), 'page' (exactly what is on screen in Word), 'selection', 'outline' (all headings with offsets), or 'document' (the full text, up to 60,000 characters, plus the outline; for longer documents the note says how to read the rest). Returns { what, from, to, text, paragraphs: [{ index, offset, length, level }], heading, live, note }. Offsets are document offsets, so `text` can be quoted verbatim into writer_stage_suggestions. The window state is LIVE while the Word add-in is open — the author may have moved since your last call, so re-read before staging when the instruction says 'here' or 'this'. Use `around` (a character offset) or `paragraph_index` to read elsewhere than the caret.",
       inputSchema: {
         type: "object",
         properties: {

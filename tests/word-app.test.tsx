@@ -314,6 +314,28 @@ describe("Word task pane", () => {
     expect(captured.statusUpdates[captured.statusUpdates.length - 1]).toMatchObject({ id: "s-2", status: "rejected", note: "Cleared from the Word pane" });
   });
 
+  it("starts a new conversation without dismissing pending suggestions", async () => {
+    await renderPane();
+    send("Tighten the first sentence.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    send("And again.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].agentSessionId).toBe("sess-claude-1");
+    const decisionsBefore = captured.statusUpdates.length;
+
+    fireEvent.click(screen.getByLabelText("Start a new conversation"));
+    await waitFor(() => expect(screen.getByText(/New conversation — earlier turns are no longer sent/)).toBeInTheDocument());
+    expect(screen.getByText(/Carried over \d+ pending suggestions? from the previous conversation/)).toBeInTheDocument();
+    expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0);
+    expect(screen.getByText(/^\d+ pending$/)).toBeInTheDocument();
+    expect(captured.statusUpdates.length).toBe(decisionsBefore);
+
+    send("Fresh start.");
+    await waitFor(() => expect(captured.requests.length).toBe(3));
+    expect(captured.requests[2].agentSessionId).toBeUndefined();
+    expect(captured.requests[2].conversation).toBeUndefined();
+  });
+
   it("carries the conversation and resumes the provider session on follow-ups", async () => {
     await renderPane();
     send("Tighten the first sentence.");

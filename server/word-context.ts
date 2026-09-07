@@ -171,8 +171,8 @@ export function describeWordHostContext(hostContext: WordHostContext | null | un
     : "";
   lines.push(
     options.mode === "selection"
-      ? `Use this state for orientation only — the selection above is the scope of the request.${readHint}`
-      : `Resolve deictic instructions ("this paragraph", "here", "the section I'm in") against this state, and unless the request is explicitly document-wide, prioritize the passage at the caret and the pages on screen before anything else.${readHint}`
+      ? `Use this state for orientation only — the selection above is the scope for edits, not a limit on what you may read: read more of the document whenever the selection alone is not enough.${readHint}`
+      : `Resolve deictic instructions ("this paragraph", "here", "the section I'm in") against this state, and unless the request is explicitly document-wide, prioritize the passage at the caret and the pages on screen before anything else.${readHint} Read further — up to the whole document — whenever that is needed to answer well.`
   );
   return lines;
 }

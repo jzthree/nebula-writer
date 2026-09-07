@@ -37,6 +37,7 @@ import {
   LocateFixed,
   Loader2,
   SquareTerminal,
+  MessageSquarePlus,
   MessageSquareText,
   FilePlus2,
   PanelRight,
@@ -597,6 +598,13 @@ export function App() {
   // follow-up chat messages share context. Keyed client-side; the sidecar
   // just resumes whatever id we hand it.
   const agentSessionsRef = useRef<Record<string, string>>({});
+  // Start over with the AI: forget every provider session for this document and
+  // reset the transcript. Pending suggestions and attachments stay (parity with
+  // the Word pane's "Start a new conversation").
+  const startNewConversation = useCallback(() => {
+    agentSessionsRef.current = {};
+    setMessages([createSystemMessage("New conversation — earlier turns are no longer sent to the AI. Pending suggestions and attachments stay.")]);
+  }, []);
   const [selection, setSelection] = useState<SelectionContext | null>(null);
   // A selection is not a "mode": it's context that auto-attaches to the next
   // message and can be detached (or re-attached) with one click.
@@ -6032,6 +6040,16 @@ export function App() {
                 <h2>{localMode ? providerLabel(provider) : (selection && selectionAttached ? "Selection-aware" : "Whole document")}</h2>
               </div>
               <div className="chat-heading-actions">
+                <button
+                  type="button"
+                  className="panel-collapse-button"
+                  onClick={(event) => { event.stopPropagation(); startNewConversation(); }}
+                  disabled={busy !== null}
+                  title="Start a new conversation: the AI forgets earlier turns; pending suggestions and attachments stay"
+                  aria-label="Start a new conversation"
+                >
+                  <MessageSquarePlus size={15} aria-hidden="true" />
+                </button>
                 {!localMode ? (
                 <button
                   type="button"
