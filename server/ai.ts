@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse } from "../src/shared";
+import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
 import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecutionEnabled, resolveCliCommand, type CliProviderName } from "./cli-runtime";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
@@ -55,6 +55,8 @@ export interface CliTranscript {
 
 interface AiRunOptions {
   signal?: AbortSignal;
+  /** Resolved tool access for this run (see resolveToolAccess). */
+  toolAccess?: AiToolAccess;
   /** Called with each complete stdout line as it arrives (JSONL streaming). */
   onStdoutLine?: (line: string) => void;
   /** Receives parsed stream events while the provider is still running. */
@@ -359,6 +361,19 @@ async function cliProvider(provider: CliProviderName, request: AiRequest, option
     : await oneShotCliProvider(provider, request, options));
 }
 
+/**
+ * The request's tool access, else the sidecar default (WRITER_TOOL_ACCESS),
+ * else "full": Writer runs the same CLI the user runs by hand, with the same
+ * tools, unless they choose to narrow it.
+ */
+export function resolveToolAccess(request: Pick<AiRequest, "toolAccess">, env: NodeJS.ProcessEnv = process.env): AiToolAccess {
+  if (isAiToolAccess(request.toolAccess)) {
+    return request.toolAccess;
+  }
+  const configured = env.WRITER_TOOL_ACCESS?.trim().toLowerCase();
+  return isAiToolAccess(configured) ? configured : DEFAULT_AI_TOOL_ACCESS;
+}
+
 /** Echo the model override a run was made with so the UI can label the result. */
 function withModelOptions(request: AiRequest, response: AiResponse): AiResponse {
   return request.modelOptions ? { ...response, modelOptions: request.modelOptions } : response;
@@ -375,13 +390,15 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
   try {
     throwIfAborted(provider, options.signal);
     setAiProgress(provider, `The ${providerLabel(provider)} agent is starting`, undefined, request.requestedBy ?? null);
+    const toolAccess = resolveToolAccess(request);
     const runTurn = (sessionId: string | null) => runAgentTurn({
       provider,
-      prompt: buildAgentTaskPrompt(sessionId ? request : { ...request, agentSessionId: null }, run),
+      prompt: buildAgentTaskPrompt({ ...request, toolAccess, ...(sessionId ? {} : { agentSessionId: null }) }, run),
       runUrl: agentRunUrl(run.id),
       workspaceDir: cliWorkspaceDir(),
-      env: cliChildEnv(provider),
+      env: cliChildEnv(provider, toolAccess),
       sessionId,
+      toolAccess,
       modelOptions: request.modelOptions ?? null,
       signal: options.signal,
       onEvent: (event) => {
@@ -565,6 +582,17 @@ const READ_BEYOND_SELECTION = "Reading is NOT limited to the selection: whenever
 // the budget, otherwise a window around the selection.
 const SELECTION_CONTEXT_WINDOW_CHARS = 60_000;
 
+function describeToolAccessForAgent(toolAccess: AiToolAccess): string {
+  switch (toolAccess) {
+    case "full":
+      return "The document is reachable ONLY through the `writer` MCP tools — never by editing files. Beyond that you have your usual tools (web, files, shell, your own MCP servers), governed by your normal permission settings; use them whenever they help you answer or verify.";
+    case "read":
+      return "The document is reachable ONLY through the `writer` MCP tools. You may also search and fetch the web and read files on this machine; nothing else — there is no shell and nothing to write.";
+    default:
+      return "You interact ONLY through the `writer` MCP tools — there is no filesystem and no shell.";
+  }
+}
+
 export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments">): string {
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
   const attachmentLines = run.attachments.length
@@ -577,7 +605,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
 
   return [
     "You are the editing agent embedded in Nebula Writer, revising the user's document.",
-    "You interact ONLY through the `writer` MCP tools — there is no filesystem and no shell.",
+    describeToolAccessForAgent(resolveToolAccess(request)),
     "",
     `The document is ${request.documentText.length.toLocaleString()} characters long.`,
     ...(request.mode === "selection"
@@ -635,9 +663,10 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     // Codex keeps a thread per conversation (Claude's one-shot mode has no
     // resume; its agentic engine resumes sessions instead).
     const resumeId = provider === "codex" ? request.agentSessionId ?? null : null;
+    const toolAccess = resolveToolAccess(request);
     let result: string;
     try {
-      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent }, request.modelOptions ?? null, resumeId);
+      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent, toolAccess }, request.modelOptions ?? null, resumeId);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
@@ -646,7 +675,7 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       // The recorded thread is gone (Codex home cleaned, different machine): start over without it.
       setAiProgress(provider, "Earlier conversation is gone — starting a fresh one", undefined, request.requestedBy ?? null);
       threadId = null;
-      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent }, request.modelOptions ?? null, null);
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess }, request.modelOptions ?? null, null);
     }
     const response = parseCliProgressedResponse(provider, result, request);
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
@@ -912,7 +941,7 @@ async function runCoveragePasses(provider: CliProviderName, request: AiRequest, 
       const result = await runCli(
         provider,
         buildCliPrompt(chunkRequest, { coveragePass: chunk }),
-        { ...options, onStreamEvent: createOneShotProgressReporter(provider, request, pass) },
+        { ...options, onStreamEvent: createOneShotProgressReporter(provider, request, pass), toolAccess: resolveToolAccess(request) },
         request.modelOptions ?? null
       );
       responses.push(parseCliProgressedResponse(provider, result, chunkRequest));
@@ -1027,7 +1056,7 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   // Codex writes its final agent message to this file: the authoritative
   // answer even when earlier (schema-shaped) preambles appeared in the stream.
   const lastMessagePath = schemaFile ? join(schemaFile.dir, "last-message.txt") : null;
-  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null);
+  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null, options.toolAccess ?? "document");
   const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
   const runOptions: AiRunOptions = {
     ...options,
@@ -1121,7 +1150,7 @@ function runCliCommand(
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: cliWorkspaceDir(),
-      env: cliChildEnv(provider)
+      env: cliChildEnv(provider, options.toolAccess ?? "document")
     });
     const stdoutStream = child.stdout;
     const stderrStream = child.stderr;
@@ -1259,7 +1288,7 @@ function cliWorkspaceDir(): string {
   return cachedCliWorkspace;
 }
 
-export function cliChildEnv(provider: CliProviderName): NodeJS.ProcessEnv {
+export function cliChildEnv(provider: CliProviderName, toolAccess: AiToolAccess = "document"): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...CLI_ENV_OVERRIDES
@@ -1268,7 +1297,9 @@ export function cliChildEnv(provider: CliProviderName): NodeJS.ProcessEnv {
   // default so AI requests do not pile transcripts into your personal
   // ~/.claude / ~/.codex. Auth is bridged into that home (see cli-home.ts).
   // Opt out with WRITER_CLAUDE_CONFIG_DIR=default / WRITER_CODEX_HOME=default.
-  const cliHome = ensureWriterCliHome(provider);
+  // Full tool access means "the CLI as you run it", so it keeps your own home:
+  // your MCP servers, permission settings, and config defaults.
+  const cliHome = toolAccess === "full" ? null : ensureWriterCliHome(provider);
   if (cliHome) {
     env[PROVIDER_CHILD_HOME_ENV[provider]] = cliHome;
   }
@@ -1410,7 +1441,8 @@ export function buildCliArgs(
   codexSchemaPath?: string,
   modelOptions: AiModelOptions | null = null,
   codexLastMessagePath?: string,
-  codexResumeThreadId?: string | null
+  codexResumeThreadId?: string | null,
+  toolAccess: AiToolAccess = "document"
 ): string[] {
   if (provider === "codex") {
     return [
@@ -1425,8 +1457,9 @@ export function buildCliArgs(
       'service_tier="fast"',
       ...modelCliArgs(provider, modelOptions),
       "--skip-git-repo-check",
-      // `exec resume` keeps the session's sandbox and rejects the flag.
-      ...(codexResumeThreadId ? [] : ["--sandbox", "read-only"]),
+      // `exec resume` keeps the session's sandbox and rejects the flag. Full
+      // access may write inside the Writer workspace (cwd); never beyond it.
+      ...(codexResumeThreadId ? [] : ["--sandbox", toolAccess === "full" ? "workspace-write" : "read-only"]),
       ...(codexSchemaPath ? ["--output-schema", codexSchemaPath] : []),
       ...(codexLastMessagePath ? ["--output-last-message", codexLastMessagePath] : []),
       "-"
@@ -1436,8 +1469,7 @@ export function buildCliArgs(
   return [
     "-p",
     ...modelCliArgs(provider, modelOptions),
-    "--tools",
-    "",
+    ...oneShotClaudeToolArgs(toolAccess),
     // stream-json (which requires --verbose) emits init/assistant/result events
     // as they happen; partial messages add deltas so the UI can show how much
     // of the reply has been written so far.
@@ -1449,6 +1481,20 @@ export function buildCliArgs(
     JSON.stringify(AI_RESPONSE_SCHEMA)
   ];
 }
+
+/** Claude's one-shot mode: no tools, read-only helpers, or whatever the user's own settings allow. */
+function oneShotClaudeToolArgs(toolAccess: AiToolAccess): string[] {
+  switch (toolAccess) {
+    case "full":
+      return [];
+    case "read":
+      return ["--tools", READ_ONLY_CLAUDE_TOOLS, "--allowedTools", READ_ONLY_CLAUDE_TOOLS];
+    default:
+      return ["--tools", ""];
+  }
+}
+
+const READ_ONLY_CLAUDE_TOOLS = "WebSearch WebFetch Read Glob Grep";
 
 function formatCharCount(chars: number): string {
   return chars < 1000 ? `${chars} characters` : `${(chars / 1000).toFixed(1)}k characters`;

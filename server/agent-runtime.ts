@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cliTimeoutMs, formatCliTimeout, resolveCliCommand, type CliProviderName } from "./cli-runtime";
+import type { AiToolAccess } from "../src/shared";
 import { execViaGateway, gatewayAvailable } from "./gateway-client";
 
 /**
@@ -72,6 +73,8 @@ export interface AgentTurnOptions {
   sessionId?: string | null;
   /** Model / reasoning override passed to the CLI (see model-catalog.ts). */
   modelOptions?: AiModelOptions | null;
+  /** How much of the CLI's own tooling the turn may use (default: document only). */
+  toolAccess?: AiToolAccess | null;
   signal?: AbortSignal;
   timeoutMs?: number;
   onEvent?: (event: AgentEvent) => void;
@@ -120,7 +123,28 @@ function writeMcpConfig(runUrl: string): { path: string; dispose: () => void } {
   };
 }
 
-export function buildAgentClaudeArgs(prompt: string, mcpConfigPath: string, sessionId: string | null, modelOptions: AiModelOptions | null = null): string[] {
+const READ_ONLY_CLAUDE_TOOLS = "WebSearch WebFetch Read Glob Grep";
+
+/**
+ * Claude's tool surface per access level. "document" is the original lockdown
+ * (nothing but Writer's MCP server); "read" adds web and read-only files;
+ * "full" drops the restrictions so the CLI runs as the user runs it — their
+ * own MCP servers load alongside Writer's, and their permission settings
+ * decide what else may run (a tool they have not allowed is denied, not
+ * prompted, in print mode). Writer's tools are always pre-approved.
+ */
+function claudeToolArgs(toolAccess: AiToolAccess): string[] {
+  switch (toolAccess) {
+    case "full":
+      return ["--allowedTools", "mcp__writer ToolSearch"];
+    case "read":
+      return ["--strict-mcp-config", "--tools", `ToolSearch ${READ_ONLY_CLAUDE_TOOLS}`, "--allowedTools", `mcp__writer ToolSearch ${READ_ONLY_CLAUDE_TOOLS}`];
+    default:
+      return ["--strict-mcp-config", "--tools", "ToolSearch", "--allowedTools", "mcp__writer ToolSearch"];
+  }
+}
+
+export function buildAgentClaudeArgs(prompt: string, mcpConfigPath: string, sessionId: string | null, modelOptions: AiModelOptions | null = null, toolAccess: AiToolAccess = "document"): string[] {
   const args = [
     "-p",
     prompt,
@@ -129,11 +153,7 @@ export function buildAgentClaudeArgs(prompt: string, mcpConfigPath: string, sess
     "--verbose",
     "--mcp-config",
     mcpConfigPath,
-    "--strict-mcp-config",
-    "--tools",
-    "ToolSearch",
-    "--allowedTools",
-    "mcp__writer ToolSearch",
+    ...claudeToolArgs(toolAccess),
     ...modelCliArgs("claude", modelOptions)
   ];
   if (sessionId) {
@@ -142,19 +162,18 @@ export function buildAgentClaudeArgs(prompt: string, mcpConfigPath: string, sess
   return args;
 }
 
-export function buildAgentCodexArgs(prompt: string, runUrl: string, workspaceDir: string, sessionId: string | null, modelOptions: AiModelOptions | null = null): string[] {
+export function buildAgentCodexArgs(prompt: string, runUrl: string, workspaceDir: string, sessionId: string | null, modelOptions: AiModelOptions | null = null, toolAccess: AiToolAccess = "document"): string[] {
   const launch = mcpServerLaunch(runUrl);
   const head = sessionId ? ["exec", "resume", sessionId] : ["exec"];
   // `codex exec` is non-interactive (no approval flag); confinement comes
-  // from the read-only sandbox plus the single registered MCP server.
+  // from the sandbox (read-only, or workspace-write inside the Writer
+  // workspace for full access) plus the registered MCP server. `exec resume`
+  // keeps the session's sandbox and cwd and rejects those flags.
   return [
     ...head,
     "--json",
     "--skip-git-repo-check",
-    "-s",
-    "read-only",
-    "-C",
-    workspaceDir,
+    ...(sessionId ? [] : ["-s", toolAccess === "full" ? "workspace-write" : "read-only", "-C", workspaceDir]),
     "-c",
     'service_tier="fast"',
     "-c",
@@ -252,8 +271,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   const onEvent = options.onEvent ?? (() => undefined);
   const mcpConfig = writeMcpConfig(options.runUrl);
   const args = options.provider === "claude"
-    ? buildAgentClaudeArgs(options.prompt, mcpConfig.path, options.sessionId ?? null, options.modelOptions ?? null)
-    : buildAgentCodexArgs(options.prompt, options.runUrl, options.workspaceDir, options.sessionId ?? null, options.modelOptions ?? null);
+    ? buildAgentClaudeArgs(options.prompt, mcpConfig.path, options.sessionId ?? null, options.modelOptions ?? null, options.toolAccess ?? "document")
+    : buildAgentCodexArgs(options.prompt, options.runUrl, options.workspaceDir, options.sessionId ?? null, options.modelOptions ?? null, options.toolAccess ?? "document");
   const timeoutMs = options.timeoutMs ?? cliTimeoutMs();
   const parser = options.provider === "claude" ? new ClaudeStreamParser() : new CodexStreamParser();
 

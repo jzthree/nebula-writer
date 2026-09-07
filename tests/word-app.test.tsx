@@ -302,6 +302,7 @@ describe("Word task pane", () => {
     send("Review the document.");
     await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
     expect(captured.requests[0].mode).toBe("global");
+    expect(captured.requests[0].toolAccess).toBe("full");
     expect(captured.requests[0].hostContext?.cursor).not.toBeNull();
 
     fireEvent.click(screen.getByTitle("Leave the suggestion as a Word comment on this passage"));

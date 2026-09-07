@@ -624,3 +624,5 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-card.handled .wp-card-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .wp-card.handled .wp-card-outcome { flex-wrap: wrap; }
 .wp-outcome-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+
+.wp-field-detail { display: block; margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); }

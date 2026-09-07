@@ -39,6 +39,7 @@ import {
   SquareTerminal,
   MessageSquarePlus,
   MessageSquareText,
+  Wrench,
   FilePlus2,
   PanelRight,
   Paperclip,
@@ -66,7 +67,7 @@ import { HeadingEnter } from "./headingEnter";
 import { UndoGuard } from "./undoGuard";
 import { applyReplacementAsSuggestionMarks, resolveSuggestionMarks, SuggestingRouter, SuggestionDeletion, SuggestionInsertion } from "./suggesting";
 import { RetainedSelection } from "./retainedSelection";
-import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, formatElapsedSince, isLocalHostname, type AiAttachment, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary } from "./shared";
+import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, AI_TOOL_ACCESS_LEVELS, DEFAULT_AI_TOOL_ACCESS, formatElapsedSince, isAiToolAccess, isLocalHostname, type AiAttachment, type AiToolAccess, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary } from "./shared";
 import { generalBuiltInRoutines, r01BuiltInRoutines, r01RoutineSequence, type WritingRoutine } from "./writingRoutines";
 
 type InteractiveProviderName = Exclude<AiProviderName, "demo">;
@@ -482,6 +483,23 @@ export function App() {
       return "codex";
     }
   });
+  // Tool access for AI requests: "everything your CLI has" unless narrowed here.
+  const [toolAccess, setToolAccessState] = useState<AiToolAccess>(() => {
+    try {
+      const stored = window.localStorage.getItem("nebula-writer-tool-access");
+      return isAiToolAccess(stored) ? stored : DEFAULT_AI_TOOL_ACCESS;
+    } catch {
+      return DEFAULT_AI_TOOL_ACCESS;
+    }
+  });
+  const setToolAccess = useCallback((next: AiToolAccess) => {
+    setToolAccessState(next);
+    try {
+      window.localStorage.setItem("nebula-writer-tool-access", next);
+    } catch {
+      // Storage unavailable; the choice just won't persist.
+    }
+  }, []);
   const setProvider = useCallback((next: InteractiveProviderName) => {
     setProviderState(next);
     try {
@@ -4122,6 +4140,7 @@ export function App() {
         requestedBy: collabSession.user.name,
         docId: docId ?? undefined,
         attachments: requestAttachments.length ? requestAttachments : undefined,
+        toolAccess,
         agentSessionId: agentSessionsRef.current[`${provider}:${docId ?? "scratch"}`] ?? null
       };
       // Personal runner: their own CLI account, with staging left to the
@@ -5586,6 +5605,12 @@ export function App() {
               <span>Export</span>
             </button>
           ) : null}
+          <div className="provider-select" title={AI_TOOL_ACCESS_LEVELS.find((level) => level.id === toolAccess)?.detail ?? ""}>
+            <Wrench size={17} aria-hidden="true" />
+            <select value={toolAccess} onChange={(event) => setToolAccess(event.target.value as AiToolAccess)} aria-label="Tools the AI may use">
+              {AI_TOOL_ACCESS_LEVELS.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}
+            </select>
+          </div>
           <div className="provider-select" title={`${providerState}${providerDetail ? ` — ${providerDetail}` : ""}`}>
             <Bot size={17} aria-hidden="true" />
             <select value={provider} onChange={(event) => setProvider(event.target.value as InteractiveProviderName)} aria-label="AI provider">

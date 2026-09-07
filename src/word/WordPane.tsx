@@ -37,7 +37,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type LocalAiProviderName } from "../shared";
+import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
@@ -180,7 +180,7 @@ export interface WordPaneProps {
   scope: RequestScope;
   scopeLabel: string;
   scopeOptions: ScopeOption[];
-  settings: { requesterName: string; trackChanges: "always" | "word"; shareWithAgents: boolean; mirrorChat: boolean };
+  settings: { requesterName: string; trackChanges: "always" | "word"; shareWithAgents: boolean; mirrorChat: boolean; toolAccess: AiToolAccess };
   sidecarDetail: string;
   sidecarStatus: SidecarStatus;
   suggestionById: (id: string) => AiSuggestion | null;
@@ -870,6 +870,13 @@ function SettingsPanel(props: {
           <option value="always">Always as a tracked change</option>
           <option value="word">Follow Word's Track Changes setting</option>
         </select>
+      </label>
+      <label className="wp-field">
+        <span>Tools the AI may use</span>
+        <select value={props.settings.toolAccess} onChange={(event) => props.onSettingsChange({ toolAccess: event.currentTarget.value as AiToolAccess })} aria-label="Tools the AI may use">
+          {AI_TOOL_ACCESS_LEVELS.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}
+        </select>
+        <small className="wp-field-detail">{AI_TOOL_ACCESS_LEVELS.find((level) => level.id === props.settings.toolAccess)?.detail}</small>
       </label>
       <label className="wp-toggle">
         <input type="checkbox" checked={props.settings.shareWithAgents} onChange={(event) => props.onSettingsChange({ shareWithAgents: event.currentTarget.checked })} />

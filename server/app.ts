@@ -9,7 +9,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport } from "./docx";
 import { getAiProgress, getAiQueue, proposeChanges, smokeTestProvider } from "./ai";
-import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary } from "../src/shared";
+import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, type AgentRunContext } from "./agent-run";
 import { readAgentRunContext } from "./agent-context";
@@ -3628,6 +3628,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if ("error" in conversation) {
     return conversation;
   }
+  const toolAccessValue = (body as { toolAccess?: unknown }).toolAccess;
+  if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
+    return { error: "toolAccess must be one of document, read, or full." };
+  }
 
   return {
     request: {
@@ -3642,6 +3646,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       attachments: attachments.value,
       hostContext: hostContext.hostContext,
       modelOptions: modelOptions.modelOptions,
+      toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,
       requestedBy: typeof (body as { requestedBy?: unknown }).requestedBy === "string" && ((body as { requestedBy?: string }).requestedBy ?? "").trim()

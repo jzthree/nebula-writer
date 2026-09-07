@@ -262,6 +262,28 @@ describe("agent CLI arguments", () => {
     ]);
   });
 
+  it("opens Claude up by access level: read-only helpers, or everything the user's CLI has", () => {
+    const read = buildAgentClaudeArgs("go", "/tmp/mcp.json", null, null, "read");
+    expect(read).toContain("--strict-mcp-config");
+    expect(read[read.indexOf("--tools") + 1]).toBe("ToolSearch WebSearch WebFetch Read Glob Grep");
+    expect(read[read.indexOf("--allowedTools") + 1]).toBe("mcp__writer ToolSearch WebSearch WebFetch Read Glob Grep");
+
+    const full = buildAgentClaudeArgs("go", "/tmp/mcp.json", null, null, "full");
+    expect(full).not.toContain("--strict-mcp-config");
+    expect(full).not.toContain("--tools");
+    expect(full[full.indexOf("--allowedTools") + 1]).toBe("mcp__writer ToolSearch");
+    expect(full).toContain("--mcp-config");
+  });
+
+  it("gives Codex a writable workspace sandbox only for full access, and no sandbox/cwd flags on resume", () => {
+    expect(buildAgentCodexArgs("go", "http://x", "/work", null, null, "full")).toContain("workspace-write");
+    expect(buildAgentCodexArgs("go", "http://x", "/work", null, null, "read")).toContain("read-only");
+    const resumed = buildAgentCodexArgs("go", "http://x", "/work", "thread-9", null, "full");
+    expect(resumed.slice(0, 3)).toEqual(["exec", "resume", "thread-9"]);
+    expect(resumed).not.toContain("-s");
+    expect(resumed).not.toContain("-C");
+  });
+
   it("resumes Claude sessions", () => {
     const args = buildAgentClaudeArgs("follow up", "/tmp/mcp.json", "sess-123");
     expect(args.slice(-2)).toEqual(["--resume", "sess-123"]);

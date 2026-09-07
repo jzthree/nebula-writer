@@ -54,6 +54,14 @@ exactly what was sent** — click *Sent …* to expand it:
 If a reply looks truncated or odd, the raw CLI transcript for that run is in
 `~/.nebula-writer/cli-transcripts/` (prompt, stdout, stderr; last 30 runs).
 
+**Tools the AI may use** (Settings) decides how much of the CLI's own tooling
+a request gets. *Everything your CLI has* (the default) runs Claude Code or
+Codex the way you run them yourself: their built-in tools, your own MCP
+servers, your permission settings; the document is still only edited through
+the review queue. *Document + web and read-only files* adds only web
+search/fetch and read-only file access to Writer's tools. *Document only* is
+the original lockdown. The web app has the same picker next to the provider.
+
 Follow-ups keep the provider's own conversation: Claude resumes its session
 and Codex resumes its recorded thread (`codex exec resume`), so "continue" or
 "yes, do it" carries the earlier turns, the document, and the decisions you

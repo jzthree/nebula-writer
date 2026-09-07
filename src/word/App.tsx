@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -81,6 +81,7 @@ interface PaneSettings {
   trackChanges: "always" | "word";
   shareWithAgents: boolean;
   mirrorChat: boolean;
+  toolAccess: AiToolAccess;
   provider: LocalAiProviderName;
   scope: RequestScope;
   models: Partial<Record<LocalAiProviderName, ModelPreference>>;
@@ -96,6 +97,7 @@ const DEFAULT_SETTINGS: PaneSettings = {
   trackChanges: "always",
   shareWithAgents: true,
   mirrorChat: true,
+  toolAccess: DEFAULT_AI_TOOL_ACCESS,
   provider: "claude",
   scope: "auto",
   models: {}
@@ -141,6 +143,7 @@ function loadSettings(): PaneSettings {
       trackChanges: parsed.trackChanges === "word" ? "word" : "always",
       shareWithAgents: typeof parsed.shareWithAgents === "boolean" ? parsed.shareWithAgents : DEFAULT_SETTINGS.shareWithAgents,
       mirrorChat: typeof parsed.mirrorChat === "boolean" ? parsed.mirrorChat : DEFAULT_SETTINGS.mirrorChat,
+      toolAccess: isAiToolAccess(parsed.toolAccess) ? parsed.toolAccess : DEFAULT_SETTINGS.toolAccess,
       provider: parsed.provider === "codex" ? "codex" : "claude",
       scope: isScope(parsed.scope) ? parsed.scope : "auto",
       models
@@ -664,6 +667,7 @@ export function App() {
         selection: resolved.selection ?? currentFocus?.selection ?? null,
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || "Word",
+        toolAccess: settingsRef.current.toolAccess,
         hostContext,
         ...(modelOptions ? { modelOptions } : {}),
         ...(attachmentsRef.current.length ? { attachments: attachmentsRef.current } : {}),
@@ -1247,7 +1251,7 @@ export function App() {
       scope={settings.scope}
       scopeLabel={scopeResolution?.label ?? "Waiting for the document…"}
       scopeOptions={scopeOptions}
-      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat }}
+      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat, toolAccess: settings.toolAccess }}
       sidecarDetail={sidecarDetail}
       sidecarStatus={sidecarStatus}
       suggestionById={suggestionById}

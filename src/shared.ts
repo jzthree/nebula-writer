@@ -1,6 +1,25 @@
 export type AiProviderName = "demo" | "codex" | "claude";
 export type LocalAiProviderName = "codex" | "claude";
 
+/**
+ * How much of the CLI's own tooling an AI request may use. The document is
+ * always reached through Writer's MCP tools; this governs everything else.
+ *  - document: nothing but Writer's tools (the original lockdown).
+ *  - read: plus web search/fetch and read-only file access.
+ *  - full: everything the CLI has — its built-ins, the user's own MCP servers
+ *    and permission settings — as when the user runs it themselves.
+ */
+export type AiToolAccess = "document" | "read" | "full";
+export const AI_TOOL_ACCESS_LEVELS: ReadonlyArray<{ id: AiToolAccess; label: string; detail: string }> = [
+  { id: "full", label: "Everything your CLI has", detail: "Web, files, shell, and your own MCP servers, exactly as your CLI's permission settings allow. The document is still only edited through Writer's review queue." },
+  { id: "read", label: "Document + web and read-only files", detail: "Writer's document tools plus web search/fetch and read-only file access. Nothing can write or run commands." },
+  { id: "document", label: "Document only", detail: "Only Writer's document tools. No web, no files, no shell." }
+];
+export const DEFAULT_AI_TOOL_ACCESS: AiToolAccess = "full";
+export function isAiToolAccess(value: unknown): value is AiToolAccess {
+  return value === "document" || value === "read" || value === "full";
+}
+
 export const AI_CONTEXT_CHAR_LIMIT = 120_000;
 
 // True only for origins served from the viewer's own machine. Repo-based
@@ -69,6 +88,8 @@ export interface AiRequest {
   hostContext?: WordHostContext | null;
   /** Model / reasoning-level override for this run (null = the CLI's own default). */
   modelOptions?: AiModelOptions | null;
+  /** Tool access for this run (null = the sidecar's default, WRITER_TOOL_ACCESS or "full"). */
+  toolAccess?: AiToolAccess | null;
   /**
    * The conversation so far, oldest first, including what the user did with
    * earlier suggestions. Sent by chat-style clients so a follow-up ("make it

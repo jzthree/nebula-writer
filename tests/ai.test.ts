@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, selectFinalPayload } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -1705,6 +1705,19 @@ describe("proposeChanges", () => {
     expect(buildCliArgs("codex", "/tmp/schema.json")).toContain("--sandbox");
     expect(buildCliArgs("codex", "/tmp/schema.json")[0]).toBe("exec");
     expect(buildCliArgs("codex", "/tmp/schema.json")[1]).toBe("--json");
+  });
+
+  it("maps tool access onto the one-shot CLIs", () => {
+    expect(buildCliArgs("codex", "/tmp/schema.json", null, undefined, null, "full")).toContain("workspace-write");
+    expect(buildCliArgs("codex", "/tmp/schema.json", null, undefined, null, "document")).toContain("read-only");
+    const claudeDocument = buildCliArgs("claude", undefined, null, undefined, null, "document");
+    expect(claudeDocument[claudeDocument.indexOf("--tools") + 1]).toBe("");
+    const claudeRead = buildCliArgs("claude", undefined, null, undefined, null, "read");
+    expect(claudeRead[claudeRead.indexOf("--tools") + 1]).toBe("WebSearch WebFetch Read Glob Grep");
+    expect(buildCliArgs("claude", undefined, null, undefined, null, "full")).not.toContain("--tools");
+    expect(resolveToolAccess({ toolAccess: "read" })).toBe("read");
+    expect(resolveToolAccess({ toolAccess: null }, { WRITER_TOOL_ACCESS: "document" })).toBe("document");
+    expect(resolveToolAccess({}, {})).toBe("full");
   });
 
   it("asks Codex to write its final message to a file and tolerates old builds without the flag", () => {

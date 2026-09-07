@@ -52,18 +52,25 @@ All loopback + share-auth guarded like the rest of the API.
 
 Port of slides-mcp's connector, adapted:
 
-- **Claude (validated default)** — lockdown recipe:
-  `-p <prompt> --output-format stream-json --verbose --mcp-config <tmpfile>
-  --strict-mcp-config --tools ToolSearch --allowedTools "mcp__writer ToolSearch"
-  [--resume <sessionId>]`.
-  `--tools ToolSearch` strips every built-in (no Bash/Write/Read);
-  `--strict-mcp-config` + a single-server temp config means the agent can
-  reach nothing but Writer's MCP server; `--allowedTools` pre-approves so
-  nothing prompts.
+- **Claude (validated default)** — tool access is a per-request setting
+  (`toolAccess`, chosen in the pane's Settings or the web app's tools picker;
+  sidecar default `WRITER_TOOL_ACCESS`, else `full`):
+  - `document`: the original lockdown — `--strict-mcp-config --tools ToolSearch
+    --allowedTools "mcp__writer ToolSearch"` strips every built-in and every
+    other MCP server, so the agent reaches nothing but Writer's tools.
+  - `read`: adds `WebSearch WebFetch Read Glob Grep` to both lists.
+  - `full` (default): no `--strict-mcp-config`, no `--tools` filter, and the
+    CLI runs in the user's own config home, so their MCP servers load
+    alongside Writer's and their permission settings decide what else runs
+    (in print mode an unallowed tool is denied, not prompted). Writer's tools
+    stay pre-approved. The document is still only edited through the review
+    queue.
 - **Codex (experimental, as in slides-mcp)** — `codex exec --json` with the
-  MCP server registered via `-c` overrides and the sandbox scoped to a
-  scratch dir. Codex has no built-in-tool allowlist; its confinement is the
-  sandbox. Gate retirement on validating this path e2e (see Rollout).
+  MCP server registered via `-c` overrides. Codex has no built-in-tool
+  allowlist; its confinement is the sandbox: read-only for `document`/`read`,
+  `workspace-write` inside the Writer workspace for `full`, which also runs in
+  the user's own `CODEX_HOME` so their `config.toml` MCP servers load. Gate
+  retirement on validating this path e2e (see Rollout).
 - **Stream parsers** for both CLIs' JSONL ported near-verbatim, emitting
   `status | session | text | thinking | tool | result | error` events.
 - The MCP config launches `writer-mcp` (tsx entry or built bin) with
