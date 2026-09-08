@@ -67,7 +67,7 @@ import { HeadingEnter } from "./headingEnter";
 import { UndoGuard } from "./undoGuard";
 import { applyReplacementAsSuggestionMarks, resolveSuggestionMarks, SuggestingRouter, SuggestionDeletion, SuggestionInsertion } from "./suggesting";
 import { RetainedSelection } from "./retainedSelection";
-import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, AI_TOOL_ACCESS_LEVELS, DEFAULT_AI_TOOL_ACCESS, formatElapsedSince, isAiToolAccess, isLocalHostname, type AiAttachment, type AiToolAccess, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary } from "./shared";
+import { AI_ATTACHMENT_LIMIT, AI_CONTEXT_CHAR_LIMIT, AI_TOOL_ACCESS_LEVELS, DEFAULT_AI_TOOL_ACCESS, formatElapsedSince, isAiToolAccess, isLocalHostname, type AiAttachment, type AiToolAccess, type AiProviderName, type AiRequest, type ImportedDocument, type AiResponse, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ProviderHealth, type ProviderSmokeResponse, type SelectionContext, type SourceTrackedChangePreview, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSummary, type AiRequestFocus } from "./shared";
 import { generalBuiltInRoutines, r01BuiltInRoutines, r01RoutineSequence, type WritingRoutine } from "./writingRoutines";
 
 type InteractiveProviderName = Exclude<AiProviderName, "demo">;
@@ -516,6 +516,8 @@ export function App() {
       return DEFAULT_AI_TOOL_ACCESS;
     }
   });
+  // "Refine": the next chat message is feedback on one review card.
+  const [chatFocus, setChatFocus] = useState<AiRequestFocus | null>(null);
   const setToolAccess = useCallback((next: AiToolAccess) => {
     setToolAccessState(next);
     try {
@@ -2541,7 +2543,7 @@ export function App() {
       .map((suggestion) => ({
         id: suggestion.id,
         suggestion,
-        text: `${suggestion.decidedBy ?? "Someone"} ${suggestion.status} "${suggestion.title}"`,
+        text: `${suggestion.decidedBy ?? "Someone"} ${suggestion.supersededBy ? "revised" : suggestion.status} "${suggestion.title}"`,
         time: suggestion.decidedAt ? formatDecisionTime(suggestion.decidedAt) : ""
       }));
   }, [suggestions]);
@@ -4144,6 +4146,7 @@ export function App() {
     setError(null);
     setEmptyAiResult(null);
     setInstruction("");
+    setChatFocus(null);
     // Attachments are STICKY context: they stay attached across turns (and
     // across a failed request) until the user removes them, so a file never
     // needs re-attaching and is included with every message in the thread.
@@ -4165,6 +4168,7 @@ export function App() {
         docId: docId ?? undefined,
         attachments: requestAttachments.length ? requestAttachments : undefined,
         toolAccess,
+        ...(chatFocus ? { focus: chatFocus } : {}),
         agentSessionId: agentSessionsRef.current[`${provider}:${docId ?? "scratch"}`] ?? null
       };
       // Personal runner: their own CLI account, with staging left to the
@@ -4515,6 +4519,18 @@ export function App() {
     }
     setDocumentNote(`${decision === "accept" ? "Accepted" : "Rejected"} inline suggestion${suggestion.proposedBy ? ` by ${suggestion.proposedBy}` : ""}`);
     setError(null);
+  }
+
+  function refineSuggestion(suggestion: AiSuggestion) {
+    setChatFocus({
+      suggestionId: suggestion.id,
+      ref: suggestion.ref ?? null,
+      title: suggestion.title || "Suggested revision",
+      original: suggestion.original,
+      replacement: suggestion.replacement,
+      rationale: suggestion.rationale || null
+    });
+    setActiveSuggestionId(suggestion.id);
   }
 
   function acceptSuggestion(suggestion: AiSuggestion) {
@@ -6571,6 +6587,16 @@ export function App() {
             ) : null}
             </div>
 
+            {chatFocus ? (
+              <div className="cap-chip-row">
+                <span className="cap-chip focus-chip" title="The next message is feedback on this suggestion: the AI revises it and the earlier version is withdrawn.">
+                  About {chatFocus.ref ? `${chatFocus.ref} ` : ""}"{chatFocus.title}"
+                  <button type="button" onClick={() => setChatFocus(null)} aria-label="Stop replying about this suggestion" title="Back to a general message">
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </span>
+              </div>
+            ) : null}
             {maxSuggestionsInput.trim() ? (
               <div className="cap-chip-row">
                 <span className="cap-chip" title="This cap was set by a saved skill or retry flow; remove it to let the AI return as many edits as it finds useful.">
@@ -7430,6 +7456,11 @@ export function App() {
                           Word comment
                         </span>
                       ) : null}
+                      {suggestion.revises ? (
+                        <span className="suggestion-warning revision" title="Written after your feedback on an earlier suggestion, which was withdrawn">
+                          Revision
+                        </span>
+                      ) : null}
                       <span
                         className={`confidence-badge confidence-${confidenceBucket(suggestion.confidence)}`}
                         title={`The provider rated this edit ${Math.round(Math.max(0, Math.min(1, suggestion.confidence)) * 100)}% safe — its own estimate, not a guarantee. Always check the highlighted text before accepting.`}
@@ -7536,6 +7567,16 @@ export function App() {
 	                    ) : null}
 	                    {suggestion.status === "pending" ? (
 	                      <>
+	                        <button
+	                          type="button"
+	                          onClick={(event) => {
+	                            event.stopPropagation();
+	                            refineSuggestion(suggestion);
+	                          }}
+	                          title="Tell the AI how to change this suggestion — your next message is about it"
+	                        >
+	                          <Sparkles size={16} aria-hidden="true" /> Refine
+	                        </button>
 	                        <button
 	                          type="button"
 	                          onClick={(event) => {

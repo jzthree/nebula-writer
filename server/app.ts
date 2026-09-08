@@ -9,7 +9,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxImages } from "./docx";
 import { getAiProgress, getAiQueue, proposeChanges, smokeTestProvider } from "./ai";
-import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage } from "../src/shared";
+import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, type AgentRunContext } from "./agent-run";
 import { readAgentRunContext } from "./agent-context";
@@ -23,6 +23,7 @@ import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, 
 import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSuggestion } from "./inline-suggestions";
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
 import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
+import { supersedeRevisedSuggestions } from "./revisions";
 import { liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
 import { r01RoutineSequence } from "../src/writingRoutines";
@@ -962,7 +963,7 @@ export function createWriterApp() {
       }
       activeWriterSession = {
         ...baseSession,
-        suggestions: mergeSessionSuggestions(ai.suggestions, baseSession.suggestions),
+        suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, baseSession.suggestions), ai.suggestions, parsed.request.requestedBy ?? "Word"),
         revision: nextSessionRevision(),
         updatedAt: new Date().toISOString()
       };
@@ -1510,7 +1511,7 @@ export function createWriterApp() {
       if (parsed.request.stageSuggestions !== false && activeWriterSession && parsed.request.documentText === activeWriterSession.documentText) {
         activeWriterSession = {
           ...activeWriterSession,
-          suggestions: [...stampOrigin(ai.suggestions), ...activeWriterSession.suggestions],
+          suggestions: supersedeRevisedSuggestions([...stampOrigin(ai.suggestions), ...activeWriterSession.suggestions], ai.suggestions, aiRequest.requestedBy ?? "Writer"),
           revision: nextSessionRevision(),
           updatedAt: new Date().toISOString()
         };
@@ -3689,6 +3690,34 @@ function parseDocumentImages(value: unknown): { value: AiDocumentImage[] | undef
   return { value: images };
 }
 
+/** The suggestion a message is about; every field is clipped, none may be missing. */
+function parseRequestFocus(value: unknown): { value: AiRequestFocus | null } | { error: string } {
+  if (value === undefined || value === null) {
+    return { value: null };
+  }
+  if (!value || typeof value !== "object") {
+    return { error: "focus must be an object naming the suggestion the message is about." };
+  }
+  const raw = value as Record<string, unknown>;
+  const text = (field: unknown, limit: number) => (typeof field === "string" ? field.slice(0, limit) : "");
+  const suggestionId = text(raw.suggestionId, 120).trim();
+  const title = text(raw.title, 200).trim();
+  const original = text(raw.original, 6000);
+  if (!suggestionId || !title || !original.trim()) {
+    return { error: "focus requires suggestionId, title, and original." };
+  }
+  return {
+    value: {
+      suggestionId,
+      ref: text(raw.ref, 20).trim() || null,
+      title,
+      original,
+      replacement: text(raw.replacement, 6000),
+      rationale: text(raw.rationale, 2000).trim() || null
+    }
+  };
+}
+
 /** Images of the live (terminal-agent) document: the latest set the Word add-in pushed for it, if any. */
 function liveDocumentImages(): AiDocumentImage[] {
   return wordHostState?.documentImages ?? [];
@@ -3797,6 +3826,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if ("error" in documentImages) {
     return documentImages;
   }
+  const focus = parseRequestFocus((body as { focus?: unknown }).focus);
+  if ("error" in focus) {
+    return focus;
+  }
   const toolAccessValue = (body as { toolAccess?: unknown }).toolAccess;
   if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
     return { error: "toolAccess must be one of document, read, or full." };
@@ -3817,6 +3850,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       modelOptions: modelOptions.modelOptions,
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       documentImages: documentImages.value,
+      focus: focus.value,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,
       requestedBy: typeof (body as { requestedBy?: unknown }).requestedBy === "string" && ((body as { requestedBy?: string }).requestedBy ?? "").trim()

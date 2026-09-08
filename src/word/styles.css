@@ -633,3 +633,11 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-image-change .wp-image-arrow { color: var(--muted); font-size: 16px; }
 .wp-image-change .wp-image-missing { font-size: 11px; color: var(--muted); text-align: center; }
 .wp-image-change figcaption { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+
+/* Refine: the next message is about one suggestion */
+.wp-focus-chip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--accent-border); background: var(--accent-bg, var(--surface-soft)); font-size: 11.5px; color: var(--accent-text); }
+.wp-focus-label { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.wp-focus-quick { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.wp-focus-chip > .wp-icon-button { margin-left: auto; }
+.wp-turn-focus { margin: 0 0 2px; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent-text); }
+.wp-card-meta .tag.revision { background: var(--accent-bg, var(--surface-soft)); border-color: var(--accent-border); color: var(--accent-text); }

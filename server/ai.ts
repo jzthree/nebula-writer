@@ -13,6 +13,7 @@ import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } 
 import { broadcastAiProgress } from "./realtime";
 import { containsAnchoredText, documentImageLabel, isImageCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate } from "./suggestion-validation";
 import { imageMimeForName } from "./image-files";
+import { describeFocus, linkRevision } from "./revisions";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
@@ -209,11 +210,11 @@ export async function proposeChanges(request: AiRequest, options: AiRunOptions =
   }
 
   if (request.provider === "demo") {
-    return withModelOptions(request, { ...demoProvider(request), agentSessionId: request.agentSessionId ?? null });
+    return withModelOptions(request, linkRevision(request, { ...demoProvider(request), agentSessionId: request.agentSessionId ?? null }));
   }
 
   const provider = request.provider as CliProviderName;
-  return runQueuedAiRequest(
+  return linkRevision(request, await runQueuedAiRequest(
     { provider, requestedBy: request.requestedBy ?? null },
     () => {
       // The wait in the queue may outlive the requester (Stop button or a
@@ -223,7 +224,7 @@ export async function proposeChanges(request: AiRequest, options: AiRunOptions =
       }
       return cliProvider(provider, request, options);
     }
-  );
+  ));
 }
 
 export async function smokeTestProvider(provider: CliProviderName): Promise<ProviderSmokeResponse> {
@@ -633,6 +634,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request),
+    ...describeFocus(request.focus, "agentic"),
     "",
     "How to work:",
     "- Read by structure with writer_read_context: { what: \"paragraph\" } is the paragraph at the author's caret (before/after add neighbours), \"section\" the whole section under the nearest heading, \"page\" exactly what is on screen, \"outline\" every heading with offsets, \"document\" the size and outline. The window state is live: the author may move while you work, so re-read before staging when the request says \"here\" or \"this\".",
@@ -853,6 +855,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     ...buildDocumentImagePromptLines(request),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
     ...(options.coveragePass ? [] : describeConversation(request)),
+    ...(options.coveragePass ? [] : describeFocus(request.focus, "oneshot")),
     "Text:",
     promptText.text
   ].filter((line): line is string => line !== null).join("\n");

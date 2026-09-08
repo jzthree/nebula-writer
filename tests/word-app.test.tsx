@@ -114,14 +114,15 @@ vi.mock("../src/word/writerClient", () => ({
     }
     const suggestion: AiSuggestion = {
       id: `s-${captured.requests.length}`,
-      title: "Tighten the opening claim",
+      title: request.focus ? "Tighten the opening claim, keeping the citation" : "Tighten the opening claim",
       original: ORIGINAL,
-      replacement: REPLACEMENT,
+      replacement: request.focus ? `${REPLACEMENT} [1]` : REPLACEMENT,
       rationale: "Removes hedging and filler.",
       confidence: 0.82,
       target: request.mode,
       range: null,
-      status: "pending"
+      status: "pending",
+      ...(request.focus ? { revises: request.focus.suggestionId, ref: "S2" } : {})
     };
     return {
       ai: {
@@ -399,6 +400,34 @@ describe("Word task pane", () => {
     send("Figure: and again");
     await waitFor(() => expect(captured.requests.length).toBe(2));
     expect(captured.imageUploads).toHaveLength(1);
+  });
+
+  it("refines one suggestion: the next message is about it, the reply revises it, and the earlier card is withdrawn", async () => {
+    await renderPane();
+    send("Tighten the first sentence.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /Refine/ }));
+    expect(screen.getByText(/About "Tighten the opening claim"/)).toBeInTheDocument();
+    send("Keep the citation.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].focus).toMatchObject({ suggestionId: "s-1", title: "Tighten the opening claim", original: ORIGINAL, replacement: REPLACEMENT });
+
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim, keeping the citation")).toBeInTheDocument());
+    expect(screen.getByText(/Revision of Tighten the opening claim/)).toBeInTheDocument();
+    const earlier = screen.getByLabelText("Handled suggestion: Tighten the opening claim");
+    expect(earlier.textContent).toContain("revised");
+    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    // The chip is gone after sending, and no decision was posted for the withdrawal (the sidecar recorded it).
+    expect(screen.queryByLabelText("Stop replying about this suggestion")).not.toBeInTheDocument();
+    expect(captured.statusUpdates).toEqual([]);
+
+    // The digest tells the AI what happened to the earlier suggestion.
+    send("Now the next sentence.");
+    await waitFor(() => expect(captured.requests.length).toBe(3));
+    const digest = captured.requests[2].conversation ?? [];
+    expect(digest.some((turn) => turn.role === "user" && turn.content.startsWith('[About "Tighten the opening claim"] Keep the citation.'))).toBe(true);
+    expect(digest.some((turn) => turn.role === "assistant" && turn.decisions?.some((decision) => decision.status === "superseded"))).toBe(true);
   });
 
   it("starts a new conversation without dismissing pending suggestions", async () => {

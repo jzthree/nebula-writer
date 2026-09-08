@@ -55,6 +55,16 @@ export interface AiAttachment {
   truncated?: boolean;
 }
 
+/** The suggestion a message is about ("refine S3"): sent with the request so the AI revises exactly that one. */
+export interface AiRequestFocus {
+  suggestionId: string;
+  ref?: string | null;
+  title: string;
+  original: string;
+  replacement: string;
+  rationale?: string | null;
+}
+
 /** An image in the document, extracted to a file the AI can look at. */
 export interface AiDocumentImage {
   /** 0-based position among the document's inline pictures, in document order. */
@@ -112,6 +122,8 @@ export interface AiRequest {
   attachments?: AiAttachment[];
   /** The document's images, extracted to files (Word add-in uploads them; DOCX sessions extract them server-side). */
   documentImages?: AiDocumentImage[];
+  /** When the message is feedback on one earlier suggestion: that suggestion. */
+  focus?: AiRequestFocus | null;
   /**
    * Provider conversation to resume (agentic engine). The web app keeps one
    * per document+provider so follow-up chat messages share context.
@@ -140,7 +152,7 @@ export interface AiRequest {
 export interface AiConversationDecision {
   ref?: string | null;
   title: string;
-  status: "pending" | "applied" | "commented" | "dismissed" | "decided-elsewhere";
+  status: "pending" | "applied" | "commented" | "dismissed" | "decided-elsewhere" | "superseded";
   note?: string | null;
 }
 
@@ -199,6 +211,10 @@ export interface AiSuggestion {
   /** "image": replace one document picture (see `image`); default "text". */
   kind?: "text" | "image";
   image?: AiImageReplacement | null;
+  /** Id of the earlier suggestion this one revises (a reply to "refine S3"). */
+  revises?: string | null;
+  /** Id of the revision that replaced this suggestion; it was withdrawn, not rejected. */
+  supersededBy?: string | null;
   commentOnly?: boolean;
   /** Sidecar instance that staged this suggestion — the origin's clients own
    * the inline-landing claim on shared docs, so two Writers never race. */

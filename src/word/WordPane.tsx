@@ -45,7 +45,7 @@ import type { RequestScope } from "./wordContext";
 export type HostStatus = "booting" | "ready" | "unavailable";
 export type SidecarStatus = "checking" | "ok" | "offline";
 export type RequestState = "idle" | "running" | "done" | "empty" | "error";
-export type CardOutcome = "applied" | "commented" | "dismissed" | "decided-elsewhere" | null;
+export type CardOutcome = "applied" | "commented" | "dismissed" | "decided-elsewhere" | "revised" | null;
 
 export interface PresetOption {
   group: string;
@@ -113,7 +113,7 @@ export interface SentSummary {
 }
 
 export type ChatTurn =
-  | { id: string; role: "user"; at: string; text: string; sent: SentSummary }
+  | { id: string; role: "user"; at: string; text: string; sent: SentSummary; focus?: { ref: string | null; title: string } | null }
   | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[] }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
@@ -162,6 +162,12 @@ export interface WordPaneProps {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
+  /** The suggestion the next message is about, if the user chose Refine on a card. */
+  focus: { ref: string | null; title: string } | null;
+  onClearFocus: () => void;
+  onRefine: (suggestion: AiSuggestion) => void;
+  /** Send a canned refinement ("Shorter") about the focused suggestion right away. */
+  onQuickRefine: (instruction: string) => void;
   onInstructionChange: (value: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
@@ -247,6 +253,7 @@ export function WordPane(props: WordPaneProps) {
         onComment={props.onComment}
         onCycleMatch={props.onCycleMatch}
         onDismiss={props.onDismiss}
+        onRefine={props.onRefine}
         onLocate={props.onLocate}
         onNavigate={props.onNavigate}
         onRestore={props.onRestore}
@@ -332,6 +339,17 @@ export function WordPane(props: WordPaneProps) {
             ))}
           </ul>
         ) : null}
+        {props.focus ? (
+          <div className="wp-focus-chip" role="status">
+            <span className="wp-focus-label"><Sparkles size={12} aria-hidden="true" /> About {props.focus.ref ? `${props.focus.ref} ` : ""}"{props.focus.title}"</span>
+            <span className="wp-focus-quick">
+              {QUICK_REFINEMENTS.map((quick) => (
+                <button key={quick.label} type="button" className="wp-text-button" onClick={() => props.onQuickRefine(quick.instruction)} disabled={running} title={quick.instruction}>{quick.label}</button>
+              ))}
+            </span>
+            <button type="button" className="wp-icon-button tiny" onClick={props.onClearFocus} aria-label="Stop replying about this suggestion" title="Back to a general message"><X size={12} aria-hidden="true" /></button>
+          </div>
+        ) : null}
         <form
           className="wp-form"
           onSubmit={(event) => {
@@ -346,7 +364,7 @@ export function WordPane(props: WordPaneProps) {
           <textarea
             value={props.instruction}
             onChange={(event) => props.onInstructionChange(event.currentTarget.value)}
-            placeholder="Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"
+            placeholder={props.focus ? "Tell Writer how to change this suggestion… (keep the citation, make it shorter, different angle)" : "Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"}
             aria-label="Instruction for Writer"
             rows={3}
             disabled={running}
@@ -567,6 +585,7 @@ function Transcript(props: {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
+  onRefine: (suggestion: AiSuggestion) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
   onRestore: (suggestion: AiSuggestion) => void;
@@ -616,6 +635,7 @@ function Transcript(props: {
             onComment={props.onComment}
             onCycleMatch={props.onCycleMatch}
             onDismiss={props.onDismiss}
+            onRefine={props.onRefine}
             onLocate={props.onLocate}
             onRestore={props.onRestore}
             suggestionById={props.suggestionById}
@@ -644,6 +664,7 @@ function TurnView(props: {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
+  onRefine: (suggestion: AiSuggestion) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onRestore: (suggestion: AiSuggestion) => void;
   suggestionById: (id: string) => AiSuggestion | null;
@@ -658,6 +679,7 @@ function TurnView(props: {
     return (
       <article className="wp-turn user" aria-label="Your request">
         <div className="wp-turn-head"><User size={12} aria-hidden="true" /> You <time dateTime={turn.at}>{clock(turn.at)}</time></div>
+        {turn.focus ? <p className="wp-turn-focus"><Sparkles size={11} aria-hidden="true" /> About {turn.focus.ref ? `${turn.focus.ref} ` : ""}"{turn.focus.title}"</p> : null}
         <p className="wp-turn-text">{turn.text}</p>
         <SentDetails sent={turn.sent} />
       </article>
@@ -680,7 +702,9 @@ function TurnView(props: {
             onComment={() => props.onComment(suggestion)}
             onCycleMatch={(direction) => props.onCycleMatch(suggestion, direction)}
             onDismiss={() => props.onDismiss(suggestion)}
+            onRefine={() => props.onRefine(suggestion)}
             onLocate={() => props.onLocate(suggestion)}
+            revisionOf={suggestion.revises ? describeRevisionOf(props.suggestionById(suggestion.revises)) : null}
             onRestore={() => props.onRestore(suggestion)}
             state={props.cardState(suggestion)}
             suggestion={suggestion}
@@ -926,7 +950,10 @@ function SuggestionCard(props: {
   onCycleMatch: (direction: -1 | 1) => void;
   onDismiss: () => void;
   onLocate: () => void;
+  onRefine: () => void;
   onRestore: () => void;
+  /** "S3 Tighten the opening claim" when this card revises an earlier one. */
+  revisionOf?: string | null;
   state: CardState;
   suggestion: AiSuggestion;
   trackChanges: "always" | "word";
@@ -997,6 +1024,7 @@ function SuggestionCard(props: {
         <span className="wp-confidence" title="The provider's own estimate of how safe this edit is">{confidenceLabel(suggestion.confidence)}</span>
       </div>
       <p className="wp-card-meta">
+        {props.revisionOf ? <span className="tag revision" title="Written after your feedback on the earlier suggestion">Revision of {props.revisionOf}</span> : null}
         {suggestion.proposedBy ? <span>{suggestion.proposedBy}</span> : null}
         {suggestion.commentOnly ? <span className="tag">advisory</span> : deletion ? <span className="tag">deletion</span> : null}
         {state.heading ? <span title="Section in Word">§ {state.heading}</span> : null}
@@ -1020,6 +1048,7 @@ function SuggestionCard(props: {
           </button>
         )}
         <button type="button" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage"><MessageSquarePlus size={13} aria-hidden="true" /> Comment</button>
+        <button type="button" onClick={props.onRefine} disabled={props.busy} title="Tell Writer how to change this suggestion — the next message is about it"><Sparkles size={13} aria-hidden="true" /> Refine</button>
         <button type="button" className="quiet" onClick={props.onDismiss} disabled={props.busy} title="Dismiss (recorded as rejected)"><X size={13} aria-hidden="true" /></button>
       </div>
     </li>
@@ -1044,6 +1073,8 @@ function outcomeLabel(outcome: CardOutcome): string {
       return "dismissed";
     case "decided-elsewhere":
       return "decided in Writer";
+    case "revised":
+      return "revised";
     default:
       return "";
   }
@@ -1067,6 +1098,19 @@ function confidenceLabel(confidence: number): string {
 }
 
 /** Collapse runs of spaces but keep paragraph breaks, which the card shows as ¶. */
+const QUICK_REFINEMENTS: ReadonlyArray<{ label: string; instruction: string }> = [
+  { label: "Shorter", instruction: "Make this suggestion shorter while keeping its point." },
+  { label: "Keep my wording", instruction: "Keep my original wording wherever it already works; change only what is necessary." },
+  { label: "Different angle", instruction: "Try a different approach to this passage — a different structure or emphasis, not a light edit." }
+];
+
+function describeRevisionOf(earlier: AiSuggestion | null): string {
+  if (!earlier) {
+    return "an earlier suggestion";
+  }
+  return `${earlier.ref ? `${earlier.ref} ` : ""}${earlier.title || "Suggested revision"}`;
+}
+
 /** Whitespace-normalised, never truncated: the card is where the whole proposed change is read. */
 function tidy(text: string): string {
   return text.replace(/\r\n?/g, "\n").replace(/[^\S\n]+/g, " ").replace(/\n+/g, "\n").trim();

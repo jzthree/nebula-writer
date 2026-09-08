@@ -4736,3 +4736,7 @@ button:disabled {
 .image-change-arrow { color: var(--muted); font-size: 18px; }
 .image-change-missing { font-size: 12px; color: var(--muted); text-align: center; }
 .image-change figcaption { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+
+/* Refine: the next message is about one suggestion */
+.cap-chip.focus-chip { border-color: var(--accent-border); color: var(--accent-text); }
+.suggestion-warning.revision { background: var(--accent-bg, var(--surface-soft)); border-color: var(--accent-border); color: var(--accent-text); }

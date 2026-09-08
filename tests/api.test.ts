@@ -3167,6 +3167,28 @@ describe("AI model catalog", () => {
   });
 });
 
+describe("refining a suggestion", () => {
+  it("links the demo provider's reply to the suggestion the message was about", async () => {
+    const response = await requestBuffer("POST", "/api/ai/suggest", { "Content-Type": "application/json" }, JSON.stringify({
+      provider: "demo",
+      instruction: "Make it shorter",
+      mode: "global",
+      documentText: "This is actually very wordy. Another sentence follows.",
+      stageSuggestions: false,
+      focus: { suggestionId: "s-old", ref: "S1", title: "Tighten", original: "This is actually very wordy.", replacement: "This is wordy.", rationale: "x" }
+    }));
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body.toString("utf8")) as { suggestions: Array<{ revises?: string | null }> };
+    expect(body.suggestions.length).toBeGreaterThan(0);
+    expect(body.suggestions[0].revises).toBe("s-old");
+
+    const invalid = await requestBuffer("POST", "/api/ai/suggest", { "Content-Type": "application/json" }, JSON.stringify({
+      provider: "demo", instruction: "x", mode: "global", documentText: "Hello.", focus: { title: "no id" }
+    }));
+    expect(invalid.statusCode).toBe(400);
+  });
+});
+
 describe("document images", () => {
   const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
 

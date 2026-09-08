@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -216,6 +216,10 @@ export function App() {
   const lastStaleRefreshRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const imageUploadsRef = useRef(new Map<string, AiDocumentImage>());
+  // "Refine": the next message is feedback on one card.
+  const [refineFocus, setRefineFocus] = useState<AiRequestFocus | null>(null);
+  const refineFocusRef = useRef<AiRequestFocus | null>(null);
+  refineFocusRef.current = refineFocus;
   const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   // Provider conversation ids, keyed by provider + document, so follow-ups
@@ -632,10 +636,12 @@ export function App() {
     return [providerLabel(provider), modelText, reasoningText].filter(Boolean).join(" · ");
   }, []);
 
-  const ask = useCallback(async () => {
-    if (requestState === "running" || !instruction.trim() || hostStatus !== "ready") {
+  const ask = useCallback(async (overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) => {
+    const typed = (overrides.instruction ?? instruction).trim();
+    if (requestState === "running" || !typed || hostStatus !== "ready") {
       return;
     }
+    const activeFocus = overrides.focus === undefined ? refineFocusRef.current : overrides.focus;
     setNotice(null);
     setRequestState("running");
     const controller = new AbortController();
@@ -643,7 +649,7 @@ export function App() {
     const provider = settingsRef.current.provider;
     const modelOptions = currentModelOptions();
     const engine = engineLabel(provider, modelOptions);
-    const askedText = instruction.trim();
+    const askedText = typed;
     const assistantTurnId = turnId();
     runningTurnRef.current = assistantTurnId;
     setInstruction("");
@@ -673,13 +679,15 @@ export function App() {
         ...(modelOptions ? { modelOptions } : {}),
         ...(attachmentsRef.current.length ? { attachments: attachmentsRef.current } : {}),
         ...(agentSessionId ? { agentSessionId } : {}),
-        ...(conversation.length ? { conversation } : {})
+        ...(conversation.length ? { conversation } : {}),
+        ...(activeFocus ? { focus: activeFocus } : {})
       };
       const sent = summarizeSent(request, resolved.label, snap, currentFocus, hostContext.recentFocus.length, hostContext.outline.length, engine);
-      const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, sent };
+      const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, sent, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
       appendTurn(userTurn);
+      setRefineFocus(null);
       appendTurn({ id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: `Asking ${engine} · ${resolved.label}`, origin: "pane", activity: [] });
-      const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
+      const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
       const userMirrored = mirrorChat([userMessage]);
 
       const response = await requestWordSuggestions(request, { signal: controller.signal });
@@ -693,6 +701,13 @@ export function App() {
       lastPushedTextRef.current = snap.bodyText;
       setSharedWithAgents(true);
       const fresh = response.ai.suggestions.map((suggestion) => ({ ...suggestion, proposedBy: suggestion.proposedBy ?? providerLabel(provider) }));
+      // A revision withdraws the card it replaces (the sidecar did the same in the session).
+      for (const suggestion of fresh) {
+        const earlier = suggestion.revises ? suggestionsRef.current.find((candidate) => candidate.id === suggestion.revises) : null;
+        if (earlier && !cardsRef.current[earlier.id]?.outcome) {
+          patchCard(earlier.id, { outcome: "revised", detail: `see ${suggestion.ref ?? "the new suggestion"}`, error: null });
+        }
+      }
       if (fresh.length) {
         setSuggestions((current) => {
           const ids = new Set(fresh.map((suggestion) => suggestion.id));
@@ -1074,7 +1089,28 @@ export function App() {
     ]);
     setRequestState("idle");
     setActiveId(pending[0]?.id ?? null);
+    setRefineFocus(null);
   }, []);
+
+  const refine = useCallback((suggestion: AiSuggestion) => {
+    setActiveId(suggestion.id);
+    setRefineFocus({
+      suggestionId: suggestion.id,
+      ref: suggestion.ref ?? null,
+      title: suggestion.title || "Suggested revision",
+      original: suggestion.original,
+      replacement: suggestion.replacement,
+      rationale: suggestion.rationale || null
+    });
+  }, []);
+
+  const quickRefine = useCallback((quickInstruction: string) => {
+    const focus = refineFocusRef.current;
+    if (!focus) {
+      return;
+    }
+    void ask({ instruction: quickInstruction, focus });
+  }, [ask]);
 
   const clearConversation = useCallback(() => {
     for (const suggestion of suggestionsRef.current) {
@@ -1087,6 +1123,7 @@ export function App() {
     setCards({});
     setActiveId(null);
     setRequestState("idle");
+    setRefineFocus(null);
     agentSessionsRef.current = {};
   }, [recordDecision]);
 
@@ -1283,6 +1320,10 @@ export function App() {
       onAsk={() => void ask()}
       onClearConversation={clearConversation}
       onNewConversation={startNewConversation}
+      focus={refineFocus ? { ref: refineFocus.ref ?? null, title: refineFocus.title } : null}
+      onClearFocus={() => setRefineFocus(null)}
+      onRefine={refine}
+      onQuickRefine={quickRefine}
       onComment={comment}
       onCycleMatch={cycleMatch}
       onDismiss={dismiss}
@@ -1378,7 +1419,7 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
   const digest: AiConversationTurn[] = [];
   for (const turn of turns) {
     if (turn.role === "user") {
-      digest.push({ role: "user", content: turn.text });
+      digest.push({ role: "user", content: turn.focus ? `[About ${turn.focus.ref ? `${turn.focus.ref} ` : ""}"${turn.focus.title}"] ${turn.text}` : turn.text });
     } else if (turn.role === "assistant" && turn.status !== "running" && turn.origin !== "session") {
       const decisions = turn.suggestionIds
         .map((id) => byId.get(id))
@@ -1388,8 +1429,8 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
           return {
             ref: suggestion.ref ?? null,
             title: suggestion.title,
-            status: state?.outcome ?? "pending",
-            note: state?.outcome === "dismissed" ? state.detail : state?.outcome === "decided-elsewhere" ? state.detail : null
+            status: state?.outcome === "revised" ? "superseded" : state?.outcome ?? "pending",
+            note: state?.outcome === "dismissed" ? state.detail : state?.outcome === "decided-elsewhere" ? state.detail : state?.outcome === "revised" ? "replaced by a revision after the user's feedback" : null
           };
         });
       digest.push({ role: "assistant", content: turn.text || (turn.status === "error" ? "(the request failed)" : ""), ...(decisions.length ? { decisions } : {}) });
