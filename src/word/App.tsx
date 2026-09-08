@@ -814,6 +814,9 @@ export function App() {
     if (first >= 0 && snap.bodyText.indexOf(suggestion.original, first + 1) < 0) {
       return first;
     }
+    if (suggestion.anchor && Number.isFinite(suggestion.anchor.offset)) {
+      return suggestion.anchor.offset;
+    }
     return focusRef.current?.cursorOffset ?? null;
   }, []);
 
@@ -867,7 +870,7 @@ export function App() {
       return existing;
     }
     const found = await findSuggestionMatches(snap, suggestion);
-    const matchIndex = chooseMatchIndex(found.matches, preferredOffset(suggestion, snap));
+    const matchIndex = chooseMatchIndex(found.matches, preferredOffset(suggestion, snap), suggestion.anchor ?? null);
     const match = found.matches[matchIndex] ?? null;
     const heading = match && match.paragraphIndex !== null ? nearestHeading(snap.paragraphs, match.paragraphIndex) : null;
     const next: CardState = {

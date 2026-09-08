@@ -227,6 +227,9 @@ export interface AiSuggestion {
   confidence: number;
   target: "global" | "selection";
   range?: SelectionContext | null;
+  /** Where `original` sat when the suggestion was staged, so a later apply
+   * picks that occurrence even if the same text now appears elsewhere. */
+  anchor?: SuggestionAnchor | null;
   /** For inline-mark cards: the changeIds of the marks this card covers, so
    * resolution touches exactly these marks even when another author's
    * suggestion overlaps the same text. */
@@ -621,4 +624,142 @@ export function formatElapsedSince(startedAt: string | number, now: number = Dat
     return `${seconds}s`;
   }
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/**
+ * Where a suggestion's original text sat when it was staged: its offset in the
+ * document text the AI saw, and the text on either side of it. A suggestion is
+ * applied by finding its original text again, and when that text has since
+ * come to occur more than once (a passage moved by an insert/delete pair, a
+ * repeated phrase), the surroundings pick the occurrence the AI meant instead
+ * of the first one or the one nearest the caret.
+ */
+export interface SuggestionAnchor {
+  offset: number;
+  before: string;
+  after: string;
+}
+
+export const SUGGESTION_ANCHOR_CONTEXT_CHARS = 160;
+/** Fewer shared characters than this is noise (a space, a period), not a placement signal. */
+const ANCHOR_MIN_OVERLAP = 4;
+
+export function isSuggestionAnchor(value: unknown): value is SuggestionAnchor {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const anchor = value as Partial<SuggestionAnchor>;
+  return typeof anchor.offset === "number" && Number.isFinite(anchor.offset)
+    && typeof anchor.before === "string" && typeof anchor.after === "string";
+}
+
+/**
+ * Locate `original` in `documentText` and capture its surroundings. When it
+ * occurs more than once, the occurrence nearest `near` (the selection start,
+ * for a selection-scoped request) is the one meant.
+ */
+export function suggestionAnchorFor(documentText: string, original: string, near: number | null = null): SuggestionAnchor | null {
+  const needle = original.trim();
+  if (!needle || !documentText) {
+    return null;
+  }
+  let occurrences = occurrencesOf(documentText, needle);
+  if (!occurrences.length) {
+    const collapsed = collapseWhitespaceWithPositions(documentText);
+    occurrences = occurrencesOf(collapsed.text, needle.replace(/\s+/g, " ")).map((occurrence) => ({
+      start: collapsed.positions[occurrence.start],
+      end: collapsed.positions[occurrence.end - 1] + 1
+    }));
+  }
+  if (!occurrences.length) {
+    return null;
+  }
+  const chosen = near === null
+    ? occurrences[0]
+    : occurrences.reduce((best, candidate) => (Math.abs(candidate.start - near) < Math.abs(best.start - near) ? candidate : best), occurrences[0]);
+  return {
+    offset: chosen.start,
+    before: documentText.slice(Math.max(0, chosen.start - SUGGESTION_ANCHOR_CONTEXT_CHARS), chosen.start),
+    after: documentText.slice(chosen.end, chosen.end + SUGGESTION_ANCHOR_CONTEXT_CHARS)
+  };
+}
+
+/** How well an occurrence's surroundings match the anchor: characters shared at the end of the text before it plus the start of the text after it. */
+export function scoreAnchorContext(anchor: SuggestionAnchor, before: string, after: string): number {
+  return commonSuffixLength(collapseWhitespace(anchor.before), collapseWhitespace(before))
+    + commonPrefixLength(collapseWhitespace(anchor.after), collapseWhitespace(after));
+}
+
+/**
+ * Among several occurrences of a suggestion's original text, the index of the
+ * one whose surroundings match the anchor decisively: a clear best with real
+ * overlap. Null when there is no anchor, one candidate, or a tie — the caller
+ * falls back to its positional heuristic.
+ */
+export function chooseAnchoredCandidate(anchor: SuggestionAnchor | null | undefined, candidates: Array<{ before: string; after: string }>): number | null {
+  if (!anchor || candidates.length < 2) {
+    return null;
+  }
+  let best = -1;
+  let bestScore = -1;
+  let runnerUp = -1;
+  candidates.forEach((candidate, index) => {
+    const score = scoreAnchorContext(anchor, candidate.before, candidate.after);
+    if (score > bestScore) {
+      runnerUp = bestScore;
+      bestScore = score;
+      best = index;
+    } else if (score > runnerUp) {
+      runnerUp = score;
+    }
+  });
+  return bestScore >= ANCHOR_MIN_OVERLAP && bestScore > runnerUp ? best : null;
+}
+
+function occurrencesOf(haystack: string, needle: string): Array<{ start: number; end: number }> {
+  const found: Array<{ start: number; end: number }> = [];
+  let index = haystack.indexOf(needle);
+  while (index >= 0) {
+    found.push({ start: index, end: index + needle.length });
+    index = haystack.indexOf(needle, index + Math.max(1, needle.length));
+  }
+  return found;
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ");
+}
+
+function collapseWhitespaceWithPositions(value: string): { text: string; positions: number[] } {
+  let text = "";
+  const positions: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (/\s/.test(char)) {
+      if (text && !text.endsWith(" ")) {
+        text += " ";
+        positions.push(index);
+      }
+      continue;
+    }
+    text += char;
+    positions.push(index);
+  }
+  return { text, positions };
+}
+
+function commonSuffixLength(left: string, right: string): number {
+  let count = 0;
+  while (count < left.length && count < right.length && left[left.length - 1 - count] === right[right.length - 1 - count]) {
+    count += 1;
+  }
+  return count;
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  let count = 0;
+  while (count < left.length && count < right.length && left[count] === right[count]) {
+    count += 1;
+  }
+  return count;
 }

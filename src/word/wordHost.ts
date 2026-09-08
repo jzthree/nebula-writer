@@ -14,6 +14,8 @@
 /// <reference types="office-js" />
 
 import { wordDiffSegments } from "../wordDiff";
+
+import { chooseAnchoredCandidate, type SuggestionAnchor } from "../shared";
 import type { AiSuggestion, SelectionContext } from "../shared";
 import {
   collapseWhitespace,
@@ -58,6 +60,9 @@ export interface SuggestionMatch {
   offset: number | null;
   paragraphIndex: number | null;
   preview: string;
+  /** Text around the match (previous paragraph + the paragraph up to the match / the rest of the paragraph + the next one), for placement anchors. */
+  contextBefore: string;
+  contextAfter: string;
 }
 
 export interface SuggestionMatchSet {
@@ -591,8 +596,8 @@ export async function applySuggestion(snapshot: WordDocumentSnapshot, suggestion
 
 export interface BatchApplyItem {
   id: string;
-  suggestion: Pick<AiSuggestion, "original" | "replacement">;
-  /** Occurrence to act on when the text appears more than once; null = choose by `preferredOffset` (one extra round trip only when ambiguous). */
+  suggestion: Pick<AiSuggestion, "original" | "replacement" | "anchor">;
+  /** Occurrence to act on when the text appears more than once; null = choose by anchor, then `preferredOffset` (one extra round trip only when ambiguous). */
   matchIndex: number | null;
   preferredOffset?: number | null;
 }
@@ -648,7 +653,7 @@ async function runApplyPass(
     }
     let matchIndex = item.matchIndex;
     if (matchIndex === null) {
-      matchIndex = ranges.length > 1 ? chooseMatchIndex(await describeMatches(context, snapshot, ranges), item.preferredOffset ?? null) : 0;
+      matchIndex = ranges.length > 1 ? chooseMatchIndex(await describeMatches(context, snapshot, ranges), item.preferredOffset ?? null, item.suggestion.anchor ?? null) : 0;
     }
     matchIndex = clampIndex(matchIndex, ranges.length);
     targets.push({ item, range: ranges[matchIndex], matches: ranges.length, matchIndex });
@@ -1237,12 +1242,16 @@ async function describeMatches(context: Word.RequestContext, snapshot: WordDocum
   const probes = ranges.map((range) => {
     const paragraph = range.paragraphs.getFirst();
     const previous = paragraph.getPreviousOrNullObject();
+    const next = paragraph.getNextOrNullObject();
     const before = paragraph.getRange("Start").expandTo(range.getRange("Start"));
+    const after = range.getRange("End").expandTo(paragraph.getRange("End"));
     paragraph.load("text");
     previous.load("text");
+    next.load("text");
     before.load("text");
+    after.load("text");
     range.load("text");
-    return { paragraph, previous, before, range };
+    return { paragraph, previous, next, before, after, range };
   });
   await context.sync();
   let lastIndex: number | null = null;
@@ -1259,13 +1268,23 @@ async function describeMatches(context: Word.RequestContext, snapshot: WordDocum
       index,
       offset: paragraph ? paragraph.offset + normalizeWordText(probe.before.text ?? "").length : null,
       paragraphIndex,
-      preview: excerpt(probe.paragraph.text ?? probe.range.text ?? "", MATCH_PREVIEW_CHARS)
+      preview: excerpt(probe.paragraph.text ?? probe.range.text ?? "", MATCH_PREVIEW_CHARS),
+      contextBefore: `${probe.previous.isNullObject ? "" : probe.previous.text ?? ""}\n${probe.before.text ?? ""}`,
+      contextAfter: `${probe.after.text ?? ""}\n${probe.next.isNullObject ? "" : probe.next.text ?? ""}`
     };
   });
 }
 
-/** Pick the match closest to where the suggestion (or the author) is. */
-export function chooseMatchIndex(matches: SuggestionMatch[], preferredOffset: number | null): number {
+/**
+ * Pick the occurrence a suggestion means: the one whose surroundings match
+ * its placement anchor when that is decisive, else the one closest to where
+ * the suggestion (or the author) is.
+ */
+export function chooseMatchIndex(matches: SuggestionMatch[], preferredOffset: number | null, anchor: SuggestionAnchor | null = null): number {
+  const anchored = chooseAnchoredCandidate(anchor, matches.map((match) => ({ before: match.contextBefore, after: match.contextAfter })));
+  if (anchored !== null) {
+    return matches[anchored].index;
+  }
   if (matches.length <= 1 || preferredOffset === null) {
     return 0;
   }

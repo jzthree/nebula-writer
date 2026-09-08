@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
+
+import { suggestionAnchorFor } from "../src/shared";
 import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecutionEnabled, resolveCliCommand, type CliProviderName } from "./cli-runtime";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
@@ -2302,6 +2304,7 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
     confidence: normalizeConfidence(item.confidence),
     target: inSelection ? "selection" : "global",
     range: inSelection ? request.selection ?? null : null,
+    anchor: suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null),
     status: "pending"
   } };
 }

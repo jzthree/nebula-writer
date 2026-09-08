@@ -483,3 +483,20 @@ describe("agent task prompt", () => {
     deleteAgentRun(run.id);
   });
 });
+
+describe("staging records a placement anchor", () => {
+  it("captures where the original sits and its surroundings", () => {
+    const verdict = validateSuggestionCandidate(
+      { title: "Tighten", original: "The sample size is adequate", replacement: "The sample size suffices", rationale: "Shorter." },
+      baseRequest
+    );
+    expect(verdict.ok).toBe(true);
+    if (verdict.ok) {
+      expect(verdict.suggestion.anchor).toEqual({
+        offset: 36,
+        before: "The study will enroll participants. ",
+        after: " [@smith2020]. Formula $E=mc^2$ stays intact."
+      });
+    }
+  });
+});

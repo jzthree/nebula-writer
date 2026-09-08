@@ -434,3 +434,39 @@ describe("editor operations: pictures", () => {
     }
   });
 });
+
+describe("editor operations: placement anchors", () => {
+  function dupEditor(text: string) {
+    return {
+      state: {
+        doc: {
+          descendants: vi.fn((visitor: (node: { isText: boolean; text: string }, pos: number) => void) => {
+            visitor({ isText: true, text }, 1);
+          })
+        }
+      }
+    };
+  }
+
+  it("resolves a repeated original to the occurrence whose surroundings match the anchor", () => {
+    const editor = dupEditor("Original sentence. Tail. Original sentence.");
+    const first = suggestion({ range: null, target: "global", anchor: { offset: 0, before: "", after: " Tail. Original sentence." } });
+    expect(findSuggestionMatch(editor as never, first)).toEqual({ from: 1, to: 19, matchKind: "anchored" });
+    const second = suggestion({ range: null, target: "global", anchor: { offset: 25, before: "Original sentence. Tail. ", after: "" } });
+    expect(findSuggestionMatch(editor as never, second)).toEqual({ from: 26, to: 44, matchKind: "anchored" });
+  });
+
+  it("applies an anchored match without asking for confirmation", () => {
+    const chain = { focus: vi.fn(() => chain), insertContentAt: vi.fn(() => chain), run: vi.fn() };
+    const editor = { ...dupEditor("Original sentence. Tail. Original sentence."), chain: vi.fn(() => chain) };
+    const result = applySuggestion(editor as never, suggestion({ range: null, target: "global", anchor: { offset: 25, before: "Original sentence. Tail. ", after: "" } }));
+    expect(result).toMatchObject({ ok: true, matchKind: "anchored", range: { from: 26, to: 44 } });
+    expect(chain.insertContentAt).toHaveBeenCalledWith({ from: 26, to: 44 }, expect.anything());
+  });
+
+  it("keeps asking when the anchor cannot tell the occurrences apart, guessing the nearest", () => {
+    const editor = dupEditor("Original sentence. Original sentence.");
+    const match = findSuggestionMatch(editor as never, suggestion({ range: null, target: "global", anchor: { offset: 19, before: "unrelated context ", after: " unrelated" } }));
+    expect(match).toEqual({ from: 20, to: 38, matchKind: "ambiguous" });
+  });
+});

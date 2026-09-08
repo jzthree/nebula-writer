@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AiDocumentImage, AiRequest, AiSuggestion } from "../src/shared";
+import { suggestionAnchorFor } from "../src/shared";
 import { importImageFile } from "./image-files";
 import { repairAnchor } from "./anchor-repair";
 
@@ -144,6 +145,7 @@ export function validateSuggestionCandidate(
       confidence: normalizeConfidence(item.confidence),
       target: inSelection ? "selection" : "global",
       range: inSelection ? request.selection ?? null : null,
+      anchor: suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null),
       status: "pending"
     }
   };

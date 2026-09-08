@@ -385,6 +385,35 @@ describe("DOCX conversion", () => {
     expect(imported.messages.some((message) => message.includes("header/footer"))).toBe(true);
   });
 
+  it("patches the occurrence the placement anchor points at when a short original repeats", async () => {
+    const source = await exportDocx({
+      title: "Anchored Source",
+      html: "<p>We treated the cells for one hour.</p><p>Later we treated the cells for two hours.</p>"
+    });
+    const result = await exportTrackedChangesFromSourceWithReport(source, [
+      {
+        id: "suggestion-anchored",
+        title: "Fix wording",
+        original: "treated the cells",
+        replacement: "exposed the cells",
+        rationale: "Anchored to the second paragraph.",
+        confidence: 0.9,
+        target: "global",
+        anchor: { offset: 44, before: "We treated the cells for one hour.\nLater we ", after: " for two hours." },
+        status: "pending"
+      }
+    ]);
+    expect(result.report).toMatchObject({ commentedSuggestions: 0, matchedSuggestions: 1 });
+    const zip = await JSZip.loadAsync(result.buffer);
+    const documentXml = (await zip.file("word/document.xml")?.async("string")) ?? "";
+    const paragraphs = documentXml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) ?? [];
+    const first = paragraphs.find((paragraph) => paragraph.includes("one hour"));
+    const second = paragraphs.find((paragraph) => paragraph.includes("two hours"));
+    expect(first).not.toContain("<w:del ");
+    expect(second).toContain("<w:del ");
+    expect(second).toContain("exposed the cells");
+  });
+
   it("routes short ambiguous anchors to comments instead of patching the first occurrence", async () => {
     const source = await exportDocx({
       title: "Ambiguous Anchor Source",

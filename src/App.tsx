@@ -60,7 +60,7 @@ import {
 } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict } from "./api";
-import { applySuggestion, centerEditorRange, centerSuggestionTarget, findSuggestionRange, findTextRange, getSelectionContext, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
+import { applySuggestion, centerEditorRange, centerSuggestionTarget, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
 import { setSourceRevisionHighlight, SourceRevisionHighlight, type SourceRevisionMark } from "./sourceRevisionHighlight";
 import { HeadingEnter } from "./headingEnter";
@@ -4469,7 +4469,8 @@ export function App() {
     if (!editor) {
       return null;
     }
-    return findTextRange(editor, suggestion.original) ?? findSuggestionRange(editor, suggestion);
+    const match = findSuggestionMatch(editor, suggestion);
+    return findTextRange(editor, suggestion.original, undefined, match?.from) ?? (match ? { from: match.from, to: match.to } : null);
   }
 
   function markSuggestionInline(suggestion: AiSuggestion) {

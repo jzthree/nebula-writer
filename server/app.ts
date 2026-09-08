@@ -17,6 +17,7 @@ import { hostContextSelection, parseWordHostContext } from "./word-context";
 import { getProviderCatalogs, validateModelOptions } from "./model-catalog";
 import { cliChildEnv } from "./ai";
 import type { AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
+import { isSuggestionAnchor } from "../src/shared";
 import { agentTerminalStatus, ensureAgentTerminal } from "./agent-terminal";
 import { restartTerminalRoom } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
@@ -2740,6 +2741,7 @@ function parseRoutineSuggestion(value: unknown): AiSuggestion {
     confidence,
     target: suggestion.target === "selection" ? "selection" : "global",
     range: normalizeSuggestionRange(original, suggestion.range),
+    ...(isSuggestionAnchor(suggestion.anchor) ? { anchor: suggestion.anchor } : {}),
     status: suggestion.status === "accepted" || suggestion.status === "rejected" ? suggestion.status : "pending",
     ...(proposedBy ? { proposedBy } : {}),
     ...(decidedBy ? { decidedBy } : {}),

@@ -1,4 +1,6 @@
 import type { Editor } from "@tiptap/react";
+
+import { SUGGESTION_ANCHOR_CONTEXT_CHARS, chooseAnchoredCandidate } from "./shared";
 import type { AiSuggestion, SelectionContext, SourceTrackedChangePreview } from "./shared";
 import { suggestingRouterKey } from "./suggesting";
 
@@ -11,7 +13,8 @@ export type SuggestionMatchKind =
   | "nearby"     // stored range went stale; closest match is near the original anchor
   | "relocated"  // stored range went stale; only match is far from the original anchor
   | "unique"     // no stored anchor; the text appears exactly once
-  | "ambiguous"; // no stored anchor; the text appears in several places
+  | "ambiguous"  // no stored anchor; the text appears in several places
+  | "anchored";  // several occurrences; the one whose surroundings match where the suggestion was staged
 
 export type SuggestionMatch = { from: number; to: number; matchKind: SuggestionMatchKind };
 
@@ -176,21 +179,38 @@ function findSuggestionMatchUncached(editor: Editor, suggestion: AiSuggestion): 
     }
   }
 
-  const matches = findAllTextRanges(editor, suggestion.original);
+  const matches = findAllTextMatches(editor, suggestion.original);
   if (!matches.length) {
     return null;
   }
 
-  if (storedRange) {
-    const anchor = expectedOriginalPosition(suggestion) ?? storedRange.from;
-    const closest = matches.reduce((best, candidate) => (
-      Math.abs(candidate.from - anchor) < Math.abs(best.from - anchor) ? candidate : best
-    ), matches[0]);
-    const matchKind: SuggestionMatchKind = Math.abs(closest.from - anchor) <= RELOCATED_MATCH_DISTANCE ? "nearby" : "relocated";
-    return { ...closest, matchKind };
+  // The placement anchor (the text around the original when it was staged)
+  // settles a repeated original — e.g. the deletion half of a move after its
+  // insertion half was accepted — without asking the author to confirm.
+  const anchored = chooseAnchoredCandidate(suggestion.anchor, matches);
+  if (anchored !== null) {
+    return { from: matches[anchored].from, to: matches[anchored].to, matchKind: "anchored" };
   }
 
-  return { ...matches[0], matchKind: matches.length === 1 ? "unique" : "ambiguous" };
+  if (storedRange) {
+    const anchor = expectedOriginalPosition(suggestion) ?? storedRange.from;
+    const closest = nearestMatch(matches, anchor);
+    const matchKind: SuggestionMatchKind = Math.abs(closest.from - anchor) <= RELOCATED_MATCH_DISTANCE ? "nearby" : "relocated";
+    return { from: closest.from, to: closest.to, matchKind };
+  }
+
+  if (matches.length === 1) {
+    return { from: matches[0].from, to: matches[0].to, matchKind: "unique" };
+  }
+  // Ambiguous: highlight the occurrence nearest where the suggestion was staged for the author to confirm.
+  const guess = suggestion.anchor ? nearestMatch(matches, suggestion.anchor.offset) : matches[0];
+  return { from: guess.from, to: guess.to, matchKind: "ambiguous" };
+}
+
+function nearestMatch<T extends { from: number }>(matches: T[], position: number): T {
+  return matches.reduce((best, candidate) => (
+    Math.abs(candidate.from - position) < Math.abs(best.from - position) ? candidate : best
+  ), matches[0]);
 }
 
 function rangeCacheForEditor(editor: Editor): Map<string, SuggestionRangeCacheEntry> {
@@ -210,7 +230,8 @@ function suggestionRangeCacheKey(suggestion: AiSuggestion): string {
     normalizeText(suggestion.original),
     range?.from ?? "",
     range?.to ?? "",
-    range ? normalizeText(range.text) : ""
+    range ? normalizeText(range.text) : "",
+    suggestion.anchor ? `${suggestion.anchor.offset}|${suggestion.anchor.before}|${suggestion.anchor.after}` : ""
   ].join("\u0000");
 }
 
@@ -230,6 +251,11 @@ export function findTextRange(editor: Editor, query: string, bounds?: { from: nu
 }
 
 export function findAllTextRanges(editor: Editor, query: string, bounds?: { from: number; to: number }): Array<{ from: number; to: number }> {
+  return findAllTextMatches(editor, query, bounds).map(({ from, to }) => ({ from, to }));
+}
+
+/** Every occurrence of `query`, each with the (whitespace-collapsed) text around it for placement anchors. */
+export function findAllTextMatches(editor: Editor, query: string, bounds?: { from: number; to: number }): Array<{ from: number; to: number; before: string; after: string }> {
   const needle = normalizeText(query);
   if (!needle) {
     return [];
@@ -244,13 +270,18 @@ export function findAllTextRanges(editor: Editor, query: string, bounds?: { from
   });
 
   const normalized = normalizeTextWithPositions(textNodes, bounds);
-  const ranges: Array<{ from: number; to: number }> = [];
+  const ranges: Array<{ from: number; to: number; before: string; after: string }> = [];
   let index = normalized.text.indexOf(needle);
   while (index >= 0) {
     const firstPosition = normalized.positions[index];
     const lastPosition = normalized.positions[index + needle.length - 1];
     if (firstPosition && lastPosition && lastPosition.to > firstPosition.from) {
-      ranges.push({ from: firstPosition.from, to: lastPosition.to });
+      ranges.push({
+        from: firstPosition.from,
+        to: lastPosition.to,
+        before: normalized.text.slice(Math.max(0, index - SUGGESTION_ANCHOR_CONTEXT_CHARS), index),
+        after: normalized.text.slice(index + needle.length, index + needle.length + SUGGESTION_ANCHOR_CONTEXT_CHARS)
+      });
     }
     index = normalized.text.indexOf(needle, index + Math.max(1, needle.length));
   }

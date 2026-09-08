@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
+import { chooseAnchoredCandidate } from "../src/shared";
 
 const WORD_STORY_PART_PATTERN = /^word\/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$/i;
 const BROWSER_IMAGE_CONTENT_TYPES = new Set([
@@ -1030,12 +1031,14 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
   // cannot be located reliably by text matching, so route it to a Word comment
   // instead of silently patching the first occurrence (which may be the wrong
   // one — the classic failure mode of minimal manual-edit diffs).
-  const bodyText = [...documentXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)]
-    .map((match) => paragraphText(match[0]))
-    .join("\n");
+  const paragraphTexts = [...documentXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)].map((match) => paragraphText(match[0]));
+  const bodyText = paragraphTexts.join("\n");
+  // Placement anchors: when the original occurs in several paragraphs, the
+  // surroundings recorded at staging time pick the paragraph the AI meant.
+  const preferredParagraphs = preferredParagraphsByAnchor(paragraphTexts, pendingSuggestions);
   const ambiguousAnchorReasons = new Map<string, string>();
   for (const suggestion of pendingSuggestions) {
-    if (suggestion.commentOnly || suggestion.kind === "image") {
+    if (suggestion.commentOnly || suggestion.kind === "image" || preferredParagraphs.has(suggestion.id)) {
       continue;
     }
     const anchor = suggestion.original.trim();
@@ -1052,7 +1055,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
     }
   }
   const trackedChangeCandidates = pendingSuggestions.filter((suggestion) => !suggestion.commentOnly && suggestion.kind !== "image" && !ambiguousAnchorReasons.has(suggestion.id));
-  const patchedParagraphs = patchOriginalParagraphs(documentXml, trackedChangeCandidates, usedSuggestionIds, revisionIds);
+  const patchedParagraphs = patchOriginalParagraphs(documentXml, trackedChangeCandidates, usedSuggestionIds, revisionIds, preferredParagraphs);
   const patchedSequences = patchParagraphSequences(patchedParagraphs, trackedChangeCandidates, usedSuggestionIds, revisionIds);
   const patchedSensitiveTextRuns = patchSensitiveParagraphTextRuns(patchedSequences, trackedChangeCandidates, usedSuggestionIds, revisionIds);
   const trackedSuggestionCount = usedSuggestionIds.size;
@@ -1594,10 +1597,13 @@ function patchOriginalParagraphs(
   documentXml: string,
   suggestions: AiSuggestion[],
   usedSuggestionIds: Set<string>,
-  revisionIds: RevisionIdAllocator
+  revisionIds: RevisionIdAllocator,
+  preferredParagraphs: Map<string, number> = new Map()
 ): string {
   let inReferenceSection = false;
+  let paragraphIndex = -1;
   return documentXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraphXml, offset: number) => {
+    paragraphIndex += 1;
     const text = paragraphText(paragraphXml).trim();
     const isReferenceHeading = isReferenceSectionHeading(text);
     if (isReferenceHeading) {
@@ -1610,7 +1616,9 @@ function patchOriginalParagraphs(
       return paragraphXml;
     }
 
-    const changes = findSuggestionRanges(text, suggestions.filter((suggestion) => !usedSuggestionIds.has(suggestion.id)));
+    const changes = findSuggestionRanges(text, suggestions.filter((suggestion) => (
+      !usedSuggestionIds.has(suggestion.id) && (preferredParagraphs.get(suggestion.id) ?? paragraphIndex) === paragraphIndex
+    )));
     if (!changes.length) {
       return paragraphXml;
     }
@@ -2498,6 +2506,35 @@ interface TrackedRange {
   start: number;
   end: number;
   suggestion: AiSuggestion;
+}
+
+/**
+ * For each anchored suggestion whose original occurs in more than one
+ * paragraph, the paragraph whose surroundings match the anchor decisively.
+ */
+function preferredParagraphsByAnchor(paragraphTexts: string[], suggestions: AiSuggestion[]): Map<string, number> {
+  const preferred = new Map<string, number>();
+  for (const suggestion of suggestions) {
+    if (!suggestion.anchor || suggestion.commentOnly || suggestion.kind === "image") {
+      continue;
+    }
+    const candidates: Array<{ index: number; before: string; after: string }> = [];
+    paragraphTexts.forEach((text, index) => {
+      const range = findTextRange(text, suggestion.original);
+      if (range) {
+        candidates.push({
+          index,
+          before: `${index > 0 ? paragraphTexts[index - 1] : ""}\n${text.slice(0, range.start)}`,
+          after: `${text.slice(range.end)}\n${paragraphTexts[index + 1] ?? ""}`
+        });
+      }
+    });
+    const chosen = chooseAnchoredCandidate(suggestion.anchor, candidates);
+    if (chosen !== null) {
+      preferred.set(suggestion.id, candidates[chosen].index);
+    }
+  }
+  return preferred;
 }
 
 function findSuggestionRanges(text: string, suggestions: AiSuggestion[]): TrackedRange[] {

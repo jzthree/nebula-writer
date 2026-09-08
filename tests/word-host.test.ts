@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockWordHost, sampleGrantDocument } from "../src/word/mockOffice";
+import { suggestionAnchorFor } from "../src/shared";
 import {
   applySuggestion,
   applySuggestions,
@@ -465,5 +466,60 @@ describe("word host: formatting-safe application", () => {
     const [allowed] = await applySuggestions(snapshot, [{ id: "b", suggestion: { original: ORIGINAL, replacement: ORIGINAL.replace("looked at", "examined") }, matchIndex: 0 }], { trackChanges: "word" });
     expect(allowed.ok).toBe(true);
     expect(mock.text).toContain("many studies have examined it.");
+  });
+});
+
+describe("word host: placement anchors", () => {
+  const paragraphs = [
+    { text: "Alpha beta. Moved clause. Gamma." },
+    { text: "Delta. Epsilon." },
+    { text: "Zeta." }
+  ];
+
+  async function bootMoveDocument() {
+    mock.uninstall();
+    mock = new MockWordHost({ paragraphs, documentName: "Move.docx", viewport: { pageChars: 600, visibleChars: 500 } }).install();
+    return boot();
+  }
+
+  it("deletes the original copy of a moved clause even after the inserted copy was accepted first", async () => {
+    const { snapshot } = await bootMoveDocument();
+    const anchor = suggestionAnchorFor(snapshot.bodyText, "Moved clause.")!;
+    expect(anchor).toMatchObject({ offset: 12, before: "Alpha beta. " });
+
+    // The insertion half of the move lands first.
+    const inserted = await applySuggestions(snapshot, [
+      { id: "insert", suggestion: { original: "Epsilon.", replacement: "Epsilon. Moved clause." }, matchIndex: 0 }
+    ], { trackChanges: "off" });
+    expect(inserted[0].ok).toBe(true);
+    expect(mock.text).toBe("Alpha beta. Moved clause. Gamma.\nDelta. Epsilon. Moved clause.\nZeta.");
+
+    // The deletion half now matches twice, and the caret sits by the new copy.
+    const later = await readDocumentSnapshot((await waitForWordHost()).capabilities);
+    const found = await findSuggestionMatches(later, { original: "Moved clause." });
+    expect(found.matches.length).toBe(2);
+    expect(found.matches[0].contextBefore).toBe("\nAlpha beta. ");
+    expect(found.matches[0].contextAfter).toBe(" Gamma.\nDelta. Epsilon. Moved clause.");
+    expect(found.matches[1].contextBefore).toBe("Alpha beta. Moved clause. Gamma.\nDelta. Epsilon. ");
+    const nearCaret = found.matches[1].offset! + 1;
+    expect(chooseMatchIndex(found.matches, nearCaret)).toBe(1);
+    expect(chooseMatchIndex(found.matches, nearCaret, anchor)).toBe(0);
+
+    const deleted = await applySuggestions(later, [
+      { id: "delete", suggestion: { original: "Moved clause.", replacement: "", anchor }, matchIndex: null, preferredOffset: nearCaret }
+    ], { trackChanges: "off" });
+    expect(deleted[0].ok).toBe(true);
+    expect(mock.text).toBe("Alpha beta.  Gamma.\nDelta. Epsilon. Moved clause.\nZeta.");
+  });
+
+  it("falls back to the nearest occurrence when the surroundings do not settle it", async () => {
+    const { snapshot } = await bootMoveDocument();
+    mock.replaceRange(mock.text.length, mock.text.length, " Alpha beta. Moved clause. Gamma.");
+    const later = await readDocumentSnapshot((await waitForWordHost()).capabilities);
+    const found = await findSuggestionMatches(later, { original: "Moved clause." });
+    expect(found.matches.length).toBe(2);
+    const anchor = { offset: 12, before: "Alpha beta. ", after: " Gamma." };
+    expect(chooseMatchIndex(found.matches, found.matches[1].offset, anchor)).toBe(1);
+    void snapshot;
   });
 });

@@ -238,8 +238,14 @@ catalog for any client.
 - **Comment** anchors a Word comment with the suggested text and rationale.
 - **Dismiss** records a rejection (agents see it as feedback). Restore undoes.
 - If the original text occurs more than once, the card shows *match k/n* with
-  arrows; the default is the occurrence nearest the suggestion's offset (or
-  your caret).
+  arrows. Every staged suggestion carries a placement anchor (where its
+  original sat and the text around it), so the default is the occurrence whose
+  surroundings still match the anchor; only when that is undecided does the
+  pane fall back to the occurrence nearest the suggestion's offset or your
+  caret. This is what keeps a move honest: an agent moves a passage as an
+  insertion plus a deletion, and after you accept the insertion the deletion
+  still removes the old copy, not the one you just added. The web app and the
+  DOCX export resolve repeated originals the same way.
 - An original that spans paragraphs (Word's search never crosses a paragraph
   mark) is found by its first and last paragraph pieces, shown with ¶ marks in
   the card, and applied paragraph by paragraph — so a sentence added before a
