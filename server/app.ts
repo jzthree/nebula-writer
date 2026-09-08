@@ -26,7 +26,7 @@ import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSugges
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
 import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
 import { supersedeRevisedSuggestions } from "./revisions";
-import { liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
+import { liveCollabDocumentEmphasis, liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
 import { r01RoutineSequence } from "../src/writingRoutines";
 
@@ -407,8 +407,9 @@ export function createWriterApp() {
       images: liveDocumentImages(),
       mode: "global",
       documentText: typeof live === "string" && live.trim() ? live : activeWriterSession.documentText,
-      // Emphasis spans only fit the text they were captured over.
-      documentEmphasis: typeof live === "string" && live.trim() && live !== activeWriterSession.documentText ? [] : activeWriterSession.documentEmphasis ?? [],
+      documentEmphasis: typeof live === "string" && live.trim()
+        ? liveCollabDocumentEmphasis(activeWriterSession.sourceDocumentId)
+        : activeWriterSession.documentEmphasis ?? [],
       selection: hostContextSelection(hostContext),
       hostContext,
       activity: [],
@@ -927,7 +928,9 @@ export function createWriterApp() {
       // Agent-driven suggestions run against the live collaborative text when
       // available so anchors match what collaborators are actually editing.
       const liveText = liveCollabDocumentText(activeWriterSession.sourceDocumentId);
-      const sessionForRequest = liveText ? { ...activeWriterSession, documentText: liveText } : activeWriterSession;
+      const sessionForRequest = liveText
+        ? { ...activeWriterSession, documentText: liveText, documentEmphasis: liveCollabDocumentEmphasis(activeWriterSession.sourceDocumentId) }
+        : activeWriterSession;
       const parsed = parseSessionSuggestRequest(request.body, sessionForRequest);
       if ("error" in parsed) {
         response.status(400).json({ error: parsed.error });

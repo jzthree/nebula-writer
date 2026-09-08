@@ -1,4 +1,5 @@
 import { Extension, Mark, mergeAttributes } from "@tiptap/core";
+import { sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
 import type { Mark as ProseMirrorMark } from "@tiptap/pm/model";
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
@@ -108,7 +109,8 @@ export function applyReplacementAsSuggestionMarks(
   editor: { state: EditorState; view: { dispatch: (tr: Transaction) => void } },
   range: { from: number; to: number },
   replacement: string,
-  author: SuggestionAuthor
+  author: SuggestionAuthor,
+  emphasis: EmphasisSpan[] | null = null
 ): string | null {
   const state = editor.state;
   const insertionType = state.schema.marks.suggestionInsertion;
@@ -134,6 +136,21 @@ export function applyReplacementAsSuggestionMarks(
   const tr = state.tr;
   tr.setMeta(suggestingRouterKey, true);
   const paragraphType = state.schema.nodes.paragraph;
+  // Inserted text wears the insertion mark plus the emphasis marks its spans ask for.
+  const emphasisMarks = (format: EmphasisFormat) => [
+    format.bold ? state.schema.marks.bold : null,
+    format.italic ? state.schema.marks.italic : null,
+    format.underline ? state.schema.marks.underline : null,
+    format.highlight ? state.schema.marks.highlight : null
+  ].flatMap((type) => (type ? [type.create()] : []));
+  let searchCursor = 0;
+  const textNodes = (text: string) => {
+    const at = replacement.indexOf(text, searchCursor);
+    const offset = at >= 0 ? at : searchCursor;
+    searchCursor = offset + text.length;
+    return splitByEmphasis(text, sliceEmphasis(emphasis, offset, offset + text.length))
+      .map((piece) => state.schema.text(piece.text, [...emphasisMarks(piece.format), insertionType.create(attrs)]));
+  };
   const segments = replacement.split(/\s*\n+\s*/).map((part) => part.trim()).filter(Boolean);
   if (segments.length > 1 && paragraphType) {
     // Multi-paragraph replacement (a structural edit, e.g. an approved
@@ -142,13 +159,12 @@ export function applyReplacementAsSuggestionMarks(
     // Flattening these to spaces (the old v1 behavior) silently merged a
     // reordered document into one giant paragraph on accept.
     const insertPos = state.doc.resolve(to).end() + 1;
-    const paragraphs = segments.map((segment) =>
-      paragraphType.create(null, state.schema.text(segment, [insertionType.create(attrs)])));
+    const paragraphs = segments.map((segment) => paragraphType.create(null, textNodes(segment)));
     tr.insert(Math.min(insertPos, state.doc.content.size), paragraphs);
   } else if (segments.length) {
     // Inline replacement: insert after the original first so the strike
     // range stays put.
-    tr.insert(to, state.schema.text(segments.join(" "), [insertionType.create(attrs)]));
+    tr.insert(to, textNodes(segments.join(" ")));
   }
   if (to > from) {
     tr.addMark(from, to, deletionType.create(attrs));

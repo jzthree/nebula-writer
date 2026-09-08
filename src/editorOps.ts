@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/react";
 
 import { SUGGESTION_ANCHOR_CONTEXT_CHARS, chooseAnchoredCandidate } from "./shared";
+import { carryEmphasis, emphasisFromPieces, sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
 import type { AiSuggestion, SelectionContext, SourceTrackedChangePreview } from "./shared";
 import { suggestingRouterKey } from "./suggesting";
 
@@ -101,7 +102,7 @@ export function applySuggestion(
   if ((match.matchKind === "relocated" || match.matchKind === "ambiguous") && !options.confirmRelocated) {
     return { ok: false, reason: "needs-confirmation", matchKind: match.matchKind, range };
   }
-  editor.chain().focus().insertContentAt(range, replacementToContent(suggestion.replacement)).run();
+  editor.chain().focus().insertContentAt(range, replacementToContent(suggestion.replacement, replacementEmphasis(editor, suggestion, range))).run();
   return { ok: true, matchKind: match.matchKind, range };
 }
 
@@ -535,17 +536,131 @@ export function suggestionsFromSuggestionMarks(editor: Editor): AiSuggestion[] {
   return suggestions;
 }
 
-export function replacementToContent(value: string): string {
+export function replacementToContent(value: string, emphasis?: EmphasisSpan[] | null): string {
+  const render = (text: string, offset: number): string => {
+    if (!emphasis?.length) {
+      return escapeHtml(text);
+    }
+    return splitByEmphasis(text, sliceEmphasis(emphasis, offset, offset + text.length))
+      .map((piece) => wrapEmphasisHtml(escapeHtml(piece.text), piece.format))
+      .join("");
+  };
   if (!value.includes("\n")) {
-    return escapeHtml(value);
+    return render(value, 0);
   }
-  const paragraphs = value
-    .split(/\n+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return paragraphs.length
-    ? paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")
-    : "<p></p>";
+  const paragraphs: string[] = [];
+  let cursor = 0;
+  for (const part of value.split(/\n+/)) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      cursor += part.length;
+      continue;
+    }
+    const at = value.indexOf(trimmed, cursor);
+    const offset = at >= 0 ? at : cursor;
+    paragraphs.push(`<p>${render(trimmed, offset)}</p>`);
+    cursor = offset + trimmed.length;
+  }
+  return paragraphs.length ? paragraphs.join("") : "<p></p>";
+}
+
+function wrapEmphasisHtml(html: string, format: EmphasisFormat): string {
+  let wrapped = html;
+  if (format.highlight) {
+    wrapped = `<mark>${wrapped}</mark>`;
+  }
+  if (format.underline) {
+    wrapped = `<u>${wrapped}</u>`;
+  }
+  if (format.italic) {
+    wrapped = `<em>${wrapped}</em>`;
+  }
+  if (format.bold) {
+    wrapped = `<strong>${wrapped}</strong>`;
+  }
+  return wrapped;
+}
+
+/** Bold/italic/underline/highlight as a text node's marks declare them. */
+export function marksEmphasis(marks: ReadonlyArray<{ type: { name: string } }>): EmphasisFormat {
+  const format: EmphasisFormat = {};
+  for (const mark of marks) {
+    switch (mark.type.name) {
+      case "bold":
+      case "strong":
+        format.bold = true;
+        break;
+      case "italic":
+      case "em":
+        format.italic = true;
+        break;
+      case "underline":
+        format.underline = true;
+        break;
+      case "highlight":
+        format.highlight = true;
+        break;
+      default:
+        break;
+    }
+  }
+  return format;
+}
+
+/**
+ * Emphasis spans over the editor's plain text — offsets line up with
+ * `doc.textBetween(from, to, blockSeparator)` (the text the AI receives),
+ * so the walk mirrors ProseMirror's: a separator before every text block
+ * but the first, leaf text where a node declares it.
+ */
+export function editorEmphasisSpans(editor: Editor, from = 0, to?: number, blockSeparator = "\n\n"): EmphasisSpan[] {
+  const doc = editor.state.doc;
+  const end = to ?? doc.content.size;
+  if (typeof (doc as { nodesBetween?: unknown }).nodesBetween !== "function") {
+    return [];
+  }
+  const pieces: Array<{ text: string; format: EmphasisFormat | null }> = [];
+  let first = true;
+  doc.nodesBetween(from, end, (node, pos) => {
+    const spec = node.type.spec as { leafText?: (value: unknown) => string };
+    const nodeText = node.isText
+      ? (node.text ?? "").slice(Math.max(from, pos) - pos, end - pos)
+      : !node.isLeaf ? "" : spec.leafText ? spec.leafText(node) : "";
+    if (node.isBlock && ((node.isLeaf && nodeText) || node.isTextblock) && blockSeparator) {
+      if (first) {
+        first = false;
+      } else {
+        pieces.push({ text: blockSeparator, format: null });
+      }
+    }
+    if (nodeText) {
+      pieces.push({ text: nodeText, format: node.isText ? marksEmphasis(node.marks) : null });
+    }
+    return true;
+  });
+  return emphasisFromPieces(pieces);
+}
+
+/**
+ * Emphasis for a suggestion's replacement: what the AI asked for, else the
+ * range's own emphasis carried across the edit (kept words keep theirs, new
+ * words inherit from the word before). Null when there is nothing to carry.
+ */
+export function replacementEmphasis(editor: Editor, suggestion: Pick<AiSuggestion, "replacement" | "emphasis">, range: { from: number; to: number }): EmphasisSpan[] | null {
+  if (suggestion.emphasis) {
+    return suggestion.emphasis.replacement;
+  }
+  try {
+    const spans = editorEmphasisSpans(editor, range.from, range.to, "\n");
+    if (!spans.length) {
+      return null;
+    }
+    const text = editor.state.doc.textBetween(range.from, range.to, "\n");
+    const carried = carryEmphasis(text, spans, suggestion.replacement);
+    return carried.length ? carried : null;
+  } catch {
+    return null;
+  }
 }
 
 function searchableSegmentForNode(node: SearchableNode, pos: number): SearchableSegment | null {

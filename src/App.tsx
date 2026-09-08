@@ -11,6 +11,7 @@ import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
 import Underline from "@tiptap/extension-underline";
+import Highlight from "@tiptap/extension-highlight";
 import { mergeAttributes, Node as TiptapNode } from "@tiptap/core";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -60,7 +61,8 @@ import {
 } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict } from "./api";
-import { applySuggestion, centerEditorRange, centerSuggestionTarget, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
+import { markedSides, renderMarked } from "./emphasisView";
+import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
 import { setSourceRevisionHighlight, SourceRevisionHighlight, type SourceRevisionMark } from "./sourceRevisionHighlight";
 import { HeadingEnter } from "./headingEnter";
@@ -270,21 +272,22 @@ function DecidedChange({ suggestion }: { suggestion: AiSuggestion }) {
       </div>
     );
   }
-  const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
+  const sides = markedSides(suggestion);
+  const segments = suggestion.commentOnly ? null : wordDiffSegments(sides.original, sides.replacement);
   return (
     <div className="review-activity-change">
       {segments ? (
         <p className="diff-inline">
           {segments.map((segment, index) => segment.type === "same"
-            ? <span key={index}>{segment.text}</span>
+            ? <span key={index}>{renderMarked(segment.text)}</span>
             : segment.type === "del"
-              ? <del key={index}>{segment.text}</del>
-              : <ins key={index}>{segment.text}</ins>)}
+              ? <del key={index}>{renderMarked(segment.text)}</del>
+              : <ins key={index}>{renderMarked(segment.text)}</ins>)}
         </p>
       ) : null}
       <div className="diff-block">
-        <p className="original">{suggestion.original}</p>
-        {suggestion.commentOnly ? null : <p className="replacement">{suggestion.replacement || "(deleted)"}</p>}
+        <p className="original">{renderMarked(sides.original)}</p>
+        {suggestion.commentOnly ? null : <p className="replacement">{sides.replacement ? renderMarked(sides.replacement) : "(deleted)"}</p>}
       </div>
       {suggestion.rationale ? <p className="rationale">{suggestion.rationale}</p> : null}
     </div>
@@ -1151,6 +1154,7 @@ export function App() {
       TableHeader,
       TableCell,
       Underline,
+      Highlight,
       Subscript,
       Superscript,
       Placeholder.configure({
@@ -4179,6 +4183,7 @@ export function App() {
         mode: activeScope,
         documentHtml: "",
         documentText: currentDocumentText,
+        documentEmphasis: editor ? editorEmphasisSpans(editor) : [],
         maxSuggestions,
         selection: activeScope === "selection" ? selection : null,
         requestedBy: collabSession.user.name,
@@ -4441,7 +4446,7 @@ export function App() {
       authorName: suggestion.proposedBy ?? providerLabel(provider),
       color: "#7b1fa2",
       role: "ai"
-    });
+    }, replacementEmphasis(editor, suggestion, range));
     lastEditorTextSnapshotRef.current = editorTextSnapshot(editor).text;
     suppressUserTrackingRef.current = false;
     if (!changeId) {
@@ -4488,7 +4493,7 @@ export function App() {
       authorName: suggestion.proposedBy ?? providerLabel(provider),
       color: "#7b1fa2",
       role: "ai"
-    });
+    }, replacementEmphasis(editor, suggestion, range));
     lastEditorTextSnapshotRef.current = editorTextSnapshot(editor).text;
     suppressUserTrackingRef.current = false;
     if (!changeId) {
@@ -4821,7 +4826,7 @@ export function App() {
       return false;
     }
     suppressUserTrackingRef.current = true;
-    editor.chain().focus().insertContentAt(range, replacementToContent(suggestion.original)).run();
+    editor.chain().focus().insertContentAt(range, replacementToContent(suggestion.original, suggestion.emphasis?.original ?? null)).run();
     lastEditorTextSnapshotRef.current = editorTextSnapshot(editor).text;
     suppressUserTrackingRef.current = false;
     acceptedReviewTracesRef.current = acceptedReviewTracesRef.current.filter((candidate) => candidate.id !== traceId);

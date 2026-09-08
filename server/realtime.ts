@@ -13,6 +13,7 @@
  */
 
 import type { IncomingMessage, Server } from "node:http";
+import { emphasisFromPieces, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type * as Y from "yjs";
@@ -127,13 +128,109 @@ export function liveCollabDocumentText(expectedSourceDocumentId: string): string
   if (fragment.length === 0) {
     return null;
   }
+  return collabFragmentText(fragment) || null;
+}
+
+/** Plain text of a collaborative document fragment (blocks joined by newlines, runs of blank lines collapsed, trimmed). */
+export function collabFragmentText(fragment: { forEach: (cb: (node: unknown) => void) => void }): string {
   const blocks: string[] = [];
   fragment.forEach((node) => {
     const text = xmlNodeText(node);
     blocks.push(text);
   });
-  const joined = blocks.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return joined || null;
+  return blocks.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * Emphasis spans over `liveCollabDocumentText`'s result: the marks (bold,
+ * italic, underline, highlight) the collaborative document carries, walked
+ * the same way and trimmed/collapsed in step with the text.
+ */
+export function liveCollabDocumentEmphasis(expectedSourceDocumentId: string): EmphasisSpan[] {
+  const docsMap = docs as Map<string, Y.Doc>;
+  const doc = docsMap.get(expectedSourceDocumentId) ?? docsMap.get("nebula-writer");
+  if (!doc || doc.getMap("nebula-meta").get("sessionId") !== expectedSourceDocumentId) {
+    return [];
+  }
+  const fragment = doc.getXmlFragment("default");
+  if (fragment.length === 0) {
+    return [];
+  }
+  return collabFragmentEmphasis(fragment);
+}
+
+/** Emphasis spans over `collabFragmentText(fragment)`. */
+export function collabFragmentEmphasis(fragment: { forEach: (cb: (node: unknown) => void) => void }): EmphasisSpan[] {
+  const chars: Array<{ char: string; format: EmphasisFormat | null }> = [];
+  let firstBlock = true;
+  fragment.forEach((node) => {
+    if (!firstBlock) {
+      chars.push({ char: "\n", format: null });
+    }
+    firstBlock = false;
+    xmlNodeChars(node, chars);
+  });
+  // Mirror `.replace(/\n{3,}/g, "\n\n").trim()` on the character stream.
+  const collapsed: typeof chars = [];
+  let newlines = 0;
+  for (const entry of chars) {
+    if (entry.char === "\n") {
+      newlines += 1;
+      if (newlines > 2) {
+        continue;
+      }
+    } else {
+      newlines = 0;
+    }
+    collapsed.push(entry);
+  }
+  let start = 0;
+  let end = collapsed.length;
+  while (start < end && /\s/.test(collapsed[start].char)) {
+    start += 1;
+  }
+  while (end > start && /\s/.test(collapsed[end - 1].char)) {
+    end -= 1;
+  }
+  return emphasisFromPieces(collapsed.slice(start, end).map((entry) => ({ text: entry.char, format: entry.format })));
+}
+
+function xmlNodeChars(node: unknown, out: Array<{ char: string; format: EmphasisFormat | null }>): void {
+  const candidate = node as {
+    forEach?: (cb: (child: unknown) => void) => void;
+    toDelta?: () => Array<{ insert?: unknown; attributes?: Record<string, unknown> }>;
+  } | null;
+  if (typeof candidate?.toDelta === "function") {
+    for (const op of candidate.toDelta()) {
+      if (typeof op.insert !== "string") {
+        continue;
+      }
+      const attributes = op.attributes ?? {};
+      const format: EmphasisFormat = {
+        ...(attributes.bold ? { bold: true } : {}),
+        ...(attributes.italic ? { italic: true } : {}),
+        ...(attributes.underline ? { underline: true } : {}),
+        ...(attributes.highlight ? { highlight: true } : {})
+      };
+      for (const char of op.insert) {
+        out.push({ char, format });
+      }
+    }
+    return;
+  }
+  if (typeof candidate?.forEach === "function") {
+    const children: unknown[] = [];
+    candidate.forEach((child) => {
+      children.push(child);
+    });
+    const allInlineText = children.every((child) => typeof (child as { toDelta?: unknown })?.toDelta === "function");
+    children.forEach((child, index) => {
+      if (index > 0 && !allInlineText) {
+        out.push({ char: "\n", format: null });
+      }
+      xmlNodeChars(child, out);
+    });
+  }
 }
 
 // Duck-typed on purpose: the docs created inside y-websocket's CJS server

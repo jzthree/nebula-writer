@@ -1,5 +1,7 @@
+import Highlight from "@tiptap/extension-highlight";
+import Underline from "@tiptap/extension-underline";
 import { describe, expect, it, vi } from "vitest";
-import { applySuggestion, centerSuggestionTarget, findSuggestionMatch, findSuggestionRange, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget } from "../src/editorOps";
+import { applySuggestion, centerSuggestionTarget, findSuggestionMatch, findSuggestionRange, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, editorEmphasisSpans } from "../src/editorOps";
 import type { AiSuggestion } from "../src/shared";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -468,5 +470,58 @@ describe("editor operations: placement anchors", () => {
     const editor = dupEditor("Original sentence. Original sentence.");
     const match = findSuggestionMatch(editor as never, suggestion({ range: null, target: "global", anchor: { offset: 19, before: "unrelated context ", after: " unrelated" } }));
     expect(match).toEqual({ from: 20, to: 38, matchKind: "ambiguous" });
+  });
+});
+
+describe("editor operations: inline emphasis", () => {
+  function emphasisEditor(content: string) {
+    return new Editor({
+      element: document.createElement("div"),
+      extensions: [StarterKit, Underline, Highlight],
+      content
+    });
+  }
+
+  it("reads emphasis spans that line up with the text the AI receives", () => {
+    const editor = emphasisEditor("<p><strong>Aim 1.</strong> Map <em>dynamics</em>.</p><p>Second <u>under</u> <mark>hot</mark></p>");
+    try {
+      const text = editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n\n");
+      expect(text).toBe("Aim 1. Map dynamics.\n\nSecond under hot");
+      expect(editorEmphasisSpans(editor)).toEqual([
+        { start: 0, end: 6, bold: true },
+        { start: 11, end: 19, italic: true },
+        { start: 29, end: 34, underline: true },
+        { start: 35, end: 38, highlight: true }
+      ]);
+    } finally {
+      editor.destroy();
+    }
+  });
+
+  it("renders requested emphasis as marks when applying, and carries the original's when the AI wrote plain text", () => {
+    const editor = emphasisEditor("<p><strong>Aim 1.</strong> Map dynamics.</p>");
+    try {
+      const explicit = applySuggestion(editor, suggestion({
+        original: "Map dynamics.",
+        replacement: "Map chromatin dynamics.",
+        target: "global",
+        range: null,
+        emphasis: { original: [], replacement: [{ start: 4, end: 13, bold: true, highlight: true }] }
+      }));
+      expect(explicit.ok).toBe(true);
+      expect(editor.getHTML()).toContain("<strong><mark>chromatin</mark></strong>");
+      const carried = applySuggestion(editor, suggestion({ original: "Aim 1.", replacement: "Aim 1 revised.", target: "global", range: null }));
+      expect(carried.ok).toBe(true);
+      expect(editor.getHTML()).toContain("<strong>Aim 1 revised.</strong>");
+      expect(editor.getHTML()).not.toContain("<strong> Map");
+    } finally {
+      editor.destroy();
+    }
+  });
+
+  it("turns replacement text plus spans into emphasised HTML, paragraph by paragraph", () => {
+    expect(replacementToContent("Key point here", [{ start: 0, end: 9, bold: true }])).toBe("<strong>Key point</strong> here");
+    expect(replacementToContent("First\n\nSecond line", [{ start: 7, end: 13, italic: true, underline: true }])).toBe("<p>First</p><p><em><u>Second</u></em> line</p>");
+    expect(replacementToContent("a < b", [])).toBe("a &lt; b");
   });
 });

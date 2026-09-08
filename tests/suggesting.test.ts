@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import Highlight from "@tiptap/extension-highlight";
+import Underline from "@tiptap/extension-underline";
 import { TextSelection } from "@tiptap/pm/state";
 import { materializeSourceTrackedChanges, suggestionsFromSuggestionMarks } from "../src/editorOps";
 import { applyReplacementAsSuggestionMarks, resolveSuggestionMarks, SuggestingRouter, SuggestionDeletion, SuggestionInsertion } from "../src/suggesting";
@@ -524,5 +526,23 @@ describe("materializeSourceTrackedChanges", () => {
     expect(editor.state.doc.textContent).toBe("Hello world.");
     expect(editor.getHTML()).not.toContain("data-suggestion");
     editor.destroy();
+  });
+});
+
+describe("suggestion marks: inline emphasis", () => {
+  it("inserts the replacement with the emphasis marks its spans ask for", () => {
+    const editor = new Editor({
+      extensions: [StarterKit, Underline, Highlight, SuggestionInsertion, SuggestionDeletion],
+      content: "<p>Hello world.</p>"
+    });
+    try {
+      const changeId = applyReplacementAsSuggestionMarks(editor, { from: 1, to: 6 }, "Greetings", { author: "ai", authorName: "AI", color: "#7b1fa2", role: "ai" }, [{ start: 0, end: 9, bold: true, underline: true }]);
+      expect(changeId).toBeTruthy();
+      const html = editor.getHTML();
+      expect(html).toMatch(/<strong><u><(?:ins|span)[^>]*>Greetings<\/(?:ins|span)><\/u><\/strong>|<(?:ins|span)[^>]*><strong><u>Greetings<\/u><\/strong>/);
+      expect(editor.getText()).toContain("HelloGreetings world.");
+    } finally {
+      editor.destroy();
+    }
   });
 });
