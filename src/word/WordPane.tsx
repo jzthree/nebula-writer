@@ -24,6 +24,7 @@ import {
   Loader2,
   MapPin,
   MessageSquarePlus,
+  MessageSquareText,
   Paperclip,
   RefreshCw,
   Replace,
@@ -162,12 +163,8 @@ export interface WordPaneProps {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
-  /** The suggestion the next message is about, if the user chose Refine on a card. */
-  focus: { ref: string | null; title: string } | null;
-  onClearFocus: () => void;
-  onRefine: (suggestion: AiSuggestion) => void;
-  /** Send a canned refinement ("Shorter") about the focused suggestion right away. */
-  onQuickRefine: (instruction: string) => void;
+  /** A note typed on a card about that change: the reply revises the suggestion. */
+  onDiscuss: (suggestion: AiSuggestion, note: string) => void;
   onInstructionChange: (value: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
@@ -253,7 +250,7 @@ export function WordPane(props: WordPaneProps) {
         onComment={props.onComment}
         onCycleMatch={props.onCycleMatch}
         onDismiss={props.onDismiss}
-        onRefine={props.onRefine}
+        onDiscuss={props.onDiscuss}
         onLocate={props.onLocate}
         onNavigate={props.onNavigate}
         onRestore={props.onRestore}
@@ -339,17 +336,6 @@ export function WordPane(props: WordPaneProps) {
             ))}
           </ul>
         ) : null}
-        {props.focus ? (
-          <div className="wp-focus-chip" role="status">
-            <span className="wp-focus-label"><Sparkles size={12} aria-hidden="true" /> About {props.focus.ref ? `${props.focus.ref} ` : ""}"{props.focus.title}"</span>
-            <span className="wp-focus-quick">
-              {QUICK_REFINEMENTS.map((quick) => (
-                <button key={quick.label} type="button" className="wp-text-button" onClick={() => props.onQuickRefine(quick.instruction)} disabled={running} title={quick.instruction}>{quick.label}</button>
-              ))}
-            </span>
-            <button type="button" className="wp-icon-button tiny" onClick={props.onClearFocus} aria-label="Stop replying about this suggestion" title="Back to a general message"><X size={12} aria-hidden="true" /></button>
-          </div>
-        ) : null}
         <form
           className="wp-form"
           onSubmit={(event) => {
@@ -364,7 +350,7 @@ export function WordPane(props: WordPaneProps) {
           <textarea
             value={props.instruction}
             onChange={(event) => props.onInstructionChange(event.currentTarget.value)}
-            placeholder={props.focus ? "Tell Writer how to change this suggestion… (keep the citation, make it shorter, different angle)" : "Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"}
+            placeholder="Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"
             aria-label="Instruction for Writer"
             rows={3}
             disabled={running}
@@ -585,7 +571,7 @@ function Transcript(props: {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
-  onRefine: (suggestion: AiSuggestion) => void;
+  onDiscuss: (suggestion: AiSuggestion, note: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
   onRestore: (suggestion: AiSuggestion) => void;
@@ -635,7 +621,7 @@ function Transcript(props: {
             onComment={props.onComment}
             onCycleMatch={props.onCycleMatch}
             onDismiss={props.onDismiss}
-            onRefine={props.onRefine}
+            onDiscuss={props.onDiscuss}
             onLocate={props.onLocate}
             onRestore={props.onRestore}
             suggestionById={props.suggestionById}
@@ -664,7 +650,7 @@ function TurnView(props: {
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
-  onRefine: (suggestion: AiSuggestion) => void;
+  onDiscuss: (suggestion: AiSuggestion, note: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onRestore: (suggestion: AiSuggestion) => void;
   suggestionById: (id: string) => AiSuggestion | null;
@@ -702,7 +688,7 @@ function TurnView(props: {
             onComment={() => props.onComment(suggestion)}
             onCycleMatch={(direction) => props.onCycleMatch(suggestion, direction)}
             onDismiss={() => props.onDismiss(suggestion)}
-            onRefine={() => props.onRefine(suggestion)}
+            onDiscuss={(note) => props.onDiscuss(suggestion, note)}
             onLocate={() => props.onLocate(suggestion)}
             revisionOf={suggestion.revises ? describeRevisionOf(props.suggestionById(suggestion.revises)) : null}
             onRestore={() => props.onRestore(suggestion)}
@@ -950,7 +936,7 @@ function SuggestionCard(props: {
   onCycleMatch: (direction: -1 | 1) => void;
   onDismiss: () => void;
   onLocate: () => void;
-  onRefine: () => void;
+  onDiscuss: (note: string) => void;
   onRestore: () => void;
   /** "S3 Tighten the opening claim" when this card revises an earlier one. */
   revisionOf?: string | null;
@@ -964,6 +950,17 @@ function SuggestionCard(props: {
   const [expanded, setExpanded] = useState(false);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"original" | "revised" | null>(null);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const sendNote = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    props.onDiscuss(trimmed);
+    setNote("");
+    setNoteOpen(false);
+  };
   const copy = async (which: "original" | "revised") => {
     const ok = await copyText(which === "original" ? suggestion.original : suggestion.replacement);
     setCopied(ok ? which : null);
@@ -1047,10 +1044,35 @@ function SuggestionCard(props: {
             <Replace size={13} aria-hidden="true" /> Apply
           </button>
         )}
-        <button type="button" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage"><MessageSquarePlus size={13} aria-hidden="true" /> Comment</button>
-        <button type="button" onClick={props.onRefine} disabled={props.busy} title="Tell Writer how to change this suggestion — the next message is about it"><Sparkles size={13} aria-hidden="true" /> Refine</button>
+        <button type="button" className={noteOpen ? "active" : ""} onClick={() => setNoteOpen((current) => !current)} disabled={props.busy} aria-expanded={noteOpen} title="Comment on this change — say what to keep or change and Writer replies with a revised suggestion"><MessageSquareText size={13} aria-hidden="true" /> Comment</button>
+        <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage" aria-label="Leave as a Word comment"><MessageSquarePlus size={13} aria-hidden="true" /></button>
         <button type="button" className="quiet" onClick={props.onDismiss} disabled={props.busy} title="Dismiss (recorded as rejected)"><X size={13} aria-hidden="true" /></button>
       </div>
+      {noteOpen ? (
+        <div className="wp-card-note" onClick={(event) => event.stopPropagation()}>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.currentTarget.value)}
+            placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
+            aria-label="Your note about this change"
+            rows={2}
+            autoFocus
+            disabled={props.busy}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                sendNote(note);
+              }
+            }}
+          />
+          <div className="wp-card-note-actions">
+            {QUICK_REFINEMENTS.map((quick) => (
+              <button key={quick.label} type="button" className="wp-text-button" onClick={() => sendNote(quick.instruction)} disabled={props.busy} title={quick.instruction}>{quick.label}</button>
+            ))}
+            <button type="button" className="primary" onClick={() => sendNote(note)} disabled={props.busy || !note.trim()} aria-label="Send this note about the change" title="Send (⌘↩)"><Send size={12} aria-hidden="true" /> Send</button>
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }

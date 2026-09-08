@@ -402,15 +402,17 @@ describe("Word task pane", () => {
     expect(captured.imageUploads).toHaveLength(1);
   });
 
-  it("refines one suggestion: the next message is about it, the reply revises it, and the earlier card is withdrawn", async () => {
+  it("comments on one suggestion from its card: the reply revises it and the earlier card is withdrawn", async () => {
     await renderPane();
     send("Tighten the first sentence.");
     await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /Refine/ }));
-    expect(screen.getByText(/About "Tighten the opening claim"/)).toBeInTheDocument();
-    send("Keep the citation.");
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    const noteBox = screen.getByLabelText("Your note about this change");
+    fireEvent.change(noteBox, { target: { value: "Keep the citation." } });
+    fireEvent.click(screen.getByLabelText("Send this note about the change"));
     await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].instruction).toBe("Keep the citation.");
     expect(captured.requests[1].focus).toMatchObject({ suggestionId: "s-1", title: "Tighten the opening claim", original: ORIGINAL, replacement: REPLACEMENT });
 
     await waitFor(() => expect(screen.getByText("Tighten the opening claim, keeping the citation")).toBeInTheDocument());
@@ -418,8 +420,8 @@ describe("Word task pane", () => {
     const earlier = screen.getByLabelText("Handled suggestion: Tighten the opening claim");
     expect(earlier.textContent).toContain("revised");
     expect(screen.getByText("1 pending")).toBeInTheDocument();
-    // The chip is gone after sending, and no decision was posted for the withdrawal (the sidecar recorded it).
-    expect(screen.queryByLabelText("Stop replying about this suggestion")).not.toBeInTheDocument();
+    // The note box closes after sending, and no decision was posted for the withdrawal (the sidecar recorded it).
+    expect(screen.queryByLabelText("Your note about this change")).not.toBeInTheDocument();
     expect(captured.statusUpdates).toEqual([]);
 
     // The digest tells the AI what happened to the earlier suggestion.

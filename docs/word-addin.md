@@ -107,15 +107,17 @@ Track Changes toggle, every replacement queued into one sync, from the end of
 the document backwards), followed by a single re-read. A change that
 overlaps another in the same batch is retried against the updated text.
 
-**Refining one suggestion.** Every pending card has a Refine button. It puts
-a chip in the composer — *About S3 "Tighten the opening claim"* — with three
-canned refinements (Shorter, Keep my wording, Different angle) and a clear
-button. Whatever you send while the chip is up is feedback on that card:
-the AI is told exactly which suggestion you mean, revises it as a single new
-card labelled *Revision of S3*, and the earlier card is withdrawn (shown as
-*revised*, with its Show change still available), never counted as rejected.
-The conversation stays one linear transcript; the card history is the
-threaded view. The web app has the same Refine button and chip.
+**Commenting on one suggestion.** Every pending card has a Comment button
+that opens a note box on the card itself, with three canned refinements
+(Shorter, Keep my wording, Different angle) and Send (⌘↩). The note is sent
+as feedback on that card: the AI is told exactly which suggestion you mean,
+revises it as a single new card labelled *Revision of S3*, and the earlier
+card is withdrawn (shown as *revised*, with its Show change still
+available), never counted as rejected. The small speech-bubble icon next to
+it is the other kind of comment: it leaves the suggestion as a Word comment
+in the document. The conversation stays one linear transcript; the card
+history is the threaded view. The web app has the same Comment box on its
+review cards.
 
 Two buttons sit above the transcript once it has turns. **Start a new
 conversation** forgets the provider session and the earlier turns (the AI

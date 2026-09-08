@@ -516,8 +516,8 @@ export function App() {
       return DEFAULT_AI_TOOL_ACCESS;
     }
   });
-  // "Refine": the next chat message is feedback on one review card.
-  const [chatFocus, setChatFocus] = useState<AiRequestFocus | null>(null);
+  // A note typed on a review card: the next request is about that one suggestion.
+  const [discussing, setDiscussing] = useState<{ id: string; note: string } | null>(null);
   const setToolAccess = useCallback((next: AiToolAccess) => {
     setToolAccessState(next);
     try {
@@ -4119,8 +4119,9 @@ export function App() {
     }
   }
 
-  async function handleSend() {
-    const trimmedInstruction = instruction.trim();
+  async function handleSend(overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) {
+    const trimmedInstruction = (overrides.instruction ?? instruction).trim();
+    const requestFocus = overrides.focus ?? null;
     if (!editor || !trimmedInstruction || busy !== null || aiRequestInFlightRef.current) {
       return;
     }
@@ -4145,8 +4146,9 @@ export function App() {
     setBusy("Asking AI");
     setError(null);
     setEmptyAiResult(null);
-    setInstruction("");
-    setChatFocus(null);
+    if (overrides.instruction === undefined) {
+      setInstruction("");
+    }
     // Attachments are STICKY context: they stay attached across turns (and
     // across a failed request) until the user removes them, so a file never
     // needs re-attaching and is included with every message in the thread.
@@ -4168,7 +4170,7 @@ export function App() {
         docId: docId ?? undefined,
         attachments: requestAttachments.length ? requestAttachments : undefined,
         toolAccess,
-        ...(chatFocus ? { focus: chatFocus } : {}),
+        ...(requestFocus ? { focus: requestFocus } : {}),
         agentSessionId: agentSessionsRef.current[`${provider}:${docId ?? "scratch"}`] ?? null
       };
       // Personal runner: their own CLI account, with staging left to the
@@ -4521,16 +4523,24 @@ export function App() {
     setError(null);
   }
 
-  function refineSuggestion(suggestion: AiSuggestion) {
-    setChatFocus({
-      suggestionId: suggestion.id,
-      ref: suggestion.ref ?? null,
-      title: suggestion.title || "Suggested revision",
-      original: suggestion.original,
-      replacement: suggestion.replacement,
-      rationale: suggestion.rationale || null
-    });
+  function sendSuggestionNote(suggestion: AiSuggestion, note: string) {
+    const trimmed = note.trim();
+    if (!trimmed) {
+      return;
+    }
     setActiveSuggestionId(suggestion.id);
+    setDiscussing(null);
+    void handleSend({
+      instruction: trimmed,
+      focus: {
+        suggestionId: suggestion.id,
+        ref: suggestion.ref ?? null,
+        title: suggestion.title || "Suggested revision",
+        original: suggestion.original,
+        replacement: suggestion.replacement,
+        rationale: suggestion.rationale || null
+      }
+    });
   }
 
   function acceptSuggestion(suggestion: AiSuggestion) {
@@ -6587,16 +6597,6 @@ export function App() {
             ) : null}
             </div>
 
-            {chatFocus ? (
-              <div className="cap-chip-row">
-                <span className="cap-chip focus-chip" title="The next message is feedback on this suggestion: the AI revises it and the earlier version is withdrawn.">
-                  About {chatFocus.ref ? `${chatFocus.ref} ` : ""}"{chatFocus.title}"
-                  <button type="button" onClick={() => setChatFocus(null)} aria-label="Stop replying about this suggestion" title="Back to a general message">
-                    <X size={12} aria-hidden="true" />
-                  </button>
-                </span>
-              </div>
-            ) : null}
             {maxSuggestionsInput.trim() ? (
               <div className="cap-chip-row">
                 <span className="cap-chip" title="This cap was set by a saved skill or retry flow; remove it to let the AI return as many edits as it finds useful.">
@@ -7569,14 +7569,43 @@ export function App() {
 	                      <>
 	                        <button
 	                          type="button"
+	                          className={discussing?.id === suggestion.id ? "active" : ""}
 	                          onClick={(event) => {
 	                            event.stopPropagation();
-	                            refineSuggestion(suggestion);
+	                            setDiscussing((current) => (current?.id === suggestion.id ? null : { id: suggestion.id, note: "" }));
 	                          }}
-	                          title="Tell the AI how to change this suggestion — your next message is about it"
+	                          aria-expanded={discussing?.id === suggestion.id}
+	                          title="Comment on this change — say what to keep or change and the AI replies with a revised suggestion"
 	                        >
-	                          <Sparkles size={16} aria-hidden="true" /> Refine
+	                          <MessageSquareText size={16} aria-hidden="true" /> Comment
 	                        </button>
+	                        {discussing?.id === suggestion.id ? (
+	                          <div className="suggestion-note" onClick={(event) => event.stopPropagation()}>
+	                            <textarea
+	                              value={discussing.note}
+	                              onChange={(event) => setDiscussing({ id: suggestion.id, note: event.currentTarget.value })}
+	                              placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
+	                              aria-label="Your note about this change"
+	                              rows={2}
+	                              autoFocus
+	                              disabled={busy !== null}
+	                              onKeyDown={(event) => {
+	                                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+	                                  event.preventDefault();
+	                                  sendSuggestionNote(suggestion, discussing.note);
+	                                }
+	                              }}
+	                            />
+	                            <div className="suggestion-note-actions">
+	                              {[["Shorter", "Make this suggestion shorter while keeping its point."], ["Keep my wording", "Keep my original wording wherever it already works; change only what is necessary."], ["Different angle", "Try a different approach to this passage — a different structure or emphasis, not a light edit."]].map(([label, quick]) => (
+	                                <button key={label} type="button" onClick={() => sendSuggestionNote(suggestion, quick)} disabled={busy !== null} title={quick}>{label}</button>
+	                              ))}
+	                              <button type="button" className="primary" onClick={() => sendSuggestionNote(suggestion, discussing.note)} disabled={busy !== null || !discussing.note.trim()} aria-label="Send this note about the change">
+	                                <Send size={14} aria-hidden="true" /> Send
+	                              </button>
+	                            </div>
+	                          </div>
+	                        ) : null}
 	                        <button
 	                          type="button"
 	                          onClick={(event) => {

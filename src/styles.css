@@ -4740,3 +4740,9 @@ button:disabled {
 /* Refine: the next message is about one suggestion */
 .cap-chip.focus-chip { border-color: var(--accent-border); color: var(--accent-text); }
 .suggestion-warning.revision { background: var(--accent-bg, var(--surface-soft)); border-color: var(--accent-border); color: var(--accent-text); }
+
+/* Review card note: comment on a change, on the card */
+.suggestion-note { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; border: 1px solid var(--accent-border); background: var(--accent-bg, var(--surface-soft)); }
+.suggestion-note textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; line-height: 1.4; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); resize: vertical; }
+.suggestion-note-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.suggestion-note-actions .primary { margin-left: auto; }

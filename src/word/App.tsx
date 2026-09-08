@@ -216,10 +216,7 @@ export function App() {
   const lastStaleRefreshRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const imageUploadsRef = useRef(new Map<string, AiDocumentImage>());
-  // "Refine": the next message is feedback on one card.
-  const [refineFocus, setRefineFocus] = useState<AiRequestFocus | null>(null);
-  const refineFocusRef = useRef<AiRequestFocus | null>(null);
-  refineFocusRef.current = refineFocus;
+
   const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   // Provider conversation ids, keyed by provider + document, so follow-ups
@@ -641,7 +638,7 @@ export function App() {
     if (requestState === "running" || !typed || hostStatus !== "ready") {
       return;
     }
-    const activeFocus = overrides.focus === undefined ? refineFocusRef.current : overrides.focus;
+    const activeFocus = overrides.focus ?? null;
     setNotice(null);
     setRequestState("running");
     const controller = new AbortController();
@@ -685,7 +682,6 @@ export function App() {
       const sent = summarizeSent(request, resolved.label, snap, currentFocus, hostContext.recentFocus.length, hostContext.outline.length, engine);
       const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, sent, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
       appendTurn(userTurn);
-      setRefineFocus(null);
       appendTurn({ id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: `Asking ${engine} · ${resolved.label}`, origin: "pane", activity: [] });
       const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
       const userMirrored = mirrorChat([userMessage]);
@@ -1089,27 +1085,20 @@ export function App() {
     ]);
     setRequestState("idle");
     setActiveId(pending[0]?.id ?? null);
-    setRefineFocus(null);
   }, []);
 
-  const refine = useCallback((suggestion: AiSuggestion) => {
+  /** A note typed on a card: sent as a request about that one suggestion; the reply revises it. */
+  const discuss = useCallback((suggestion: AiSuggestion, note: string) => {
     setActiveId(suggestion.id);
-    setRefineFocus({
+    const focus: AiRequestFocus = {
       suggestionId: suggestion.id,
       ref: suggestion.ref ?? null,
       title: suggestion.title || "Suggested revision",
       original: suggestion.original,
       replacement: suggestion.replacement,
       rationale: suggestion.rationale || null
-    });
-  }, []);
-
-  const quickRefine = useCallback((quickInstruction: string) => {
-    const focus = refineFocusRef.current;
-    if (!focus) {
-      return;
-    }
-    void ask({ instruction: quickInstruction, focus });
+    };
+    void ask({ instruction: note, focus });
   }, [ask]);
 
   const clearConversation = useCallback(() => {
@@ -1123,7 +1112,6 @@ export function App() {
     setCards({});
     setActiveId(null);
     setRequestState("idle");
-    setRefineFocus(null);
     agentSessionsRef.current = {};
   }, [recordDecision]);
 
@@ -1320,10 +1308,7 @@ export function App() {
       onAsk={() => void ask()}
       onClearConversation={clearConversation}
       onNewConversation={startNewConversation}
-      focus={refineFocus ? { ref: refineFocus.ref ?? null, title: refineFocus.title } : null}
-      onClearFocus={() => setRefineFocus(null)}
-      onRefine={refine}
-      onQuickRefine={quickRefine}
+      onDiscuss={discuss}
       onComment={comment}
       onCycleMatch={cycleMatch}
       onDismiss={dismiss}
