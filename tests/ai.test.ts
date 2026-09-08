@@ -1753,8 +1753,68 @@ describe("proposeChanges", () => {
       expect(JSON.parse(readFileSync(argvPath, "utf8")).slice(0, 3)).toEqual(["exec", "resume", "thread-7"]);
       expect(response.suggestions.map((suggestion) => [suggestion.title, suggestion.ref])).toEqual([["Cut alpha", "S1"], ["Cut beta", "S2"], ["Trim gamma", "S3"]]);
       expect(response.message).toContain("These three cuts save about 40 words.");
-      expect(response.message).toContain("first returned 1 of the 3 changes it described; the other 2 came from an automatic follow-up");
+      expect(response.message).toContain("first returned 1 of the 3 changes it described; 2 suggestions came from an automatic follow-up");
       expect(response.agentSessionId).toBe("thread-7");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      if (previousAllow === undefined) {
+        delete process.env.WRITER_ALLOW_CLI;
+      } else {
+        process.env.WRITER_ALLOW_CLI = previousAllow;
+      }
+      if (previousOverride === undefined) {
+        delete process.env.WRITER_CODEX_PATH;
+      } else {
+        process.env.WRITER_CODEX_PATH = previousOverride;
+      }
+    }
+  });
+
+  it("asks once more to re-quote suggestions whose original could not be placed, and merges the re-quotes", async () => {
+    const previousAllow = process.env.WRITER_ALLOW_CLI;
+    const previousOverride = process.env.WRITER_CODEX_PATH;
+    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-requote-"));
+    const fakeCodexPath = join(tempDir, "fake-codex");
+    const counterPath = join(tempDir, "runs.txt");
+    const promptPath = join(tempDir, "prompt2.txt");
+    const documentText = "Alpha sentence one. Beta sentence two. Gamma sentence three.";
+    const first = { message: "Two edits.", suggestions: [
+      { title: "Cut alpha", original: "Alpha sentence one.", replacement: "", rationale: "x", confidence: 0.8 },
+      { title: "Trim gamma", original: "This is not what the document says at all, in any respect.", replacement: "Gamma three.", rationale: "x", confidence: 0.8 }
+    ] };
+    const requoted = { message: "Re-quoted.", suggestions: [{ title: "Trim gamma", original: "Gamma sentence three.", replacement: "Gamma three.", rationale: "x", confidence: 0.8 }] };
+    writeFileSync(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        `import { existsSync, readFileSync, writeFileSync } from "node:fs";`,
+        `const runs = existsSync(${JSON.stringify(counterPath)}) ? Number(readFileSync(${JSON.stringify(counterPath)}, "utf8")) : 0;`,
+        `writeFileSync(${JSON.stringify(counterPath)}, String(runs + 1));`,
+        `let stdin = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (c) => { stdin += c; }); process.stdin.on("end", () => {`,
+        `  if (runs === 1) { writeFileSync(${JSON.stringify(promptPath)}, stdin); }`,
+        `  const payload = runs === 0 ? ${JSON.stringify(first)} : ${JSON.stringify(requoted)};`,
+        `  process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "thread-3" }) + "\\n");`,
+        `  process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }) + "\\n");`,
+        `  process.stdout.write(JSON.stringify({ type: "turn.completed", usage: {} }) + "\\n");`,
+        `});`
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.WRITER_ALLOW_CLI = "1";
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
+    try {
+      const response = await proposeChanges({ ...baseRequest, provider: "codex", instruction: "trim", documentText, documentHtml: `<p>${documentText}</p>`, mode: "global", selection: null });
+      expect(readFileSync(counterPath, "utf8")).toBe("2");
+      const followUpPrompt = readFileSync(promptPath, "utf8");
+      expect(followUpPrompt).toContain("could not be placed because the original text was not found verbatim");
+      expect(followUpPrompt).toContain('"Trim gamma": you quoted');
+      expect(response.suggestions.map((suggestion) => [suggestion.title, suggestion.original, suggestion.ref])).toEqual([
+        ["Cut alpha", "Alpha sentence one.", "S1"],
+        ["Trim gamma", "Gamma sentence three.", "S2"]
+      ]);
+      expect(response.message).toContain("1 quote did not match the document; 1 suggestion came from an automatic follow-up");
+      expect(response.agentSessionId).toBe("thread-3");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
       if (previousAllow === undefined) {

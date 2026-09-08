@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AiDocumentImage, AiRequest, AiSuggestion } from "../src/shared";
 import { importImageFile } from "./image-files";
+import { repairAnchor } from "./anchor-repair";
 
 /**
  * Suggestion safety checks, shared by the AI pipeline and the agent staging
@@ -75,7 +76,7 @@ export function validateImageReplacementCandidate(item: SuggestionCandidate, ima
 }
 
 export type SuggestionValidation =
-  | { ok: true; suggestion: AiSuggestion }
+  | { ok: true; suggestion: AiSuggestion; note?: string }
   | { ok: false; reason: string };
 
 export function validateSuggestionCandidate(
@@ -112,22 +113,33 @@ export function validateSuggestionCandidate(
   // alone cannot satisfy is still carried out.
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
   const inSelection = request.mode === "selection" && containsAnchoredText(selectionText, original);
+  let anchoredOriginal = original;
+  let anchoredReplacement = replacement;
+  let note: string | undefined;
   if (!inSelection && !containsAnchoredText(request.documentText, original)) {
-    return {
-      ok: false,
-      reason: "original is not an exact substring of the document. Use writer_search_document to locate the passage and copy it verbatim (including punctuation and spacing)."
-    };
+    // Self-healing: a near-miss quote is snapped to the document's exact text.
+    const repaired = repairAnchor(request.documentText, original, replacement);
+    if (!repaired) {
+      return {
+        ok: false,
+        reason: "original is not an exact substring of the document. Use writer_search_document to locate the passage and copy it verbatim (including punctuation and spacing)."
+      };
+    }
+    anchoredOriginal = repaired.original;
+    anchoredReplacement = repaired.replacement;
+    note = `Anchor repaired: ${repaired.note}; the suggestion now targets the document's exact text.`;
   }
 
-  const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(replacement);
+  const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(anchoredReplacement);
   return {
     ok: true,
+    ...(note ? { note } : {}),
     suggestion: {
       ...(commentOnly ? { commentOnly: true } : {}),
       id: randomUUID(),
       title: typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 160) : "Revise passage",
-      original,
-      replacement,
+      original: anchoredOriginal,
+      replacement: anchoredReplacement,
       rationale: typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : "Proposed by the selected local AI provider.",
       confidence: normalizeConfidence(item.confidence),
       target: inSelection ? "selection" : "global",

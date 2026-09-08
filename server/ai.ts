@@ -14,6 +14,7 @@ import { broadcastAiProgress } from "./realtime";
 import { containsAnchoredText, documentImageLabel, isImageCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate } from "./suggestion-validation";
 import { imageMimeForName } from "./image-files";
 import { describeFocus, linkRevision } from "./revisions";
+import { nearestDocumentExcerpt, repairAnchor } from "./anchor-repair";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
@@ -698,8 +699,9 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       threadId = null;
       result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess, imagePaths }, request.modelOptions ?? null, null);
     }
-    const parsed = parseCliProgressedResponse(provider, result, request);
-    const response = await completeUnderDeliveredReply(provider, request, parsed, { ...options, onStreamEvent, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
+    setAiProgress(provider, "Checking the suggestions against the document", undefined, request.requestedBy ?? null);
+    const parsed = parseCliResponseDetailed(provider, result, request);
+    const response = await completeReply(provider, request, parsed.response, parsed.unplaced, { ...options, onStreamEvent, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -1700,27 +1702,51 @@ export function describedChangeCount(message: string): number | null {
 }
 
 /**
- * A model sometimes writes "these ten cuts…" and returns one item (seen with
- * codex at high reasoning: the budget went to thinking and the array was cut
- * short while the JSON stayed valid). Rather than hand the user one edit and
- * a summary of ten, ask once more — in the same thread when there is one —
- * for the remainder, and merge it in. Bounded to a single follow-up.
+ * One automatic follow-up turn, in the same thread when there is one, for two
+ * things a one-shot model gets wrong: writing "these ten cuts…" and returning
+ * one item (the budget went to thinking and the array stopped short), and
+ * quoting an original that is not in the document even after anchor repair.
+ * The follow-up asks for the missing items and for exact re-quotes of the
+ * unplaced ones, then merges what comes back. Bounded to a single follow-up.
  */
-async function completeUnderDeliveredReply(
+async function completeReply(
   provider: CliProviderName,
   request: AiRequest,
   response: AiResponse,
+  unplaced: UnplacedSuggestion[],
   runOptions: AiRunOptions,
   threadId: string | null
 ): Promise<AiResponse> {
   const claimed = describedChangeCount(response.message);
   const returned = response.suggestions.length;
-  if (claimed === null || claimed < 2 || claimed > 60 || returned >= claimed || runOptions.signal?.aborted) {
+  const underDelivered = claimed !== null && claimed >= 2 && claimed <= 60 && returned < claimed;
+  const requotes = unplaced.slice(0, 20);
+  if ((!underDelivered && !requotes.length) || runOptions.signal?.aborted) {
     return response;
   }
   const label = providerLabel(provider);
-  setAiProgress(provider, `${label} described ${claimed} changes but returned ${returned} — asking for the rest`, undefined, request.requestedBy ?? null);
+  const stage = [
+    underDelivered ? `described ${claimed} changes but returned ${returned}` : null,
+    requotes.length ? `${requotes.length} quote${requotes.length === 1 ? "" : "s"} did not match the document` : null
+  ].filter(Boolean).join("; ");
+  setAiProgress(provider, `${label} ${stage} — asking once more`, undefined, request.requestedBy ?? null);
   const already = response.suggestions.map((suggestion) => `"${suggestion.title}"`).join(", ");
+  const clipQuote = (text: string) => (text.length > 160 ? `${text.slice(0, 157)}…` : text);
+  const instruction = [
+    underDelivered
+      ? `Your previous reply described ${claimed} changes but its suggestions array contained only ${returned}. Return the remaining ${(claimed ?? 0) - returned} now as suggestions — each with the exact original text copied verbatim from the document and its replacement (an empty replacement deletes the passage).`
+      : null,
+    requotes.length
+      ? [
+          `${requotes.length === 1 ? "This suggestion" : `These ${requotes.length} suggestions`} could not be placed because the original text was not found verbatim in the document. Re-quote each one by copying the document's exact text — no corrections, no reformatting — and return it again with the same replacement, one suggestion each:`,
+          ...requotes.map((entry) => {
+            const nearest = nearestDocumentExcerpt(request.documentText, entry.original);
+            return `- "${entry.title}": you quoted ${JSON.stringify(clipQuote(entry.original))}${nearest ? `; the document reads ${JSON.stringify(clipQuote(nearest))}` : "; nothing similar was found — quote a passage that exists"}.`;
+          })
+        ].join("\n")
+      : null,
+    `Plus a one-line message. Return nothing else${returned ? `; do not repeat the ${returned} already accepted: ${already}` : ""}.`
+  ].filter((line): line is string => line !== null).join("\n");
   const followUp: AiRequest = {
     ...request,
     agentSessionId: threadId,
@@ -1729,28 +1755,33 @@ async function completeUnderDeliveredReply(
       { role: "user", content: request.instruction },
       { role: "assistant", content: response.message }
     ],
-    instruction: `Your previous reply described ${claimed} changes but its suggestions array contained only ${returned}. Return the remaining ${claimed - returned} now as suggestions — each with the exact original text copied verbatim from the document and its replacement (an empty replacement deletes the passage) — plus a one-line message.${returned ? ` Do not repeat the ${returned} already returned: ${already}.` : ""}`
+    instruction
   };
   try {
     const raw = await runCli(provider, buildCliPrompt(followUp), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
-    const more = parseCliResponse(provider, raw, followUp);
+    const more = parseCliResponseDetailed(provider, raw, followUp);
     const seen = new Set(response.suggestions.map((suggestion) => normalizeWhitespace(suggestion.original)));
-    const fresh = more.suggestions
+    const fresh = more.response.suggestions
       .filter((suggestion) => !seen.has(normalizeWhitespace(suggestion.original)))
       .map((suggestion, index) => ({ ...suggestion, ref: `S${returned + index + 1}` }));
+    const stillUnplaced = requotes.length - Math.min(requotes.length, fresh.length);
+    const noteParts = [
+      underDelivered ? `${label} first returned ${returned} of the ${claimed} changes it described` : null,
+      requotes.length ? `${requotes.length} quote${requotes.length === 1 ? "" : "s"} did not match the document` : null
+    ].filter(Boolean).join("; ");
     if (!fresh.length) {
-      return { ...response, message: `${response.message}\n\n(${label} described ${claimed} changes but returned only ${returned}; a follow-up request produced no further exact-source edits.)` };
+      return { ...response, message: `${response.message}\n\n(${noteParts}; an automatic follow-up produced no further exact-source edits.)` };
     }
     return {
       ...response,
       suggestions: [...response.suggestions, ...fresh],
-      message: `${response.message}\n\n(${label} first returned ${returned} of the ${claimed} changes it described; the other ${fresh.length} came from an automatic follow-up.)`
+      message: `${response.message}\n\n(${noteParts}; ${fresh.length} suggestion${fresh.length === 1 ? "" : "s"} came from an automatic follow-up${stillUnplaced > 0 && requotes.length ? `, ${stillUnplaced} still could not be placed` : ""}.)`
     };
   } catch (error) {
     if (runOptions.signal?.aborted) {
       return response;
     }
-    return { ...response, message: `${response.message}\n\n(${label} described ${claimed} changes but returned only ${returned}; the follow-up failed: ${formatCliDiagnostic(error instanceof Error ? error.message : String(error))}.)` };
+    return { ...response, message: `${response.message}\n\n(${label} ${stage}; the follow-up failed: ${formatCliDiagnostic(error instanceof Error ? error.message : String(error))}.)` };
   }
 }
 
@@ -1768,15 +1799,29 @@ function writeCliSchemaFile(): { dir: string; path: string } {
 }
 
 export function parseCliResponse(provider: CliProviderName, raw: string, request: AiRequest): AiResponse {
+  return parseCliResponseDetailed(provider, raw, request).response;
+}
+
+/** A suggestion the model wrote that could not be anchored even after repair — what a re-quote follow-up needs. */
+interface UnplacedSuggestion {
+  title: string;
+  original: string;
+  replacement: string;
+}
+
+function parseCliResponseDetailed(provider: CliProviderName, raw: string, request: AiRequest): { response: AiResponse; unplaced: UnplacedSuggestion[] } {
   const cleanedRaw = sanitizeCliOutput(raw);
   const parsed = parseStructuredResponse(cleanedRaw);
   if (!parsed) {
     return {
-      provider,
-      message: isEventStreamWithoutAnswer(cleanedRaw)
-        ? `The ${provider} CLI ended the turn without an answer${lastTranscriptPath ? ` (transcript: ${lastTranscriptPath})` : ""}. Send the request again.`
-        : formatCliDiagnostic(cleanedRaw) || `The ${provider} provider returned an empty response.`,
-      suggestions: []
+      response: {
+        provider,
+        message: isEventStreamWithoutAnswer(cleanedRaw)
+          ? `The ${provider} CLI ended the turn without an answer${lastTranscriptPath ? ` (transcript: ${lastTranscriptPath})` : ""}. Send the request again.`
+          : formatCliDiagnostic(cleanedRaw) || `The ${provider} provider returned an empty response.`,
+        suggestions: []
+      },
+      unplaced: []
     };
   }
 
@@ -1790,20 +1835,36 @@ export function parseCliResponse(provider: CliProviderName, raw: string, request
   // the third suggestion it wrote, even when an earlier one was filtered out.
   const suggestions: AiSuggestion[] = [];
   const skipped: Array<{ title: string; reason: SkipReason }> = [];
+  const repaired: Array<{ title: string; note: string }> = [];
+  const unplaced: UnplacedSuggestion[] = [];
   limitedCandidates.forEach((item, index) => {
     const outcome = normalizeSuggestion(item, request);
+    const title = String(item.title ?? "").trim() || `suggestion ${index + 1}`;
     if ("suggestion" in outcome) {
       suggestions.push({ ...outcome.suggestion, ref: `S${index + 1}` });
+      if (outcome.note) {
+        repaired.push({ title, note: outcome.note });
+      }
     } else {
-      skipped.push({ title: String(item.title ?? "").trim() || `suggestion ${index + 1}`, reason: outcome.skipped });
+      skipped.push({ title, reason: outcome.skipped });
+      if (outcome.skipped === "not-found") {
+        unplaced.push({ title, original: String(item.original ?? ""), replacement: String(item.replacement ?? "") });
+      }
     }
   });
   const message = formatCliDiagnostic(parsed.message || `The ${provider} provider returned ${suggestions.length} exact-source suggestion${suggestions.length === 1 ? "" : "s"}.`);
+  const notes = [
+    ...(repaired.length ? [`${repaired.length} quote${repaired.length === 1 ? " was" : "s were"} repaired to match the document exactly: ${repaired.slice(0, 3).map((entry) => `"${entry.title}" (${entry.note})`).join("; ")}${repaired.length > 3 ? `, +${repaired.length - 3} more` : ""}.`] : []),
+    ...(skipped.length ? [describeSkippedSuggestions(skipped)] : [])
+  ];
 
   return {
-    provider,
-    message: skipped.length ? `${message} ${describeSkippedSuggestions(skipped)}` : message,
-    suggestions
+    response: {
+      provider,
+      message: notes.length ? `${message} ${notes.join(" ")}` : message,
+      suggestions
+    },
+    unplaced
   };
 }
 
@@ -2190,7 +2251,7 @@ function isDisguisedDeletion(item: Partial<AiSuggestion>, original: string, repl
   return shared <= 1;
 }
 
-function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): { suggestion: AiSuggestion } | { skipped: SkipReason } {
+function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): { suggestion: AiSuggestion; note?: string } | { skipped: SkipReason } {
   if (isImageCandidate(item)) {
     const verdict = validateImageReplacementCandidate(item, request.documentImages ?? []);
     return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "image" };
@@ -2216,17 +2277,27 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
 
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
   const inSelection = request.mode === "selection" && containsAnchoredText(selectionText, original);
+  let anchoredOriginal = original;
+  let anchoredReplacement = replacement;
+  let note: string | undefined;
   if (!inSelection && !containsAnchoredText(request.documentText, original)) {
-    return { skipped: "not-found" };
+    // Self-healing: snap a near-miss quote to the document's exact text.
+    const repaired = repairAnchor(request.documentText, original, replacement);
+    if (!repaired) {
+      return { skipped: "not-found" };
+    }
+    anchoredOriginal = repaired.original;
+    anchoredReplacement = repaired.replacement;
+    note = repaired.note;
   }
 
-  const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(replacement);
-  return { suggestion: {
+  const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(anchoredReplacement);
+  return { ...(note ? { note } : {}), suggestion: {
     ...(commentOnly ? { commentOnly: true } : {}),
     id: randomUUID(),
     title: item.title || "Revise passage",
-    original,
-    replacement,
+    original: anchoredOriginal,
+    replacement: anchoredReplacement,
     rationale: `${item.rationale || "Proposed by the selected local AI provider."}${deletionRescued ? " (The provider wrote placeholder text instead of an empty replacement; it was discarded and this is proposed as a deletion.)" : ""}`,
     confidence: normalizeConfidence(item.confidence),
     target: inSelection ? "selection" : "global",

@@ -80,6 +80,14 @@ the review queue. *Document + web and read-only files* adds only web
 search/fetch and read-only file access to Writer's tools. *Document only* is
 the original lockdown. The web app has the same picker next to the provider.
 
+Quotes heal themselves where they safely can: a suggestion whose original
+differs from the document only in typography, spacing, or a small misquote
+inside a long passage is snapped to the document's exact text (the same
+correction is carried into the replacement so the misquote never lands), and
+the reply says which quotes were repaired. A quote that cannot be placed at
+all triggers one automatic re-quote request in the same thread, with the
+nearest document text shown to the model.
+
 If a reply describes more changes than it returned ("these ten cuts…" with
 one card), Writer asks the CLI once more, in the same thread, for the rest
 and merges them in; the reply says so. Keyboard: the pane has no letter

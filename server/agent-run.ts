@@ -40,6 +40,8 @@ export interface StageResultItem {
   /** Handle to place the suggestion in the reply: `[S3]` on its own line. */
   ref?: string;
   reason?: string;
+  /** Staged, but the quote was repaired to match the document; says how. */
+  note?: string;
 }
 
 const ORPHAN_RUN_MAX_AGE_MS = 60 * 60 * 1000;
@@ -206,7 +208,7 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
     const ref = `S${run.staged.length + 1}`;
     const staged = { ...verdict.suggestion, ref };
     run.staged.push(staged);
-    results.push({ index, staged: true, id: staged.id, ref });
+    results.push({ index, staged: true, id: staged.id, ref, ...(verdict.note ? { note: verdict.note } : {}) });
   }
   return {
     results,
