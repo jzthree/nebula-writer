@@ -332,7 +332,7 @@ describe("Word task pane", () => {
     send("Tighten the first sentence.");
     await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
     const editsBefore = mock.edits.length;
-    for (const key of ["c", "a", "x"]) {
+    for (const key of ["c", "a", "x", "j", "k", "Enter", "ArrowDown"]) {
       fireEvent.keyDown(window, { key });
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

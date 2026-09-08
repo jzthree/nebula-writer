@@ -64,10 +64,9 @@ the original lockdown. The web app has the same picker next to the provider.
 
 If a reply describes more changes than it returned ("these ten cuts…" with
 one card), Writer asks the CLI once more, in the same thread, for the rest
-and merges them in; the reply says so. Keyboard: j/k (or the arrows) move
-between cards and Enter locates the active one in Word. Applying, commenting,
-and dismissing are buttons only — there are no single-key shortcuts for
-actions that change the document.
+and merges them in; the reply says so. Keyboard: the pane has no letter
+shortcuts. With a suggestion card focused, the arrow keys move between cards
+and Enter locates it in Word; everything else is a button.
 
 Follow-ups keep the provider's own conversation: Claude resumes its session
 and Codex resumes its recorded thread (`codex exec resume`), so "continue" or

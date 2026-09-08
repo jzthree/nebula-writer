@@ -1070,20 +1070,22 @@ export function App() {
   }, [activeId, locate, pendingSuggestions]);
 
   useEffect(() => {
+    // Keyboard handling is deliberately minimal in a pane where people type:
+    // no letter shortcuts at all, and the arrow keys / Enter only act while a
+    // suggestion card itself has focus (standard list behaviour), never from
+    // the window at large.
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
+      if (!target || typeof target.closest !== "function" || !target.closest(".wp-card")) {
         return;
       }
       const active = activeId ? suggestionsRef.current.find((suggestion) => suggestion.id === activeId) : null;
       switch (event.key) {
         case "ArrowDown":
-        case "j":
           event.preventDefault();
           navigate(1);
           break;
         case "ArrowUp":
-        case "k":
           event.preventDefault();
           navigate(-1);
           break;
@@ -1093,9 +1095,6 @@ export function App() {
             locate(active);
           }
           break;
-        // Applying, commenting, and dismissing change the document or the
-        // record; they are buttons only. Bare letter shortcuts (a/c/x) put a
-        // Word comment in a document after a stray keypress, so they are gone.
         default:
           break;
       }
