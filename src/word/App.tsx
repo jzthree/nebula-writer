@@ -587,6 +587,7 @@ export function App() {
         documentName: snapshot.documentName,
         hostContext,
         documentText: textChanged ? snapshot.bodyText : null,
+        documentEmphasis: textChanged ? snapshot.emphasis ?? [] : null,
         adopt: true
       }).then((response) => {
         if (textChanged) {
@@ -682,6 +683,7 @@ export function App() {
         instruction: askedText,
         mode: resolved.mode,
         documentText: snap.bodyText,
+        documentEmphasis: snap.emphasis ?? [],
         selection: resolved.selection ?? currentFocus?.selection ?? null,
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || "Word",

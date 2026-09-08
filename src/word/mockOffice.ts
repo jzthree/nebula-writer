@@ -9,8 +9,12 @@
  * *OrNullObject) so the real facade code runs unchanged against it.
  */
 
+import { emphasisAt, hasEmphasis, normalizeEmphasis, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisKind, type EmphasisSpan } from "../emphasis";
+
 export interface MockParagraphSeed {
   text: string;
+  /** Inline emphasis, offsets relative to the paragraph text. */
+  emphasis?: EmphasisSpan[];
   style?: string;
   styleBuiltIn?: string;
   outlineLevel?: number;
@@ -82,6 +86,8 @@ export class MockWordHost {
   pictures: MockPictureSeed[] = [];
   pictureReplacements: MockPictureReplacement[] = [];
   fields: Array<{ from: number; to: number }> = [];
+  /** Inline emphasis (bold/italic/underline/highlight) as absolute spans over `text`. */
+  emphasis: EmphasisSpan[] = [];
   /** Every insertText/delete, tracked or not. */
   edits: MockTrackedChange[] = [];
   selectionHandlers = new Set<Handler>();
@@ -107,6 +113,61 @@ export class MockWordHost {
     this.platform = options.platform ?? "Mac";
     this.pictures = (options.pictures ?? []).map((picture) => ({ ...picture }));
     this.fields = (options.fields ?? []).map((field) => ({ ...field }));
+    const offsets = this.paragraphOffsets();
+    this.emphasis = normalizeEmphasis(options.paragraphs.flatMap((paragraph, index) => shiftEmphasis(paragraph.emphasis ?? [], offsets[index] ?? 0)));
+  }
+
+  /* ------------------------------ emphasis ------------------------------ */
+
+  /** The emphasis of [from, to): the format when uniform, null for a mixed range (what Word reports). */
+  emphasisOver(from: number, to: number): EmphasisFormat | null {
+    return to <= from ? {} : uniformEmphasis(this.emphasis, from, to);
+  }
+
+  /** One kind of emphasis over [from, to): true/false when uniform, null when mixed. */
+  emphasisKindOver(from: number, to: number, kind: EmphasisKind): boolean | null {
+    if (to <= from) {
+      return false;
+    }
+    const first = Boolean(emphasisAt(this.emphasis, from)[kind]);
+    for (let offset = from + 1; offset < to; offset += 1) {
+      if (Boolean(emphasisAt(this.emphasis, offset)[kind]) !== first) {
+        return null;
+      }
+    }
+    return first;
+  }
+
+  /** Turn one kind of emphasis on or off over [from, to), like setting Word's font.bold on a range. */
+  setEmphasis(from: number, to: number, kind: EmphasisKind, on: boolean): void {
+    if (to <= from) {
+      return;
+    }
+    const spans: EmphasisSpan[] = [];
+    for (const span of this.emphasis) {
+      if (span.end <= from || span.start >= to) {
+        spans.push(span);
+        continue;
+      }
+      if (span.start < from) {
+        spans.push({ ...span, end: from });
+      }
+      if (span.end > to) {
+        spans.push({ ...span, start: to });
+      }
+      const inner = { ...span, start: Math.max(span.start, from), end: Math.min(span.end, to) };
+      if (on) {
+        inner[kind] = true;
+      } else {
+        delete inner[kind];
+      }
+      spans.push(inner);
+    }
+    if (on) {
+      spans.push({ start: from, end: to, [kind]: true });
+    }
+    this.emphasis = normalizeEmphasis(spans);
+    this.edits.push({ from, to, original: this.text.slice(from, to), replacement: this.text.slice(from, to) });
   }
 
   /** Swap a picture's bytes, recording it (as tracked when tracking is on). */
@@ -202,6 +263,30 @@ export class MockWordHost {
     const middle = nextText.slice(beforeLength, nextText.length - afterLength);
     const middleParagraphs = middle.split(PARAGRAPH_SEPARATOR).map((paragraphText) => ({ ...style, text: paragraphText }));
     this.paragraphs = [...before, ...middleParagraphs, ...after];
+    // Emphasis follows the text: spans after the edit shift, spans across it
+    // are clipped, and the new text takes the format of the first replaced
+    // character (or of the character before a pure insertion), as Word does.
+    const inherited = to > from ? emphasisAt(this.emphasis, from) : from > 0 ? emphasisAt(this.emphasis, from - 1) : {};
+    const delta = replacement.length - (to - from);
+    const shifted: EmphasisSpan[] = [];
+    for (const span of this.emphasis) {
+      if (span.end <= from) {
+        shifted.push(span);
+      } else if (span.start >= to) {
+        shifted.push({ ...span, start: span.start + delta, end: span.end + delta });
+      } else {
+        if (span.start < from) {
+          shifted.push({ ...span, end: from });
+        }
+        if (span.end > to) {
+          shifted.push({ ...span, start: to + delta, end: span.end + delta });
+        }
+      }
+    }
+    if (replacement.length && hasEmphasis(inherited)) {
+      shifted.push({ ...inherited, start: from, end: from + replacement.length });
+    }
+    this.emphasis = normalizeEmphasis(shifted);
     const edit = { from, to, original, replacement };
     this.edits.push(edit);
     if (this.changeTrackingMode !== "Off") {
@@ -438,6 +523,11 @@ export class MockRange {
     return this;
   }
 
+  /** Word's Range.font for the emphasis kinds the pane reads and writes. */
+  get font(): MockFont {
+    return new MockFont(this.host, this.from, this.to);
+  }
+
   getRange(location: string = "Whole"): MockRange {
     if (location === "Start") {
       return new MockRange(this.host, this.from, this.from);
@@ -601,10 +691,86 @@ export class MockInlinePicture {
   }
 }
 
+/** Uniform values read back as Word reports them; mixed ranges read null (bold/italic/underline) or "" (highlightColor). */
+export class MockFont {
+  constructor(private host: MockWordHost, private from: number, private to: number) {}
+
+  load(): this {
+    return this;
+  }
+
+  get bold(): boolean | null {
+    return this.host.emphasisKindOver(this.from, this.to, "bold");
+  }
+
+  set bold(value: boolean) {
+    this.host.setEmphasis(this.from, this.to, "bold", Boolean(value));
+  }
+
+  get italic(): boolean | null {
+    return this.host.emphasisKindOver(this.from, this.to, "italic");
+  }
+
+  set italic(value: boolean) {
+    this.host.setEmphasis(this.from, this.to, "italic", Boolean(value));
+  }
+
+  get underline(): string | null {
+    const on = this.host.emphasisKindOver(this.from, this.to, "underline");
+    return on === null ? null : on ? "Single" : "None";
+  }
+
+  set underline(value: string) {
+    this.host.setEmphasis(this.from, this.to, "underline", value !== "None");
+  }
+
+  get highlightColor(): string | null {
+    const on = this.host.emphasisKindOver(this.from, this.to, "highlight");
+    return on === null ? "" : on ? "#FFFF00" : null;
+  }
+
+  set highlightColor(value: string | null) {
+    this.host.setEmphasis(this.from, this.to, "highlight", Boolean(value));
+  }
+}
+
 export class MockParagraph extends MockRange {
   constructor(host: MockWordHost, public index: number) {
     const range = host.paragraphRange(index);
     super(host, range.from, range.to);
+  }
+
+  /** Word paragraph proxies follow the document as it changes; so does this one. */
+  private refresh(): this {
+    const range = this.host.paragraphRange(this.index);
+    this.from = range.from;
+    this.to = range.to;
+    return this;
+  }
+
+  override getRange(location: string = "Whole"): MockRange {
+    return super.getRange.call(this.refresh(), location);
+  }
+
+  override getTextRanges(endingMarks: string[], trimSpacing = false): { items: MockRange[]; load: () => void } {
+    return super.getTextRanges.call(this.refresh(), endingMarks, trimSpacing);
+  }
+
+  override expandTo(other: MockRange): MockRange {
+    return super.expandTo.call(this.refresh(), other);
+  }
+
+  override insertText(text: string, location: string): MockRange {
+    return super.insertText.call(this.refresh(), text, location);
+  }
+
+  override search(query: string, options?: { matchCase?: boolean; ignoreSpace?: boolean }): { items: MockRange[]; load: () => void } {
+    return super.search.call(this.refresh(), query, options);
+  }
+
+  override get font(): MockFont {
+    this.refresh();
+    return new MockFont(this.host, this.from, this.to);
   }
 
   get text(): string {

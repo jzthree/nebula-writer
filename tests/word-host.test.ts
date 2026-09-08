@@ -523,3 +523,79 @@ describe("word host: placement anchors", () => {
     void snapshot;
   });
 });
+
+describe("word host: inline emphasis", () => {
+  const paragraphs = [
+    { text: "Specific Aims", style: "Heading 1", styleBuiltIn: "Heading1", outlineLevel: 1 },
+    { text: "Our central hypothesis is that chromatin state drives fate.", emphasis: [{ start: 4, end: 22, bold: true }, { start: 31, end: 46, italic: true }] },
+    { text: "Key point paragraph.", emphasis: [{ start: 0, end: 20, underline: true }] },
+    { text: "Plain closing paragraph." }
+  ];
+
+  async function bootEmphasis() {
+    mock.uninstall();
+    mock = new MockWordHost({ paragraphs, documentName: "Emphasis.docx", viewport: { pageChars: 600, visibleChars: 500 } }).install();
+    return boot();
+  }
+
+  it("reads emphasis: uniform paragraphs from the paragraph font, mixed ones word by word", async () => {
+    const { snapshot } = await bootEmphasis();
+    const second = snapshot.paragraphs[1].offset;
+    const third = snapshot.paragraphs[2].offset;
+    expect(snapshot.emphasis).toEqual([
+      { start: second + 4, end: second + 22, bold: true },
+      { start: second + 31, end: second + 46, italic: true },
+      { start: third, end: third + 20, underline: true }
+    ]);
+  });
+
+  it("applies the emphasis a suggestion asks for after the text lands", async () => {
+    const { snapshot } = await bootEmphasis();
+    const outcomes = await applySuggestions(snapshot, [{
+      id: "e1",
+      suggestion: {
+        original: "Plain closing paragraph.",
+        replacement: "Plain closing paragraph with a key claim.",
+        emphasis: { original: [], replacement: [{ start: 31, end: 40, bold: true, highlight: true }] }
+      },
+      matchIndex: 0
+    }], { trackChanges: "word" });
+    expect(outcomes[0]).toMatchObject({ id: "e1", ok: true });
+    expect(mock.text).toContain("Plain closing paragraph with a key claim.");
+    const start = mock.text.indexOf("key claim");
+    expect(mock.emphasisOver(start, start + 9)).toEqual({ bold: true, highlight: true });
+    expect(mock.emphasisOver(mock.text.indexOf("Plain closing"), start - 1)).toEqual({});
+  });
+
+  it("removes emphasis the replacement leaves out, and applies emphasis-only edits without touching the text", async () => {
+    const { snapshot } = await bootEmphasis();
+    const outcomes = await applySuggestions(snapshot, [{
+      id: "e2",
+      suggestion: {
+        original: "Key point paragraph.",
+        replacement: "Key point paragraph.",
+        emphasis: { original: [{ start: 0, end: 20, underline: true }], replacement: [{ start: 0, end: 9, bold: true }] }
+      },
+      matchIndex: 0
+    }], { trackChanges: "word" });
+    expect(outcomes[0]).toMatchObject({ id: "e2", ok: true, result: { strategy: "emphasis" } });
+    const at = mock.text.indexOf("Key point paragraph.");
+    expect(at).toBeGreaterThan(0);
+    expect(mock.emphasisOver(at, at + 9)).toEqual({ bold: true });
+    expect(mock.emphasisOver(at + 10, at + 20)).toEqual({});
+  });
+
+  it("lets a plain-text edit inherit the emphasis of the words it replaces", async () => {
+    const { snapshot } = await bootEmphasis();
+    const outcomes = await applySuggestions(snapshot, [{
+      id: "e3",
+      suggestion: { original: "Our central hypothesis is that chromatin state drives fate.", replacement: "Our central premise is that chromatin state drives fate." },
+      matchIndex: 0
+    }], { trackChanges: "word" });
+    expect(outcomes[0]).toMatchObject({ id: "e3", ok: true, result: { strategy: "words" } });
+    const at = mock.text.indexOf("central premise");
+    expect(mock.emphasisOver(at, at + 15)).toEqual({ bold: true });
+    const italic = mock.text.indexOf("chromatin state");
+    expect(mock.emphasisOver(italic, italic + 15)).toEqual({ italic: true });
+  });
+});

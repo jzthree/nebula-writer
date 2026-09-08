@@ -14,6 +14,7 @@
 /// <reference types="office-js" />
 
 import { wordDiffSegments } from "../wordDiff";
+import { bridgeEmphasisGaps, emphasisAt, emphasisFromPieces, hasEmphasis, normalizeEmphasis, sameFormat, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
 
 import { chooseAnchoredCandidate, type SuggestionAnchor } from "../shared";
 import type { AiSuggestion, SelectionContext } from "../shared";
@@ -86,9 +87,10 @@ export interface ApplyResult {
    * of everything else in the passage (bold, italics, superscripts, links,
    * citation fields) survived. "paragraphs": applied piece by piece inside
    * each paragraph (marks and styles untouched). "range": the whole passage
-   * was replaced (near-total rewrites).
+   * was replaced (near-total rewrites). "emphasis": the text is unchanged;
+   * only bold/italic/underline/highlight were set.
    */
-  strategy: "range" | "paragraphs" | "words";
+  strategy: "range" | "paragraphs" | "words" | "emphasis";
 }
 
 const WORD_SEARCH_MAX_CHARS = 250;
@@ -190,8 +192,8 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities): Prom
     const inlinePictures = body.inlinePictures;
     body.load("text");
     paragraphs.load(capabilities.paragraphStyles
-      ? "items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem"
-      : "items/text,items/style,items/outlineLevel,items/isListItem");
+      ? `items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem,${PARAGRAPH_FONT_PROPERTIES}`
+      : `items/text,items/style,items/outlineLevel,items/isListItem,${PARAGRAPH_FONT_PROPERTIES}`);
     inlinePictures.load("items/width,items/height,items/altTextDescription,items/altTextTitle");
     if (capabilities.trackChanges) {
       context.document.load("changeTrackingMode");
@@ -231,15 +233,104 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities): Prom
     } catch {
       pictures = [];
     }
+    const paragraphInfos = indexParagraphs(bodyText, sources);
+    // Inline emphasis: paragraphs whose font is uniform cost nothing extra;
+    // mixed paragraphs are read word by word in one more round trip.
+    let emphasis: EmphasisSpan[] = [];
+    try {
+      emphasis = await readParagraphEmphasis(context, paragraphs.items ?? [], paragraphInfos);
+    } catch {
+      emphasis = [];
+    }
     return {
       documentName: readDocumentName(),
       bodyText,
-      paragraphs: indexParagraphs(bodyText, sources),
+      paragraphs: paragraphInfos,
       pictures,
+      emphasis,
       changeTrackingMode: capabilities.trackChanges ? safeString(context.document, "changeTrackingMode") : null,
       capturedAt: new Date().toISOString()
     };
   });
+}
+
+const PARAGRAPH_FONT_PROPERTIES = "items/font/bold,items/font/italic,items/font/underline,items/font/highlightColor";
+const PIECE_FONT_PROPERTIES = "items/text,items/font/bold,items/font/italic,items/font/underline,items/font/highlightColor";
+/** Mixed-format paragraphs read word by word per snapshot; beyond this, emphasis is reported for uniform paragraphs only. */
+const EMPHASIS_MIXED_PARAGRAPH_LIMIT = 400;
+const WORD_ENDING_MARKS = [" ", "\t", "\u00a0"];
+
+/** A Word font's emphasis; `mixed` when Word reports null (or "" for highlight) because the range is not uniform. */
+function fontEmphasis(font: unknown): { format: EmphasisFormat; mixed: boolean } {
+  const read = (key: string): unknown => {
+    try {
+      return (font as Record<string, unknown> | null | undefined)?.[key];
+    } catch {
+      return undefined;
+    }
+  };
+  const bold = read("bold");
+  const italic = read("italic");
+  const underline = read("underline");
+  const highlight = read("highlightColor");
+  const mixed = bold === null || italic === null || underline === null || highlight === "";
+  return {
+    mixed,
+    format: {
+      ...(bold === true ? { bold: true } : {}),
+      ...(italic === true ? { italic: true } : {}),
+      ...(typeof underline === "string" && underline !== "None" && underline !== "" ? { underline: true } : {}),
+      ...(typeof highlight === "string" && highlight ? { highlight: true } : {})
+    }
+  };
+}
+
+async function readParagraphEmphasis(context: Word.RequestContext, items: Word.Paragraph[], infos: WordParagraphInfo[]): Promise<EmphasisSpan[]> {
+  const spans: EmphasisSpan[] = [];
+  const mixed: Array<{ info: WordParagraphInfo; pieces: Word.RangeCollection }> = [];
+  items.forEach((paragraph, index) => {
+    const info = infos[index];
+    if (!info || !info.text.trim()) {
+      return;
+    }
+    const font = fontEmphasis(paragraph.font);
+    if (font.mixed) {
+      if (mixed.length < EMPHASIS_MIXED_PARAGRAPH_LIMIT) {
+        const pieces = paragraph.getTextRanges(WORD_ENDING_MARKS, true);
+        pieces.load(PIECE_FONT_PROPERTIES);
+        mixed.push({ info, pieces });
+      }
+      return;
+    }
+    if (hasEmphasis(font.format)) {
+      spans.push({ ...font.format, start: info.offset, end: info.offset + info.text.trimEnd().length });
+    }
+  });
+  if (mixed.length) {
+    await context.sync();
+    for (const entry of mixed) {
+      let cursor = 0;
+      const pieces: Array<{ text: string; format: EmphasisFormat | null }> = [];
+      for (const piece of entry.pieces.items ?? []) {
+        const text = normalizeWordText(piece.text ?? "");
+        if (!text) {
+          continue;
+        }
+        const found = entry.info.text.indexOf(text, cursor);
+        const start = found >= 0 ? found : cursor;
+        if (start > cursor) {
+          pieces.push({ text: entry.info.text.slice(cursor, start), format: null });
+        }
+        const font = fontEmphasis(piece.font);
+        pieces.push({ text, format: font.mixed ? null : font.format });
+        cursor = start + text.length;
+      }
+      // Words were read without their trailing spaces (a phrase's last space
+      // would otherwise read as mixed); rejoin words that share a format.
+      spans.push(...shiftEmphasis(bridgeEmphasisGaps(entry.info.text, emphasisFromPieces(pieces)), entry.info.offset));
+    }
+  }
+  return normalizeEmphasis(spans);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -596,7 +687,7 @@ export async function applySuggestion(snapshot: WordDocumentSnapshot, suggestion
 
 export interface BatchApplyItem {
   id: string;
-  suggestion: Pick<AiSuggestion, "original" | "replacement" | "anchor">;
+  suggestion: Pick<AiSuggestion, "original" | "replacement" | "anchor" | "emphasis">;
   /** Occurrence to act on when the text appears more than once; null = choose by anchor, then `preferredOffset` (one extra round trip only when ambiguous). */
   matchIndex: number | null;
   preferredOffset?: number | null;
@@ -720,10 +811,24 @@ async function runApplyPass(
     const strategies = new Map<Target, ApplyResult["strategy"]>();
     const failures = new Map<Target, string>();
     let earliest: Word.Range | null = null;
+    // Targets with requested emphasis: remember their paragraphs now, so the
+    // formatting pass can find the new text after the edits land.
+    const emphasisScopes = new Map<Target, { first: Word.Paragraph; last: Word.Paragraph }>();
+    for (const target of ready) {
+      if (target.item.suggestion.emphasis) {
+        emphasisScopes.set(target, { first: target.range.paragraphs.getFirst(), last: target.range.paragraphs.getLast() });
+      }
+    }
     // Word-level plans for every eligible target, loaded in one sync.
     const wordPlans = await planWordLevelEdits(context, ready.filter((target) => wordLevelEligible(target.item.suggestion)).map((target) => ({ key: target, range: target.range, suggestion: target.item.suggestion })));
     for (const target of ready) {
       const { suggestion } = target.item;
+      if (suggestion.emphasis && collapseWhitespace(normalizeWordText(suggestion.original)) === collapseWhitespace(normalizeWordText(suggestion.replacement))) {
+        // Only the emphasis changes: leave the text (and its other formatting) alone.
+        strategies.set(target, "emphasis");
+        earliest = target.range;
+        continue;
+      }
       if (await applyPerParagraph(context, target.range, suggestion)) {
         strategies.set(target, "paragraphs");
         earliest = target.range;
@@ -753,6 +858,10 @@ async function runApplyPass(
       earliest.select("Select");
     }
     await context.sync();
+    await applyRequestedEmphasis(context, ready.filter((target) => !failures.has(target) && emphasisScopes.has(target)).map((target) => ({
+      suggestion: target.item.suggestion,
+      scope: emphasisScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }
+    })));
     for (const target of ready) {
       const failure = failures.get(target);
       if (failure) {
@@ -772,6 +881,111 @@ async function runApplyPass(
     }
   }
   return [...deferred].map((target) => target.item);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Requested emphasis: set bold/italic/underline/highlight on the new text    */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * After the text lands, format it as the suggestion asks: every word of the
+ * replacement gets exactly the emphasis its spans describe (a replacement
+ * written without markers where the original had them removes them). Words
+ * are read with their current font first so only real changes are written —
+ * with tracking on, Word would otherwise record no-op formatting revisions.
+ */
+async function applyRequestedEmphasis(
+  context: Word.RequestContext,
+  entries: Array<{ suggestion: Pick<AiSuggestion, "replacement" | "emphasis">; scope: { first: Word.Paragraph; last: Word.Paragraph } }>
+): Promise<void> {
+  if (!entries.length) {
+    return;
+  }
+  const loaded = entries.map((entry) => {
+    const range = entry.scope.first.getRange("Whole").expandTo(entry.scope.last.getRange("Whole"));
+    range.load("text");
+    // Words without their trailing space (what is read and formatted) and
+    // with it (formatted too when the next word shares the emphasis, so an
+    // underline or highlight runs through the space instead of breaking).
+    const words = range.getTextRanges(WORD_ENDING_MARKS, true);
+    words.load(PIECE_FONT_PROPERTIES);
+    const wide = range.getTextRanges(WORD_ENDING_MARKS, false);
+    wide.load("items/text");
+    return { ...entry, range, words, wide };
+  });
+  await context.sync();
+  let changed = false;
+  for (const entry of loaded) {
+    const replacement = normalizeWordText(entry.suggestion.replacement).trim();
+    const spans = entry.suggestion.emphasis?.replacement ?? [];
+    const scopeText = normalizeWordText(entry.range.text ?? "");
+    const at = replacement ? scopeText.indexOf(replacement) : -1;
+    if (at < 0) {
+      continue; // The new text could not be located; Word's inherited formatting stands.
+    }
+    const words = entry.words.items ?? [];
+    const wide = entry.wide.items ?? [];
+    const aligned = wide.length === words.length;
+    let cursor = 0;
+    const desiredByIndex: Array<EmphasisFormat | null> = words.map((piece) => {
+      const text = normalizeWordText(piece.text ?? "");
+      if (!text) {
+        return null;
+      }
+      const found = scopeText.indexOf(text, cursor);
+      const start = found >= 0 ? found : cursor;
+      cursor = start + text.length;
+      const coreStart = start + (text.length - text.trimStart().length);
+      const coreEnd = start + text.trimEnd().length;
+      if (coreEnd <= coreStart || coreEnd <= at || coreStart >= at + replacement.length) {
+        return null;
+      }
+      return uniformEmphasis(spans, coreStart - at, coreEnd - at) ?? emphasisAt(spans, coreStart - at);
+    });
+    desiredByIndex.forEach((desired, index) => {
+      if (!desired) {
+        return;
+      }
+      const next = desiredByIndex[index + 1];
+      const throughSpace = aligned && next !== null && next !== undefined && sameFormat(next, desired) ? wide[index] : null;
+      if (setFontEmphasis(words[index].font, desired, throughSpace?.font ?? null)) {
+        changed = true;
+      }
+    });
+  }
+  if (changed) {
+    await context.sync();
+  }
+}
+
+/**
+ * Write only the emphasis properties that differ from what the word has.
+ * Emphasis turning off is cleared through the trailing space as well;
+ * emphasis turning on extends through the space only when the next word
+ * shares it (`throughSpace`). Returns whether anything was written.
+ */
+function setFontEmphasis(font: Word.Font, desired: EmphasisFormat, throughSpace: Word.Font | null): boolean {
+  const current = fontEmphasis(font);
+  const read = (key: string): unknown => (font as unknown as Record<string, unknown>)[key];
+  let changed = false;
+  const write = (mixed: boolean, have: boolean, want: boolean, apply: (target: Word.Font) => void) => {
+    if (!mixed && have === want) {
+      return;
+    }
+    apply(font);
+    if (throughSpace || !want) {
+      const wide = throughSpace ?? null;
+      if (wide) {
+        apply(wide);
+      }
+    }
+    changed = true;
+  };
+  write(read("bold") === null, Boolean(current.format.bold), Boolean(desired.bold), (target) => { target.bold = Boolean(desired.bold); });
+  write(read("italic") === null, Boolean(current.format.italic), Boolean(desired.italic), (target) => { target.italic = Boolean(desired.italic); });
+  write(read("underline") === null, Boolean(current.format.underline), Boolean(desired.underline), (target) => { target.underline = desired.underline ? "Single" : "None"; });
+  write(read("highlightColor") === "", Boolean(current.format.highlight), Boolean(desired.highlight), (target) => { target.highlightColor = desired.highlight ? "#FFFF00" : (null as unknown as string); });
+  return changed;
 }
 
 /* ------------------------------------------------------------------------- */

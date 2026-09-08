@@ -1,3 +1,4 @@
+import { markedSides, renderMarked } from "../emphasisView";
 /**
  * Presentational layer of the Word task pane, chat-style.
  *
@@ -1169,26 +1170,28 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
     );
   }
   const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
-  const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
+  // Emphasis rides as per-word markers through the diff and renders as real bold/italic/underline/highlight.
+  const sides = markedSides(suggestion);
+  const segments = suggestion.commentOnly ? null : wordDiffSegments(sides.original, sides.replacement);
   const length = suggestion.original.length + suggestion.replacement.length;
   const long = length > LONG_CHANGE_CHARS;
   const clamped = long && !props.expanded;
   const body = suggestion.commentOnly ? (
-    <blockquote className="wp-quote">{withParagraphBreaks(tidy(suggestion.original))}</blockquote>
+    <blockquote className="wp-quote">{renderMarked(tidy(sides.original), withParagraphBreaks)}</blockquote>
   ) : segments ? (
     <p className="wp-diff">
       {segments.map((segment, index) => (
         segment.type === "same"
-          ? <span key={index}>{withParagraphBreaks(segment.text)}</span>
+          ? <span key={index}>{renderMarked(segment.text, withParagraphBreaks)}</span>
           : segment.type === "del"
-            ? <del key={index}>{withParagraphBreaks(segment.text)}</del>
-            : <ins key={index}>{withParagraphBreaks(segment.text)}</ins>
+            ? <del key={index}>{renderMarked(segment.text, withParagraphBreaks)}</del>
+            : <ins key={index}>{renderMarked(segment.text, withParagraphBreaks)}</ins>
       ))}
     </p>
   ) : (
     <div className="wp-diff-blocks">
-      <p className="original"><del>{withParagraphBreaks(tidy(suggestion.original))}</del></p>
-      {deletion ? <p className="replacement quiet">(delete this text)</p> : <p className="replacement"><ins>{withParagraphBreaks(tidy(suggestion.replacement))}</ins></p>}
+      <p className="original"><del>{renderMarked(tidy(sides.original), withParagraphBreaks)}</del></p>
+      {deletion ? <p className="replacement quiet">(delete this text)</p> : <p className="replacement"><ins>{renderMarked(tidy(sides.replacement), withParagraphBreaks)}</ins></p>}
     </div>
   );
   return (

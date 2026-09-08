@@ -8,6 +8,7 @@
  * Office.js so it is unit-testable and reusable by the mock host.
  */
 
+import type { EmphasisSpan } from "../emphasis";
 import {
   WORD_HOST_CONTEXT_LIMITS,
   type SelectionContext,
@@ -54,6 +55,8 @@ export interface WordDocumentSnapshot {
   paragraphs: WordParagraphInfo[];
   /** Inline pictures (metadata only; bytes are read on demand). */
   pictures?: WordPictureInfo[];
+  /** Inline emphasis (bold/italic/underline/highlight) as spans over bodyText. */
+  emphasis?: EmphasisSpan[];
   changeTrackingMode: string | null;
   capturedAt: string;
 }
