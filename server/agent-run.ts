@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AiActivityEntry, AiAttachment, AiRequest, AiSuggestion, WordHostContext } from "../src/shared";
-import { validateSuggestionCandidate, type SuggestionCandidate } from "./suggestion-validation";
+import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext } from "../src/shared";
+import { isImageCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, type SuggestionCandidate } from "./suggestion-validation";
 
 /**
  * Per-run context for agentic AI requests. The spawned agent's MCP tools read
@@ -25,6 +25,8 @@ export interface AgentRunContext {
   /** Tool calls and status steps, in order — surfaced in the pane's conversation. */
   activity: AiActivityEntry[];
   attachments: AiAttachment[];
+  /** The document's images, extracted to files the agent can look at. */
+  images: AiDocumentImage[];
   maxSuggestions: number | null;
   staged: AiSuggestion[];
   rejectedCount: number;
@@ -59,6 +61,7 @@ export function createAgentRun(request: AiRequest): AgentRunContext {
     hostContext: request.hostContext ?? null,
     activity: [],
     attachments: request.attachments ?? [],
+    images: request.documentImages ?? [],
     maxSuggestions: typeof request.maxSuggestions === "number" && Number.isSafeInteger(request.maxSuggestions) && request.maxSuggestions > 0
       ? request.maxSuggestions
       : null,
@@ -185,7 +188,9 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
       run.rejectedCount += 1;
       continue;
     }
-    const verdict = validateSuggestionCandidate(candidates[index], run);
+    const verdict = isImageCandidate(candidates[index])
+      ? validateImageReplacementCandidate(candidates[index], run.images)
+      : validateSuggestionCandidate(candidates[index], run);
     if (!verdict.ok) {
       results.push({ index, staged: false, reason: verdict.reason });
       run.rejectedCount += 1;

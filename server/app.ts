@@ -7,9 +7,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport } from "./docx";
+import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxImages } from "./docx";
 import { getAiProgress, getAiQueue, proposeChanges, smokeTestProvider } from "./ai";
-import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess } from "../src/shared";
+import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, type AgentRunContext } from "./agent-run";
 import { readAgentRunContext } from "./agent-context";
@@ -22,6 +22,7 @@ import { restartTerminalRoom } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
 import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSuggestion } from "./inline-suggestions";
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
+import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
 import { liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
 import { r01RoutineSequence } from "../src/writingRoutines";
@@ -54,20 +55,24 @@ let writerSessionRevisionCounter = 0;
 // screen, recent focus). Terminal/MCP agents reading the "live" run see it
 // when the active session is that Word document, so "this paragraph"
 // resolves for them exactly as it does for the pane's own requests.
-let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; receivedAt: string } | null = null;
+let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; documentImages: AiDocumentImage[]; receivedAt: string } | null = null;
 
 // Agentic runs and the terminal agent read the add-in's latest push through
 // this source, so "the paragraph at the caret" follows the author mid-run.
 setLiveHostContextSource(() => (wordHostState ? { documentName: wordHostState.documentName, hostContext: wordHostState.hostContext } : null));
 
-function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined): void {
+function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined, documentImages?: AiDocumentImage[]): void {
   if (!hostContext) {
     return;
   }
+  const sourceDocumentId = wordLiveSourceDocumentId(documentName);
   wordHostState = {
     documentName,
-    sourceDocumentId: wordLiveSourceDocumentId(documentName),
+    sourceDocumentId,
     hostContext,
+    // Images arrive with AI requests, not with every context push: keep the
+    // last set for the same document so terminal agents can see figures too.
+    documentImages: documentImages ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentImages : []),
     receivedAt: new Date().toISOString()
   };
 }
@@ -394,6 +399,7 @@ export function createWriterApp() {
       id: "live",
       provider: "terminal",
       instruction: "",
+      images: liveDocumentImages(),
       mode: "global",
       documentText: typeof live === "string" && live.trim() ? live : activeWriterSession.documentText,
       selection: hostContextSelection(hostContext),
@@ -434,6 +440,35 @@ export function createWriterApp() {
     const selection = run.mode === "selection" ? run.selection : hostContextSelection(context.hostContext) ?? run.selection;
     const { paragraphs: _paragraphs, ...hostContext } = context.hostContext ?? { paragraphs: undefined };
     response.json({ mode: run.mode, selection, hostContext: context.hostContext ? hostContext : null, live: context.live });
+  });
+
+  app.get("/api/agent-run/:runId/images", (request, response) => {
+    const run = resolveAgentRun(request.params.runId);
+    if (!run) {
+      response.status(404).json({ error: noRunError(request.params.runId) });
+      return;
+    }
+    response.json({
+      images: run.images,
+      note: run.images.length
+        ? "Open a path with your image-capable file reader to see the picture; propose a replacement with writer_stage_image_replacement."
+        : "This document has no inline images (or the client did not extract them)."
+    });
+  });
+
+  app.get("/api/agent-run/:runId/images/:index", (request, response) => {
+    const run = resolveAgentRun(request.params.runId);
+    if (!run) {
+      response.status(404).json({ error: noRunError(request.params.runId) });
+      return;
+    }
+    const index = Number(request.params.index);
+    const image = Number.isInteger(index) ? run.images[index] : undefined;
+    if (!image) {
+      response.status(404).json({ error: run.images.length ? `No image at index ${request.params.index}; the document has ${run.images.length}.` : "This document has no inline images." });
+      return;
+    }
+    response.json({ ...image, note: "View the file at `path` with your image-capable file reader (Claude: Read; Codex: view_image)." });
   });
 
   app.get("/api/agent-run/:runId/context", (request, response) => {
@@ -619,6 +654,45 @@ export function createWriterApp() {
   // Chat attachments: the file is saved on this machine (where the CLI runs)
   // and its text extracted here, so the browser never needs a real path —
   // it gets back { name, path, text } to include with the next AI request.
+  // Document images pushed by a client (the Word add-in reads inline pictures
+  // through Office.js) and served back for card previews. Names only: the
+  // route never touches a path a client made up.
+  app.post("/api/ai/images", upload.single("file"), (request, response) => {
+    if (!request.file) {
+      response.status(400).json({ error: "Attach an image file." });
+      return;
+    }
+    const body = request.body as Record<string, string | undefined>;
+    const stored = storeImageBytes(request.file.buffer, body.label || request.file.originalname || "image");
+    if ("error" in stored) {
+      response.status(400).json({ error: stored.error });
+      return;
+    }
+    const numberOrNull = (value: string | undefined) => (value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null);
+    const image: AiDocumentImage = {
+      index: Math.max(0, Math.round(numberOrNull(body.index) ?? 0)),
+      path: stored.path,
+      url: stored.url,
+      mime: stored.mime,
+      width: numberOrNull(body.width),
+      height: numberOrNull(body.height),
+      altText: body.altText?.trim().slice(0, 400) || null,
+      context: body.context?.trim().slice(0, 400) || null,
+      paragraphIndex: numberOrNull(body.paragraphIndex)
+    };
+    response.json({ image });
+  });
+
+  app.get("/api/ai/images/:name", (request, response) => {
+    const served = servedImagePath(request.params.name);
+    if (!served) {
+      response.status(404).json({ error: "No such image." });
+      return;
+    }
+    response.type(served.mime);
+    response.sendFile(served.path);
+  });
+
   app.post("/api/ai/attachments", upload.single("file"), async (request, response, next) => {
     try {
       if (!request.file) {
@@ -880,7 +954,7 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext);
+      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages);
       const baseSession = wordLiveSessionForRequest(parsed.request);
       const ai = await proposeChanges(parsed.request, { signal });
       if (signal.aborted) {
@@ -1425,7 +1499,10 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      const ai = await proposeChanges(parsed.request, { signal });
+      const aiRequest = parsed.request.documentImages?.length
+        ? parsed.request
+        : { ...parsed.request, documentImages: await sessionDocumentImages(parsed.request) };
+      const ai = await proposeChanges(aiRequest, { signal });
       if (signal.aborted) {
         return;
       }
@@ -3577,6 +3654,94 @@ function parseAiAttachments(value: unknown): { value: AiAttachment[] | undefined
   return { value: attachments.length ? attachments : undefined };
 }
 
+/** Client-supplied document images: only files Writer itself stored are accepted, and at most AI_DOCUMENT_IMAGE_LIMIT of them. */
+function parseDocumentImages(value: unknown): { value: AiDocumentImage[] | undefined } | { error: string } {
+  if (value === undefined || value === null) {
+    return { value: undefined };
+  }
+  if (!Array.isArray(value)) {
+    return { error: "documentImages must be an array." };
+  }
+  const images: AiDocumentImage[] = [];
+  for (const entry of value.slice(0, AI_DOCUMENT_IMAGE_LIMIT)) {
+    if (!entry || typeof entry !== "object") {
+      return { error: "documentImages entries must be objects." };
+    }
+    const raw = entry as Record<string, unknown>;
+    if (typeof raw.path !== "string" || !isStoredImagePath(raw.path)) {
+      return { error: "documentImages entries must reference images uploaded through /api/ai/images." };
+    }
+    const index = Number(raw.index);
+    const numberOrNull = (candidate: unknown) => (typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null);
+    images.push({
+      index: Number.isInteger(index) && index >= 0 ? index : images.length,
+      path: raw.path,
+      url: typeof raw.url === "string" && raw.url.startsWith(IMAGE_ROUTE_PREFIX) ? raw.url : `${IMAGE_ROUTE_PREFIX}${basename(raw.path)}`,
+      mime: typeof raw.mime === "string" ? raw.mime : imageMimeForName(raw.path) ?? "image/png",
+      width: numberOrNull(raw.width),
+      height: numberOrNull(raw.height),
+      altText: typeof raw.altText === "string" ? raw.altText.slice(0, 400) : null,
+      context: typeof raw.context === "string" ? raw.context.slice(0, 400) : null,
+      paragraphIndex: numberOrNull(raw.paragraphIndex)
+    });
+  }
+  images.sort((a, b) => a.index - b.index);
+  return { value: images };
+}
+
+/** Images of the live (terminal-agent) document: the latest set the Word add-in pushed for it, if any. */
+function liveDocumentImages(): AiDocumentImage[] {
+  return wordHostState?.documentImages ?? [];
+}
+
+// Web-app requests carry no images; when the active session came from a DOCX,
+// its pictures are extracted once (per source file size) and handed to the AI.
+const sessionImageCache = new Map<string, { size: number; images: AiDocumentImage[] }>();
+
+async function sessionDocumentImages(request: AiRequest): Promise<AiDocumentImage[] | undefined> {
+  if (!activeWriterSession || request.documentText !== activeWriterSession.documentText) {
+    return undefined;
+  }
+  const sourceDocumentId = activeWriterSession.sourceDocumentId;
+  let buffer: Buffer | null = null;
+  try {
+    buffer = (await sourceBufferForReviewExport(sourceDocumentId, activeWriterSessionPath)).buffer;
+  } catch {
+    buffer = null;
+  }
+  if (!buffer) {
+    return undefined;
+  }
+  const cached = sessionImageCache.get(sourceDocumentId);
+  if (cached && cached.size === buffer.length) {
+    return cached.images.length ? cached.images : undefined;
+  }
+  const images: AiDocumentImage[] = [];
+  try {
+    for (const extracted of await extractDocxImages(buffer, AI_DOCUMENT_IMAGE_LIMIT)) {
+      const stored = storeImageBytes(extracted.bytes, `image-${extracted.index + 1}`);
+      if ("error" in stored) {
+        continue;
+      }
+      images.push({
+        index: extracted.index,
+        path: stored.path,
+        url: stored.url,
+        mime: stored.mime,
+        width: extracted.width,
+        height: extracted.height,
+        altText: extracted.altText,
+        context: extracted.context,
+        paragraphIndex: extracted.paragraphIndex
+      });
+    }
+  } catch {
+    // Unreadable package or media: the request simply goes without images.
+  }
+  sessionImageCache.set(sourceDocumentId, { size: buffer.length, images });
+  return images.length ? images : undefined;
+}
+
 function parseAiRequest(body: unknown): { request: AiRequest } | { error: string } {
   if (!body || typeof body !== "object") {
     return { error: "AI suggestions require a JSON request body." };
@@ -3628,6 +3793,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if ("error" in conversation) {
     return conversation;
   }
+  const documentImages = parseDocumentImages((body as { documentImages?: unknown }).documentImages);
+  if ("error" in documentImages) {
+    return documentImages;
+  }
   const toolAccessValue = (body as { toolAccess?: unknown }).toolAccess;
   if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
     return { error: "toolAccess must be one of document, read, or full." };
@@ -3647,6 +3816,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       hostContext: hostContext.hostContext,
       modelOptions: modelOptions.modelOptions,
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
+      documentImages: documentImages.value,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,
       requestedBy: typeof (body as { requestedBy?: unknown }).requestedBy === "string" && ((body as { requestedBy?: string }).requestedBy ?? "").trim()

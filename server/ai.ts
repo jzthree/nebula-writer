@@ -11,7 +11,8 @@ import { ensureWriterCliHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
-import { containsAnchoredText, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation } from "./suggestion-validation";
+import { containsAnchoredText, documentImageLabel, isImageCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate } from "./suggestion-validation";
+import { imageMimeForName } from "./image-files";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
@@ -57,6 +58,8 @@ interface AiRunOptions {
   signal?: AbortSignal;
   /** Resolved tool access for this run (see resolveToolAccess). */
   toolAccess?: AiToolAccess;
+  /** Image files to hand the CLI as image inputs (Codex -i). */
+  imagePaths?: string[];
   /** Called with each complete stdout line as it arrives (JSONL streaming). */
   onStdoutLine?: (line: string) => void;
   /** Receives parsed stream events while the provider is still running. */
@@ -179,9 +182,17 @@ export const AI_RESPONSE_SCHEMA = {
             type: "number",
             minimum: 0,
             maximum: 1
+          },
+          imageIndex: {
+            type: ["integer", "null"],
+            description: "Only for an image replacement: the 0-based index of the document image to replace (see the Document images list). null for text edits."
+          },
+          imageFile: {
+            type: ["string", "null"],
+            description: "Only for an image replacement: absolute path of the PNG/JPEG/GIF/WebP file that replaces the image. null for text edits."
           }
         },
-        required: ["title", "original", "replacement", "rationale", "confidence"]
+        required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile"]
       }
     }
   },
@@ -593,7 +604,8 @@ function describeToolAccessForAgent(toolAccess: AiToolAccess): string {
   }
 }
 
-export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments">): string {
+export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments"> & Partial<Pick<AgentRunContext, "images">>): string {
+  const images = run.images ?? [];
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
   const attachmentLines = run.attachments.length
     ? [
@@ -638,6 +650,11 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
       ? ["- This is a follow-up in an ongoing conversation. The document may have changed since your earlier reads — re-verify anchors (writer_search_document) before staging."]
       : []),
     ...attachmentLines,
+    ...(images.length
+      ? [
+          `The document has ${images.length} image${images.length === 1 ? "" : "s"}: ${images.map((image) => documentImageLabel(image)).join("; ")}. writer_list_images gives their file paths — open one with your image reader to see it. To replace one, write a new PNG/JPEG/GIF/WebP file and call writer_stage_image_replacement; the reviewer sees before/after previews.`
+        ]
+      : []),
     "",
     "When finished, write a short reply that organizes what you staged. Format: a line starting with `## ` opens a section (e.g. `## Significance`, `## Aim 2 approach`); one or two plain sentences of context; then each suggestion's ref from writer_stage_suggestions on its own line, like `[S3]`, in the order the user should review them. The user's pane shows each suggestion card exactly where you place it and offers Apply-all per section, so reference every staged suggestion once and do not repeat the suggestion text. If nothing was safe to stage, say why in 1-2 sentences.",
     "",
@@ -665,9 +682,10 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     // resume; its agentic engine resumes sessions instead).
     const resumeId = provider === "codex" ? request.agentSessionId ?? null : null;
     const toolAccess = resolveToolAccess(request);
+    const imagePaths = provider === "codex" ? oneShotImagePaths(request) : [];
     let result: string;
     try {
-      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent, toolAccess }, request.modelOptions ?? null, resumeId);
+      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
@@ -676,10 +694,10 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       // The recorded thread is gone (Codex home cleaned, different machine): start over without it.
       setAiProgress(provider, "Earlier conversation is gone — starting a fresh one", undefined, request.requestedBy ?? null);
       threadId = null;
-      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess }, request.modelOptions ?? null, null);
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess, imagePaths }, request.modelOptions ?? null, null);
     }
     const parsed = parseCliProgressedResponse(provider, result, request);
-    const response = await completeUnderDeliveredReply(provider, request, parsed, { ...options, onStreamEvent, toolAccess }, provider === "codex" ? threadId ?? resumeId : null);
+    const response = await completeUnderDeliveredReply(provider, request, parsed, { ...options, onStreamEvent, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -832,6 +850,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
       ? `Complete-document coverage pass ${options.coveragePass.index} of ${options.coveragePass.total}. The Text block is a contiguous chunk covering characters ${options.coveragePass.start + 1}-${options.coveragePass.end} of ${options.coveragePass.totalLength}. Across all passes, the sidecar covers the full document. Use only exact source text visible in this chunk.`
       : null,
     ...buildAttachmentPromptLines(request),
+    ...buildDocumentImagePromptLines(request),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
     ...(options.coveragePass ? [] : describeConversation(request)),
     "Text:",
@@ -876,6 +895,32 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
     document.slice(start, end),
     ">>>"
   ];
+}
+
+/**
+ * The document's images, for one-shot providers: Codex receives the files as
+ * image inputs (-i) so it can see them; every provider gets the list with
+ * paths and captions, and the contract for proposing a replacement.
+ */
+function buildDocumentImagePromptLines(request: AiRequest): string[] {
+  const images = request.documentImages ?? [];
+  if (!images.length) {
+    return ["Text suggestions set imageIndex and imageFile to null."];
+  }
+  return [
+    `Document images (${images.length}, in document order${request.provider === "codex" ? "; the same files are attached to this request as image inputs, in this order" : ""}):`,
+    ...images.map((image) => `- ${documentImageLabel(image)} — ${image.width && image.height ? `${Math.round(image.width)}×${Math.round(image.height)} ` : ""}${image.mime}, file: ${image.path}`),
+    "To propose replacing an image with a file you produced (PNG/JPEG/GIF/WebP, written to your workspace), return a suggestion with imageIndex (0-based), imageFile (the absolute path), original set to the image's label as listed above, and replacement \"\". Text suggestions set imageIndex and imageFile to null."
+  ];
+}
+
+const ONE_SHOT_IMAGE_INPUT_LIMIT = 8;
+
+/** Files to hand Codex as image inputs: the document's images first, then attached image files. */
+export function oneShotImagePaths(request: AiRequest): string[] {
+  const fromDocument = (request.documentImages ?? []).map((image) => image.path);
+  const fromAttachments = (request.attachments ?? []).filter((attachment) => imageMimeForName(attachment.name)).map((attachment) => attachment.path);
+  return [...fromDocument, ...fromAttachments].slice(0, ONE_SHOT_IMAGE_INPUT_LIMIT);
 }
 
 // Attached reference files: content is inlined because Claude runs with tools
@@ -1059,7 +1104,7 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   // Codex writes its final agent message to this file: the authoritative
   // answer even when earlier (schema-shaped) preambles appeared in the stream.
   const lastMessagePath = schemaFile ? join(schemaFile.dir, "last-message.txt") : null;
-  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null, options.toolAccess ?? "document");
+  const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null, options.toolAccess ?? "document", options.imagePaths ?? []);
   const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
   const runOptions: AiRunOptions = {
     ...options,
@@ -1445,7 +1490,8 @@ export function buildCliArgs(
   modelOptions: AiModelOptions | null = null,
   codexLastMessagePath?: string,
   codexResumeThreadId?: string | null,
-  toolAccess: AiToolAccess = "document"
+  toolAccess: AiToolAccess = "document",
+  imagePaths: string[] = []
 ): string[] {
   if (provider === "codex") {
     return [
@@ -1465,6 +1511,8 @@ export function buildCliArgs(
       ...(codexResumeThreadId ? [] : ["--sandbox", toolAccess === "full" ? "workspace-write" : "read-only"]),
       ...(codexSchemaPath ? ["--output-schema", codexSchemaPath] : []),
       ...(codexLastMessagePath ? ["--output-last-message", codexLastMessagePath] : []),
+      // Image inputs (document figures, attached pictures) so the model can see them.
+      ...imagePaths.flatMap((path) => ["-i", path]),
       "-"
     ];
   }
@@ -1756,7 +1804,7 @@ export function parseCliResponse(provider: CliProviderName, raw: string, request
   };
 }
 
-type SkipReason = "not-found" | "no-change" | "malformed";
+type SkipReason = "not-found" | "no-change" | "malformed" | "image";
 
 /**
  * Name what was dropped and why, so a reviewer can tell "the model misquoted
@@ -1770,9 +1818,10 @@ function describeSkippedSuggestions(skipped: Array<{ title: string; reason: Skip
   const label: Record<SkipReason, (count: number) => string> = {
     "not-found": (count) => `${count} because ${count === 1 ? "its" : "their"} original text was not found verbatim in the document`,
     "no-change": (count) => `${count} because ${count === 1 ? "it" : "they"} changed nothing`,
-    "malformed": (count) => `${count} because ${count === 1 ? "it was" : "they were"} malformed (no replacement text)`
+    "malformed": (count) => `${count} because ${count === 1 ? "it was" : "they were"} malformed (no replacement text)`,
+    "image": (count) => `${count} because ${count === 1 ? "its" : "their"} image replacement was invalid (no such image index, or the file is missing, too large, or not PNG/JPEG/GIF/WebP)`
   };
-  const parts = (["not-found", "no-change", "malformed"] as SkipReason[])
+  const parts = (["not-found", "no-change", "malformed", "image"] as SkipReason[])
     .filter((reason) => byReason.has(reason))
     .map((reason) => {
       const titles = byReason.get(reason) ?? [];
@@ -2139,6 +2188,10 @@ function isDisguisedDeletion(item: Partial<AiSuggestion>, original: string, repl
 }
 
 function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): { suggestion: AiSuggestion } | { skipped: SkipReason } {
+  if (isImageCandidate(item)) {
+    const verdict = validateImageReplacementCandidate(item, request.documentImages ?? []);
+    return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "image" };
+  }
   const original = String(item.original ?? "").trim();
   let replacement = String(item.replacement ?? "").trim();
   let deletionRescued = false;

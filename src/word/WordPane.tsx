@@ -1078,6 +1078,17 @@ const LONG_CHANGE_CHARS = 900;
 /** The proposed change itself: an inline word diff when one reads well, else the original and the revised text in full. */
 function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; onToggle: () => void }) {
   const { suggestion } = props;
+  if (suggestion.kind === "image" && suggestion.image) {
+    const image = suggestion.image;
+    return (
+      <figure className="wp-image-change">
+        {image.originalUrl ? <img src={image.originalUrl} alt="Current picture" /> : <span className="wp-image-missing">current picture</span>}
+        <span className="wp-image-arrow" aria-hidden="true">→</span>
+        <img src={image.url} alt="Proposed picture" />
+        <figcaption>{suggestion.original}</figcaption>
+      </figure>
+    );
+  }
   const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
   const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
   const length = suggestion.original.length + suggestion.replacement.length;

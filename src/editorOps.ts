@@ -52,11 +52,44 @@ export function getSelectionContext(editor: Editor | null): SelectionContext | n
   return text.trim() ? { from, to, text } : null;
 }
 
+/** The Nth image node in the document (0-based), in document order. */
+function findImageNode(editor: Editor, index: number): { pos: number; nodeSize: number; attrs: Record<string, unknown> } | null {
+  let count = 0;
+  let found: { pos: number; nodeSize: number; attrs: Record<string, unknown> } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (found) {
+      return false;
+    }
+    if (node.type.name === "image") {
+      if (count === index) {
+        found = { pos, nodeSize: node.nodeSize, attrs: { ...node.attrs } };
+        return false;
+      }
+      count += 1;
+    }
+    return true;
+  });
+  return found;
+}
+
 export function applySuggestion(
   editor: Editor,
   suggestion: AiSuggestion,
   options: { confirmRelocated?: boolean } = {}
 ): ApplySuggestionResult {
+  if (suggestion.kind === "image" && suggestion.image) {
+    // A picture swap: point the Nth image node at the replacement file.
+    const target = findImageNode(editor, suggestion.image.index);
+    if (!target) {
+      return { ok: false, reason: "missing" };
+    }
+    const src = suggestion.image.url;
+    editor.chain().focus().command(({ tr }) => {
+      tr.setNodeMarkup(target.pos, undefined, { ...target.attrs, src });
+      return true;
+    }).run();
+    return { ok: true, matchKind: "exact", range: { from: target.pos, to: target.pos + target.nodeSize } };
+  }
   const match = findSuggestionMatch(editor, suggestion);
   if (!match) {
     return { ok: false, reason: "missing" };
@@ -104,6 +137,10 @@ export function findSuggestionRange(editor: Editor, suggestion: AiSuggestion): {
 }
 
 export function findSuggestionMatch(editor: Editor, suggestion: AiSuggestion): SuggestionMatch | null {
+  if (suggestion.kind === "image" && suggestion.image) {
+    const target = findImageNode(editor, suggestion.image.index);
+    return target ? { from: target.pos, to: target.pos + target.nodeSize, matchKind: "exact" } : null;
+  }
   const cache = rangeCacheForEditor(editor);
   const key = suggestionRangeCacheKey(suggestion);
   const cached = cache.get(suggestion.id);

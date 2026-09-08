@@ -71,6 +71,13 @@ Port of slides-mcp's connector, adapted:
   `workspace-write` inside the Writer workspace for `full`, which also runs in
   the user's own `CODEX_HOME` so their `config.toml` MCP servers load. Gate
   retirement on validating this path e2e (see Rollout).
+- **Images** — `writer_list_images` / `writer_read_image` hand the agent the
+  document's pictures as files (the Word add-in uploads inline pictures;
+  DOCX sessions extract media server-side); `writer_stage_image_replacement`
+  proposes a new file for one of them, validated (index, type, size) and
+  applied as a tracked picture replacement. The one-shot schema carries
+  `imageIndex`/`imageFile` for the same, and Codex receives the pictures as
+  image inputs (`-i`).
 - **Stream parsers** for both CLIs' JSONL ported near-verbatim, emitting
   `status | session | text | thinking | tool | result | error` events.
 - The MCP config launches `writer-mcp` (tsx entry or built bin) with

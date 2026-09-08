@@ -4,7 +4,11 @@ import {
   applySuggestion,
   applySuggestions,
   chooseMatchIndex,
+  commentInlinePicture,
   commentSuggestion,
+  readInlinePictureBase64,
+  replaceInlinePicture,
+  selectInlinePicture,
   detectCapabilities,
   findSuggestionMatches,
   locateSuggestion,
@@ -330,5 +334,50 @@ describe("word host: batch apply", () => {
     expect(outcome.ok).toBe(false);
     expect(mock.edits.length).toBe(1);
     expect(mock.changeTrackingMode).toBe("Off");
+  });
+});
+
+describe("word host: inline pictures", () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const NEW_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+  function bootWithPicture() {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: sampleGrantDocument(),
+      documentName: "Aims draft.docx",
+      pictures: [{ paragraphIndex: 4, base64: PNG, width: 320, height: 200, altText: "Figure 1 schematic" }]
+    }).install();
+    return boot();
+  }
+
+  it("lists pictures in the snapshot with their paragraph context, bytes on demand", async () => {
+    const { snapshot } = await bootWithPicture();
+    expect(snapshot.pictures).toEqual([{
+      index: 0,
+      width: 320,
+      height: 200,
+      altText: "Figure 1 schematic",
+      paragraphText: mock.paragraphs[4].text,
+      paragraphIndex: 4
+    }]);
+    const picture = await readInlinePictureBase64(0);
+    expect(picture).toEqual({ base64: PNG, width: 320, height: 200 });
+    await expect(readInlinePictureBase64(3)).rejects.toThrow("there is no picture 4");
+  });
+
+  it("replaces a picture as a tracked change, then selects and comments on it", async () => {
+    await bootWithPicture();
+    const result = await replaceInlinePicture(0, NEW_PNG, { trackChanges: "always" });
+    expect(result.trackedChange).toBe(true);
+    expect(mock.pictures[0].base64).toBe(NEW_PNG);
+    expect(mock.pictureReplacements).toEqual([{ index: 0, previousBase64: PNG, base64: NEW_PNG, tracked: true }]);
+    expect(mock.changeTrackingMode).toBe("Off");
+
+    await selectInlinePicture(0);
+    expect(mock.selection).toEqual(mock.paragraphRange(4));
+    await commentInlinePicture(0, "Consider a higher-resolution export.");
+    expect(mock.comments).toHaveLength(1);
+    expect(mock.comments[0].text).toContain("higher-resolution");
   });
 });

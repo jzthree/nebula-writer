@@ -153,6 +153,49 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
     },
     handler: () => forward("GET", "/selection")
+  },
+  {
+    definition: {
+      name: "writer_list_images",
+      description: "List the document's images (figures, inline pictures) in document order: { images: [{ index, path, mime, width, height, altText, context, paragraphIndex }] }. `path` is a file on this machine — open it with your image-capable file reader (Claude: Read; Codex: view_image) to actually see the picture. `context` is the paragraph the picture sits in, usually its caption.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false }
+    },
+    handler: () => forward("GET", "/images")
+  },
+  {
+    definition: {
+      name: "writer_read_image",
+      description: "One document image by index: { index, path, mime, width, height, altText, context, note }. Returns the file path to view; images are never inlined as text.",
+      inputSchema: {
+        type: "object",
+        properties: { index: { type: "number", description: "0-based image index from writer_list_images." } },
+        required: ["index"],
+        additionalProperties: false
+      }
+    },
+    handler: (args) => forward("GET", `/images/${encodeURIComponent(String(args.index ?? ""))}`)
+  },
+  {
+    definition: {
+      name: "writer_stage_image_replacement",
+      description: "Propose replacing one document image with a PNG/JPEG/GIF/WebP file you produced (for example a regenerated or edited figure written to your workspace). The reviewer sees before/after previews and applies it as a tracked change in Word or in the DOCX export. Returns the same per-item verdicts as writer_stage_suggestions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "0-based image index from writer_list_images." },
+          file: { type: "string", description: "Absolute path of the replacement image file on this machine." },
+          title: { type: "string", description: "Short label for the change." },
+          rationale: { type: "string", description: "Why the new image is better." },
+          confidence: { type: "number", description: "0-1 confidence (default 0.65)." }
+        },
+        required: ["index", "file", "title", "rationale"],
+        additionalProperties: false
+      }
+    },
+    handler: async (args) => forward("POST", "/stage", {
+      suggestions: [{ imageIndex: args.index, imageFile: args.file, title: args.title, rationale: args.rationale, confidence: args.confidence, original: "", replacement: "" }],
+      ...(AGENT_PROVIDER ? { agent: AGENT_PROVIDER } : {})
+    })
   }
 ];
 

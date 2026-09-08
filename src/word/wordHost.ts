@@ -23,8 +23,7 @@ import {
   type WordDocumentSnapshot,
   type WordFocusState,
   type WordParagraphInfo,
-  type WordViewportState
-} from "./wordContext";
+  type WordViewportState, type WordPictureInfo } from "./wordContext";
 
 export interface WordCapabilities {
   /** Running inside Microsoft Word (not a plain browser). */
@@ -176,10 +175,12 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities): Prom
   return word.run(async (context) => {
     const body = context.document.body;
     const paragraphs = body.paragraphs;
+    const inlinePictures = body.inlinePictures;
     body.load("text");
     paragraphs.load(capabilities.paragraphStyles
       ? "items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem"
       : "items/text,items/style,items/outlineLevel,items/isListItem");
+    inlinePictures.load("items/width,items/height,items/altTextDescription,items/altTextTitle");
     if (capabilities.trackChanges) {
       context.document.load("changeTrackingMode");
     }
@@ -192,13 +193,122 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities): Prom
       outlineLevel: safeNumber(paragraph, "outlineLevel"),
       isListItem: safeBoolean(paragraph, "isListItem")
     }));
+    // Picture metadata (never the bytes — those are read on demand when a
+    // request is sent). One extra round trip only when there are pictures.
+    let pictures: WordPictureInfo[] = [];
+    try {
+      const items = inlinePictures.items ?? [];
+      if (items.length) {
+        for (const picture of items) {
+          picture.paragraph.load("text");
+        }
+        await context.sync();
+        pictures = items.map((picture, index) => {
+          const paragraphText = normalizeWordText(picture.paragraph.text ?? "").trim();
+          const paragraphIndex = paragraphText ? sources.findIndex((source) => normalizeWordText(source.text).trim() === paragraphText) : -1;
+          return {
+            index,
+            width: safeNumber(picture, "width"),
+            height: safeNumber(picture, "height"),
+            altText: safeString(picture, "altTextDescription") || safeString(picture, "altTextTitle") || null,
+            paragraphText,
+            paragraphIndex: paragraphIndex >= 0 ? paragraphIndex : null
+          };
+        });
+      }
+    } catch {
+      pictures = [];
+    }
     return {
       documentName: readDocumentName(),
       bodyText,
       paragraphs: indexParagraphs(bodyText, sources),
+      pictures,
       changeTrackingMode: capabilities.trackChanges ? safeString(context.document, "changeTrackingMode") : null,
       capturedAt: new Date().toISOString()
     };
+  });
+}
+
+/* ------------------------------------------------------------------------- */
+/* Inline pictures                                                           */
+/* ------------------------------------------------------------------------- */
+
+async function inlinePictureAt(context: Word.RequestContext, index: number): Promise<Word.InlinePicture> {
+  const pictures = context.document.body.inlinePictures;
+  pictures.load("items");
+  await context.sync();
+  const picture = pictures.items[index];
+  if (!picture) {
+    throw new Error(`Word has ${pictures.items.length} inline picture${pictures.items.length === 1 ? "" : "s"}; there is no picture ${index + 1}.`);
+  }
+  return picture;
+}
+
+/** The bytes of one inline picture, base64-encoded as Word returns them. */
+export async function readInlinePictureBase64(index: number): Promise<{ base64: string; width: number | null; height: number | null }> {
+  const word = requireWord();
+  return word.run(async (context) => {
+    const picture = await inlinePictureAt(context, index);
+    picture.load("width,height");
+    const source = picture.getBase64ImageSrc();
+    await context.sync();
+    return { base64: source.value ?? "", width: safeNumber(picture, "width"), height: safeNumber(picture, "height") };
+  });
+}
+
+/** Replace one inline picture with new image bytes, as a tracked change when requested (Word tracks picture replacement like any edit). */
+export async function replaceInlinePicture(index: number, base64: string, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }> {
+  const word = requireWord();
+  return word.run(async (context) => {
+    const picture = await inlinePictureAt(context, index);
+    const document = context.document;
+    document.load("changeTrackingMode");
+    await context.sync();
+    let previousMode: string | null = null;
+    let trackedChange: boolean;
+    if (options.trackChanges === "always") {
+      previousMode = String(document.changeTrackingMode ?? "Off");
+      if (previousMode === "Off") {
+        document.changeTrackingMode = "TrackAll";
+        await context.sync();
+      }
+      trackedChange = true;
+    } else {
+      trackedChange = String(document.changeTrackingMode ?? "Off") !== "Off";
+    }
+    try {
+      const inserted = picture.insertInlinePictureFromBase64(base64, "Replace");
+      inserted.select();
+      await context.sync();
+    } finally {
+      if (previousMode === "Off") {
+        document.changeTrackingMode = "Off";
+        await context.sync();
+      }
+    }
+    return { trackedChange };
+  });
+}
+
+/** Select a picture so Word scrolls to it. */
+export async function selectInlinePicture(index: number): Promise<void> {
+  const word = requireWord();
+  await word.run(async (context) => {
+    const picture = await inlinePictureAt(context, index);
+    picture.select();
+    await context.sync();
+  });
+}
+
+/** Anchor a Word comment on a picture. */
+export async function commentInlinePicture(index: number, text: string): Promise<void> {
+  const word = requireWord();
+  await word.run(async (context) => {
+    const picture = await inlinePictureAt(context, index);
+    picture.getRange().insertComment(text);
+    picture.select();
+    await context.sync();
   });
 }
 

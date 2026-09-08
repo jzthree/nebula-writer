@@ -9,12 +9,14 @@ const captured: {
   statusUpdates: Array<{ id: string; status: string; note?: string }>;
   chat: WriterChatMessage[];
   catalogFetches: boolean[];
+  imageUploads: Array<Record<string, unknown>>;
 } = {
   requests: [],
   contextPushes: [],
   statusUpdates: [],
   chat: [],
-  catalogFetches: []
+  catalogFetches: [],
+  imageUploads: []
 };
 
 const ORIGINAL = "Chromatin accessibility is actually a very important determinant of gene regulation, and it is the case that many studies have looked at it.";
@@ -71,8 +73,35 @@ vi.mock("../src/word/writerClient", () => ({
       ]
     };
   },
+  uploadDocumentImage: async (_blob: Blob, meta: Record<string, unknown>) => {
+    captured.imageUploads.push(meta);
+    const index = Number(meta.index);
+    return { index, path: `/tmp/images/img-${index}.png`, url: `/api/ai/images/img-${index}.png`, mime: "image/png", width: meta.width ?? null, height: meta.height ?? null, altText: meta.altText ?? null, context: meta.context ?? null, paragraphIndex: meta.paragraphIndex ?? null };
+  },
+  fetchImageAsBase64: async () => "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   requestWordSuggestions: async (request: WordLiveSuggestionRequest) => {
     captured.requests.push(request);
+    if (request.instruction.startsWith("Figure:")) {
+      const image = request.documentImages?.[0];
+      const suggestion: AiSuggestion = {
+        id: `img-${captured.requests.length}`,
+        kind: "image",
+        image: { index: 0, path: "/tmp/images/new-figure.png", url: "/api/ai/images/new-figure.png", mime: "image/png", originalUrl: image?.url ?? null },
+        title: "Sharper schematic",
+        original: "[Image 1] Figure 1 schematic",
+        replacement: "",
+        rationale: "Regenerated at print resolution.",
+        confidence: 0.8,
+        target: "global",
+        range: null,
+        status: "pending"
+      };
+      return {
+        ai: { message: "Replaced the schematic.", provider: request.provider, suggestions: [suggestion], agentSessionId: null, activity: [] },
+        session: { id: "word-session", name: "Aims.docx", title: "Aims", sourceDocumentId: "word-live:aims.docx", documentText: request.documentText, documentHtmlLength: 0, revision: 1, suggestions: [suggestion], chatMessages: [], updatedAt: new Date().toISOString() },
+        sessionReused: false
+      };
+    }
     if (request.instruction.startsWith("Sections:")) {
       const first: AiSuggestion = { id: `g-${captured.requests.length}-1`, ref: "S1", title: "Tighten the opening claim", original: ORIGINAL, replacement: REPLACEMENT, rationale: "Removes hedging.", confidence: 0.8, target: request.mode, range: null, status: "pending" };
       const second: AiSuggestion = { id: `g-${captured.requests.length}-2`, ref: "S2", title: "Sharpen the innovation claim", original: "which has not been done before to our knowledge", replacement: "which no prior study has attempted", rationale: "Direct.", confidence: 0.7, target: request.mode, range: null, status: "pending" };
@@ -132,6 +161,7 @@ let mock: MockWordHost;
 
 beforeEach(() => {
   captured.requests = [];
+  captured.imageUploads = [];
   captured.contextPushes = [];
   captured.statusUpdates = [];
   captured.chat = [];
@@ -340,6 +370,35 @@ describe("Word task pane", () => {
     expect(mock.edits.length).toBe(editsBefore);
     expect(screen.getByText("1 pending")).toBeInTheDocument();
     expect(captured.statusUpdates).toEqual([]);
+  });
+
+  it("sends the document's pictures with a request and applies a picture replacement in Word", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: sampleGrantDocument(),
+      documentName: "Aims.docx",
+      pictures: [{ paragraphIndex: 4, base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", width: 320, height: 200, altText: "Figure 1 schematic" }]
+    }).install();
+    await renderPane();
+    send("Figure: sharpen the schematic");
+    await waitFor(() => expect(screen.getByText("Sharper schematic")).toBeInTheDocument());
+    expect(captured.imageUploads).toHaveLength(1);
+    expect(captured.imageUploads[0]).toMatchObject({ index: 0, width: 320, height: 200, altText: "Figure 1 schematic" });
+    expect(captured.requests[0].documentImages).toHaveLength(1);
+    expect(captured.requests[0].documentImages?.[0]).toMatchObject({ index: 0, url: "/api/ai/images/img-0.png" });
+    const card = screen.getByLabelText("Suggestion: Sharper schematic");
+    expect(card.querySelector("img[alt='Current picture']")).toHaveAttribute("src", "/api/ai/images/img-0.png");
+    expect(card.querySelector("img[alt='Proposed picture']")).toHaveAttribute("src", "/api/ai/images/new-figure.png");
+
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(mock.pictureReplacements).toHaveLength(1));
+    expect(mock.pictureReplacements[0]).toMatchObject({ index: 0, tracked: true });
+    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+
+    // A second request reuses the upload instead of reading Word again.
+    send("Figure: and again");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.imageUploads).toHaveLength(1);
   });
 
   it("starts a new conversation without dismissing pending suggestions", async () => {

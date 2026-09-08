@@ -36,11 +36,24 @@ export interface WordParagraphInfo {
   isListItem: boolean;
 }
 
+export interface WordPictureInfo {
+  /** 0-based position among the body's inline pictures. */
+  index: number;
+  width: number | null;
+  height: number | null;
+  altText: string | null;
+  /** Text of the paragraph the picture sits in (often its caption). */
+  paragraphText: string;
+  paragraphIndex: number | null;
+}
+
 export interface WordDocumentSnapshot {
   documentName: string | null;
   /** Normalized body text (LF line endings) — the `documentText` sent to the sidecar. */
   bodyText: string;
   paragraphs: WordParagraphInfo[];
+  /** Inline pictures (metadata only; bytes are read on demand). */
+  pictures?: WordPictureInfo[];
   changeTrackingMode: string | null;
   capturedAt: string;
 }

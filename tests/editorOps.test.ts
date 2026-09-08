@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { applySuggestion, centerSuggestionTarget, findSuggestionMatch, findSuggestionRange, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget } from "../src/editorOps";
 import type { AiSuggestion } from "../src/shared";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import Image from "@tiptap/extension-image";
 
 describe("editor operations", () => {
   it("normalizes text for suggestion matching", () => {
@@ -390,3 +393,44 @@ function suggestion(overrides: Partial<AiSuggestion> = {}): AiSuggestion {
     ...overrides
   };
 }
+
+describe("editor operations: pictures", () => {
+  function imageSuggestion(index: number): AiSuggestion {
+    return {
+      id: `img-${index}`,
+      kind: "image",
+      image: { index, path: "/tmp/new.png", url: "/api/ai/images/new.png", mime: "image/png", originalUrl: "/api/ai/images/old.png" },
+      title: "Sharper figure",
+      original: "[Image 1] Figure 1.",
+      replacement: "",
+      rationale: "x",
+      confidence: 0.9,
+      target: "global",
+      range: null,
+      status: "pending"
+    };
+  }
+
+  it("swaps the Nth image node's source and locates it, without touching text", () => {
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: [StarterKit, Image.configure({ allowBase64: true })],
+      content: '<p>Before.</p><img src="data:image/png;base64,AAAA" alt="first"><p>Middle.</p><img src="data:image/png;base64,BBBB" alt="second"><p>After.</p>'
+    });
+    try {
+      const match = findSuggestionMatch(editor, imageSuggestion(1));
+      expect(match).toMatchObject({ matchKind: "exact" });
+      const result = applySuggestion(editor, imageSuggestion(1));
+      expect(result.ok).toBe(true);
+      const html = editor.getHTML();
+      expect(html).toContain('src="data:image/png;base64,AAAA"');
+      expect(html).toContain('src="/api/ai/images/new.png"');
+      expect(html).not.toContain("BBBB");
+      expect(editor.getText()).toContain("Before.");
+      expect(editor.getText()).toContain("After.");
+      expect(applySuggestion(editor, imageSuggestion(5))).toEqual({ ok: false, reason: "missing" });
+    } finally {
+      editor.destroy();
+    }
+  });
+});

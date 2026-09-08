@@ -13,8 +13,7 @@ import type {
   WordHostContextUpdate,
   WordHostContextUpdateResponse,
   WordLiveSuggestionRequest,
-  WordLiveSuggestionResponse
-} from "../shared";
+  WordLiveSuggestionResponse, AiDocumentImage } from "../shared";
 import {
   fetchWordLiveSuggestionsFromSidecar,
   getHealthFromSidecar,
@@ -55,6 +54,42 @@ export async function pushWordContext(update: WordHostContextUpdate): Promise<Wo
 /** Upload a reference file (PDF, DOCX, text…); the sidecar extracts its text for the AI. */
 export async function uploadAttachment(file: File): Promise<AiAttachment> {
   return uploadAiAttachmentToSidecar(API_BASE, file);
+}
+
+/** Push one of the document's pictures to the sidecar so the AI can look at it; returns its stored form. */
+export async function uploadDocumentImage(
+  blob: Blob,
+  meta: { index: number; width?: number | null; height?: number | null; altText?: string | null; context?: string | null; paragraphIndex?: number | null; label?: string }
+): Promise<AiDocumentImage> {
+  const data = new FormData();
+  data.append("file", blob, meta.label ?? `image-${meta.index + 1}`);
+  data.append("index", String(meta.index));
+  for (const key of ["width", "height", "altText", "context", "paragraphIndex"] as const) {
+    const value = meta[key];
+    if (value !== undefined && value !== null && value !== "") {
+      data.append(key, String(value));
+    }
+  }
+  const response = await fetch(`${API_BASE}/api/ai/images`, { method: "POST", body: data });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return (await readJson<{ image: AiDocumentImage }>(response)).image;
+}
+
+/** Fetch a sidecar-served image as raw base64 (what Office.js wants for insertion). */
+export async function fetchImageAsBase64(url: string): Promise<string> {
+  const response = await fetch(/^https?:/i.test(url) ? url : `${API_BASE}${url}`);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the image."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 /** Models and reasoning levels each installed CLI offers right now (discovered, cached per CLI build). */

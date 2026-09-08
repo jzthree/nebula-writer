@@ -244,8 +244,32 @@ function sharedSuggestionsAreAdditionsOnly(sharedSuggestions: AiSuggestion[], lo
   return localSuggestions.every((suggestion) => sharedStatuses.get(suggestion.id) === suggestion.status);
 }
 
+/** Before/after previews of a picture replacement (the sidecar serves both files). */
+function ImageChange({ suggestion }: { suggestion: AiSuggestion }) {
+  const image = suggestion.image;
+  if (!image) {
+    return null;
+  }
+  return (
+    <figure className="image-change">
+      {image.originalUrl ? <img src={image.originalUrl} alt="Current picture" /> : <span className="image-change-missing">current picture</span>}
+      <span className="image-change-arrow" aria-hidden="true">→</span>
+      <img src={image.url} alt="Proposed picture" />
+      <figcaption>{suggestion.original}</figcaption>
+    </figure>
+  );
+}
+
 /** The original and revised text of a decided suggestion, as the review card showed it. */
 function DecidedChange({ suggestion }: { suggestion: AiSuggestion }) {
+  if (suggestion.kind === "image" && suggestion.image) {
+    return (
+      <div className="review-activity-change">
+        <ImageChange suggestion={suggestion} />
+        {suggestion.rationale ? <p className="rationale">{suggestion.rationale}</p> : null}
+      </div>
+    );
+  }
   const segments = suggestion.commentOnly ? null : wordDiffSegments(suggestion.original, suggestion.replacement);
   return (
     <div className="review-activity-change">
@@ -7415,6 +7439,9 @@ export function App() {
                     </div>
                   </div>
                   {(() => {
+                    if (suggestion.kind === "image" && suggestion.image) {
+                      return <ImageChange suggestion={suggestion} />;
+                    }
                     const segments = wordDiffSegments(suggestion.original, suggestion.replacement);
                     if (!segments) {
                       return (

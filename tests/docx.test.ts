@@ -3,7 +3,7 @@ import JSZip from "jszip";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptTrackedChangesByAuthor, analyzeDocxFeatures, exportDocx, exportTrackedChangesFromSource, exportTrackedChangesFromSourceWithReport, extractDocxBodySafeAnchorCandidates, extractDocxBodySafeAnchorDetails, htmlToBlocks, htmlToText, importDocx } from "../server/docx";
+import { acceptTrackedChangesByAuthor, analyzeDocxFeatures, exportDocx, exportTrackedChangesFromSource, exportTrackedChangesFromSourceWithReport, extractDocxImages, extractDocxBodySafeAnchorCandidates, extractDocxBodySafeAnchorDetails, htmlToBlocks, htmlToText, importDocx } from "../server/docx";
 
 describe("DOCX conversion", () => {
   it("converts editor HTML into structured blocks", () => {
@@ -1533,3 +1533,71 @@ function ensureDocumentNamespaces(documentXml: string, namespaces: Record<string
       : xml.replace("<w:document ", `<w:document xmlns:${prefix}="${uri}" `)
   ), documentXml);
 }
+
+describe("DOCX images", () => {
+  const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+
+  it("extracts the document's pictures with a caption context", async () => {
+    const source = await docxWithUnsupportedImage({ extension: "png", contentType: "image/png" });
+    const images = await extractDocxImages(source);
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({ index: 0, mime: "image/png", context: "Paragraph before image." });
+    expect(images[0].bytes.toString("utf8")).toBe("fake-png-image");
+  });
+
+  it("replaces a picture as a tracked change with a new media part", async () => {
+    const source = await docxWithUnsupportedImage({ extension: "png", contentType: "image/png" });
+    const dir = mkdtempSync(join(tmpdir(), "nebula-image-"));
+    const replacementPath = join(dir, "figure-2.png");
+    writeFileSync(replacementPath, ONE_PIXEL_PNG);
+    try {
+      const result = await exportTrackedChangesFromSourceWithReport(source, [{
+        id: "img-1",
+        kind: "image",
+        image: { index: 0, path: replacementPath, url: "/api/ai/images/figure-2.png", mime: "image/png" },
+        title: "Sharper figure",
+        original: "[Image 1] Paragraph before image.",
+        replacement: "",
+        rationale: "Regenerated at 300 dpi.",
+        confidence: 0.9,
+        target: "global",
+        status: "pending"
+      }]);
+      expect(result.report.matchedSuggestions).toBe(1);
+      expect(result.report.commentedSuggestions).toBe(0);
+      const zip = await JSZip.loadAsync(result.buffer);
+      const documentXml = await zip.file("word/document.xml")!.async("string");
+      expect(documentXml).toMatch(/<w:del [^>]*w:author="Nebula Writer AI"[^>]*><w:r><w:drawing>[\s\S]*?r:embed="rIdNebulaImage"[\s\S]*?<\/w:del>/);
+      const inserted = /<w:ins [^>]*><w:r><w:drawing>[\s\S]*?r:embed="(rId\d+)"[\s\S]*?<\/w:ins>/.exec(documentXml);
+      expect(inserted).not.toBeNull();
+      const relsXml = await zip.file("word/_rels/document.xml.rels")!.async("string");
+      const target = new RegExp(`Id="${inserted![1]}"[^>]*Target="([^"]+)"`).exec(relsXml)?.[1];
+      expect(target).toMatch(/^media\/nebula-image-[0-9a-f]{8}\.png$/);
+      const media = await zip.file(`word/${target}`)!.async("nodebuffer");
+      expect(media.equals(ONE_PIXEL_PNG)).toBe(true);
+      const settings = await zip.file("word/settings.xml")!.async("string");
+      expect(settings).toContain("<w:trackRevisions/>");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hands an image suggestion to the comments appendix when the picture or file is missing", async () => {
+    const source = await docxWithUnsupportedImage({ extension: "png", contentType: "image/png" });
+    const result = await exportTrackedChangesFromSourceWithReport(source, [{
+      id: "img-2",
+      kind: "image",
+      image: { index: 4, path: "/nonexistent/figure.png", url: "/api/ai/images/figure.png", mime: "image/png" },
+      title: "Replace figure 5",
+      original: "[Image 5]",
+      replacement: "",
+      rationale: "x",
+      confidence: 0.5,
+      target: "global",
+      status: "pending"
+    }]);
+    expect(result.report.matchedSuggestions).toBe(0);
+    expect(result.report.commentedSuggestions).toBe(1);
+    expect(result.report.commentedSuggestionReasons[0]).toContain("no picture 5");
+  });
+});

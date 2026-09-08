@@ -55,6 +55,42 @@ export interface AiAttachment {
   truncated?: boolean;
 }
 
+/** An image in the document, extracted to a file the AI can look at. */
+export interface AiDocumentImage {
+  /** 0-based position among the document's inline pictures, in document order. */
+  index: number;
+  /** Absolute path of the extracted image on the sidecar machine. */
+  path: string;
+  /** Sidecar route that serves the file (for previews). */
+  url: string;
+  mime: string;
+  width?: number | null;
+  height?: number | null;
+  altText?: string | null;
+  /** The paragraph the picture sits in (often its caption), for orientation. */
+  context?: string | null;
+  /** 0-based paragraph index in the document text, when known. */
+  paragraphIndex?: number | null;
+}
+
+/** A proposed replacement of one document image with a file the AI produced. */
+export interface AiImageReplacement {
+  index: number;
+  /** Absolute path of the replacement file on the sidecar machine. */
+  path: string;
+  /** Sidecar route serving the replacement, for the card's preview. */
+  url: string;
+  mime: string;
+  /** Sidecar route serving the current image, for the card's before/after. */
+  originalUrl?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export const AI_DOCUMENT_IMAGE_LIMIT = 24;
+export const AI_IMAGE_BYTES_LIMIT = 15 * 1024 * 1024;
+export const AI_IMAGE_MIME_TYPES: ReadonlyArray<string> = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 export const AI_ATTACHMENT_LIMIT = 8;
 export const AI_ATTACHMENT_TEXT_CHAR_LIMIT = 40_000;
 export const AI_ATTACHMENTS_TOTAL_CHAR_LIMIT = 80_000;
@@ -74,6 +110,8 @@ export interface AiRequest {
   docId?: string;
   /** Reference files the user attached in the chat. */
   attachments?: AiAttachment[];
+  /** The document's images, extracted to files (Word add-in uploads them; DOCX sessions extract them server-side). */
+  documentImages?: AiDocumentImage[];
   /**
    * Provider conversation to resume (agentic engine). The web app keeps one
    * per document+provider so follow-up chat messages share context.
@@ -158,6 +196,9 @@ export interface AiCatalogResponse {
 }
 
 export interface AiSuggestion {
+  /** "image": replace one document picture (see `image`); default "text". */
+  kind?: "text" | "image";
+  image?: AiImageReplacement | null;
   commentOnly?: boolean;
   /** Sidecar instance that staged this suggestion — the origin's clients own
    * the inline-landing claim on shared docs, so two Writers never race. */

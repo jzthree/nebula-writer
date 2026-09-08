@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AiRequest, AiSuggestion } from "../src/shared";
+import type { AiDocumentImage, AiRequest, AiSuggestion } from "../src/shared";
+import { importImageFile } from "./image-files";
 
 /**
  * Suggestion safety checks, shared by the AI pipeline and the agent staging
@@ -16,7 +17,62 @@ export type SuggestionCandidate = Partial<AiSuggestion> & {
   rationale?: unknown;
   confidence?: unknown;
   commentOnly?: unknown;
+  /** Image replacement: which document picture (0-based) and the file that replaces it. */
+  imageIndex?: unknown;
+  imageFile?: unknown;
 };
+
+export function isImageCandidate(item: SuggestionCandidate): boolean {
+  return item.imageIndex !== undefined && item.imageIndex !== null && item.imageIndex !== "";
+}
+
+/** Label a document picture the way prompts and cards refer to it. */
+export function documentImageLabel(image: Pick<AiDocumentImage, "index" | "context" | "altText">): string {
+  const hint = (image.context ?? image.altText ?? "").replace(/\s+/g, " ").trim();
+  return `[Image ${image.index + 1}]${hint ? ` ${hint.length > 80 ? `${hint.slice(0, 77)}…` : hint}` : ""}`;
+}
+
+/**
+ * An image replacement must name an existing document picture and point at
+ * a real PNG/JPEG/GIF/WebP file within the size limit; the file is copied into
+ * Writer's image store so it can be previewed and applied later.
+ */
+export function validateImageReplacementCandidate(item: SuggestionCandidate, images: AiDocumentImage[]): SuggestionValidation {
+  const index = typeof item.imageIndex === "number" ? item.imageIndex : Number(item.imageIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= images.length) {
+    return {
+      ok: false,
+      reason: images.length
+        ? `imageIndex must be between 0 and ${images.length - 1} (the document has ${images.length} image${images.length === 1 ? "" : "s"}; list them with writer_list_images).`
+        : "This document has no images to replace."
+    };
+  }
+  const file = typeof item.imageFile === "string" ? item.imageFile.trim() : "";
+  if (!file) {
+    return { ok: false, reason: "imageFile is missing — the absolute path of the PNG/JPEG/GIF/WebP file that should replace the picture." };
+  }
+  const stored = importImageFile(file, `image-${index + 1}-replacement`);
+  if ("error" in stored) {
+    return { ok: false, reason: `imageFile could not be used: ${stored.error}` };
+  }
+  const target = images[index];
+  return {
+    ok: true,
+    suggestion: {
+      kind: "image",
+      image: { index, path: stored.path, url: stored.url, mime: stored.mime, originalUrl: target.url, width: target.width ?? null, height: target.height ?? null },
+      id: randomUUID(),
+      title: typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 160) : `Replace image ${index + 1}`,
+      original: documentImageLabel(target),
+      replacement: "",
+      rationale: typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : "Proposed replacement image.",
+      confidence: normalizeConfidence(item.confidence),
+      target: "global",
+      range: null,
+      status: "pending"
+    }
+  };
+}
 
 export type SuggestionValidation =
   | { ok: true; suggestion: AiSuggestion }

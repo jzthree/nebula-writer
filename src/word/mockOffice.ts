@@ -26,6 +26,23 @@ export interface MockWordOptions {
   changeTrackingMode?: "Off" | "TrackAll" | "TrackMineOnly";
   supports?: Partial<Record<"WordApi 1.3" | "WordApi 1.4" | "WordApi 1.6" | "WordApiDesktop 1.2", boolean>>;
   platform?: string;
+  /** Inline pictures: which paragraph each sits in and its (base64) bytes. */
+  pictures?: MockPictureSeed[];
+}
+
+export interface MockPictureSeed {
+  paragraphIndex: number;
+  base64: string;
+  width: number;
+  height: number;
+  altText?: string;
+}
+
+export interface MockPictureReplacement {
+  index: number;
+  previousBase64: string;
+  base64: string;
+  tracked: boolean;
 }
 
 export interface MockTrackedChange {
@@ -60,6 +77,8 @@ export class MockWordHost {
   platform: string;
   trackedChanges: MockTrackedChange[] = [];
   comments: MockComment[] = [];
+  pictures: MockPictureSeed[] = [];
+  pictureReplacements: MockPictureReplacement[] = [];
   /** Every insertText/delete, tracked or not. */
   edits: MockTrackedChange[] = [];
   selectionHandlers = new Set<Handler>();
@@ -83,6 +102,17 @@ export class MockWordHost {
       ...(options.supports ?? {})
     };
     this.platform = options.platform ?? "Mac";
+    this.pictures = (options.pictures ?? []).map((picture) => ({ ...picture }));
+  }
+
+  /** Swap a picture's bytes, recording it (as tracked when tracking is on). */
+  replacePicture(index: number, base64: string): void {
+    const picture = this.pictures[index];
+    if (!picture) {
+      throw new Error(`Mock Word: no inline picture ${index}`);
+    }
+    this.pictureReplacements.push({ index, previousBase64: picture.base64, base64, tracked: this.changeTrackingMode !== "Off" });
+    picture.base64 = base64;
   }
 
   /* ----------------------------- document model ----------------------------- */
@@ -369,6 +399,11 @@ class MockBody {
     return this;
   }
 
+  get inlinePictures(): { items: MockInlinePicture[]; load: () => void } {
+    const host = this.host;
+    return { items: host.pictures.map((_, index) => new MockInlinePicture(host, index)), load: () => undefined };
+  }
+
   getRange(location: string = "Whole"): MockRange {
     const length = this.host.text.length;
     if (location === "Start") {
@@ -469,6 +504,60 @@ export class MockRange {
   insertComment(text: string): { text: string } {
     this.host.comments.push({ from: this.from, to: this.to, anchorText: this.text, text });
     return { text };
+  }
+}
+
+export class MockInlinePicture {
+  constructor(private host: MockWordHost, private index: number) {}
+
+  private get seed(): MockPictureSeed {
+    return this.host.pictures[this.index];
+  }
+
+  get width(): number {
+    return this.seed.width;
+  }
+
+  get height(): number {
+    return this.seed.height;
+  }
+
+  get altTextDescription(): string {
+    return this.seed.altText ?? "";
+  }
+
+  get altTextTitle(): string {
+    return "";
+  }
+
+  get paragraph(): MockParagraph {
+    return new MockParagraph(this.host, this.seed.paragraphIndex);
+  }
+
+  load(): this {
+    return this;
+  }
+
+  getBase64ImageSrc(): { value: string } {
+    return { value: this.seed.base64 };
+  }
+
+  insertInlinePictureFromBase64(base64: string, location: string): MockInlinePicture {
+    if (location !== "Replace") {
+      throw new Error(`Mock Word: unsupported picture insert location ${location}`);
+    }
+    this.host.replacePicture(this.index, base64);
+    return new MockInlinePicture(this.host, this.index);
+  }
+
+  getRange(): MockRange {
+    const range = this.host.paragraphRange(this.seed.paragraphIndex);
+    return new MockRange(this.host, range.from, range.to);
+  }
+
+  select(): void {
+    const range = this.host.paragraphRange(this.seed.paragraphIndex);
+    this.host.setSelection(range.from, range.to);
   }
 }
 

@@ -3,9 +3,11 @@ import JSZip from "jszip";
 import mammoth from "mammoth";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { imageMimeForName, sniffImageMime } from "./image-files";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
 
@@ -1010,11 +1012,20 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
     };
   }
 
-  const documentXml = await documentXmlFile.async("string");
+  const sourceDocumentXml = await documentXmlFile.async("string");
   const storyXml = await readWordStoryXml(zip);
   const revisionIds = revisionIdAllocatorFromXml(storyXml);
   const commentIds = commentIdAllocatorFromXml(storyXml);
   const usedSuggestionIds = new Set<string>();
+  // Image replacements first: each swaps one picture run for a tracked
+  // delete/insert pair with a new media part; the text pipeline then runs on
+  // the result (figure runs hold no text, so the two never collide).
+  const imageResult = await replaceDocxImages(zip, sourceDocumentXml, pendingSuggestions.filter((suggestion) => suggestion.kind === "image"), revisionIds);
+  for (const suggestion of imageResult.applied) {
+    usedSuggestionIds.add(suggestion.id);
+  }
+  const imageFailureReasons = new Map(imageResult.failed.map(({ suggestion, reason }) => [suggestion.id, reason]));
+  const documentXml = imageResult.xml;
   // Anchor-safety guard: a short original that appears in several places
   // cannot be located reliably by text matching, so route it to a Word comment
   // instead of silently patching the first occurrence (which may be the wrong
@@ -1024,7 +1035,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
     .join("\n");
   const ambiguousAnchorReasons = new Map<string, string>();
   for (const suggestion of pendingSuggestions) {
-    if (suggestion.commentOnly) {
+    if (suggestion.commentOnly || suggestion.kind === "image") {
       continue;
     }
     const anchor = suggestion.original.trim();
@@ -1040,7 +1051,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
       );
     }
   }
-  const trackedChangeCandidates = pendingSuggestions.filter((suggestion) => !suggestion.commentOnly && !ambiguousAnchorReasons.has(suggestion.id));
+  const trackedChangeCandidates = pendingSuggestions.filter((suggestion) => !suggestion.commentOnly && suggestion.kind !== "image" && !ambiguousAnchorReasons.has(suggestion.id));
   const patchedParagraphs = patchOriginalParagraphs(documentXml, trackedChangeCandidates, usedSuggestionIds, revisionIds);
   const patchedSequences = patchParagraphSequences(patchedParagraphs, trackedChangeCandidates, usedSuggestionIds, revisionIds);
   const patchedSensitiveTextRuns = patchSensitiveParagraphTextRuns(patchedSequences, trackedChangeCandidates, usedSuggestionIds, revisionIds);
@@ -1061,7 +1072,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
     : anchoredCommentResult.xml;
   const comments = [...anchoredCommentResult.comments, ...commentFallbacks].map((comment) => ({
     ...comment,
-    reason: ambiguousAnchorReasons.get(comment.suggestion.id) ?? comment.reason
+    reason: ambiguousAnchorReasons.get(comment.suggestion.id) ?? imageFailureReasons.get(comment.suggestion.id) ?? comment.reason
   }));
 
   zip.file("word/document.xml", patchedDocumentXml);
@@ -1089,6 +1100,210 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
       unmatchedSuggestionTitles: []
     }
   };
+}
+
+/* ------------------------------- images ------------------------------- */
+
+export interface DocxExtractedImage {
+  /** Position among the document's pictures (drawing runs) in document order. */
+  index: number;
+  bytes: Buffer;
+  mime: string;
+  width: number | null;
+  height: number | null;
+  altText: string | null;
+  /** The picture's own paragraph text, else its caption or the preceding paragraph. */
+  context: string | null;
+  paragraphIndex: number | null;
+}
+
+const EMU_PER_PIXEL = 9525;
+const IMAGE_EXTENSION_BY_MIME: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
+function documentRelationshipTargets(relsXml: string): Map<string, string> {
+  const targets = new Map<string, string>();
+  for (const match of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+    const id = /\bId="([^"]+)"/.exec(match[0])?.[1];
+    const target = /\bTarget="([^"]+)"/.exec(match[0])?.[1];
+    if (id && target) {
+      targets.set(id, target);
+    }
+  }
+  return targets;
+}
+
+/** Every run holding a <w:drawing>, in document order, with its span in the XML. */
+function drawingRunsInOrder(documentXml: string): Array<{ start: number; end: number; runXml: string; drawingXml: string }> {
+  const runs: Array<{ start: number; end: number; runXml: string; drawingXml: string }> = [];
+  for (const match of documentXml.matchAll(/<w:drawing\b[\s\S]*?<\/w:drawing>/g)) {
+    const drawingStart = match.index ?? 0;
+    const runStart = Math.max(documentXml.lastIndexOf("<w:r>", drawingStart), documentXml.lastIndexOf("<w:r ", drawingStart));
+    const runClose = documentXml.indexOf("</w:r>", drawingStart + match[0].length);
+    if (runStart < 0 || runClose < 0) {
+      continue;
+    }
+    const end = runClose + "</w:r>".length;
+    runs.push({ start: runStart, end, runXml: documentXml.slice(runStart, end), drawingXml: match[0] });
+  }
+  return runs;
+}
+
+function captionContext(paragraphs: Array<{ text: string }>, index: number): string | null {
+  if (index < 0) {
+    return null;
+  }
+  const own = paragraphs[index]?.text.trim();
+  if (own) {
+    return own;
+  }
+  const next = paragraphs[index + 1]?.text.trim();
+  if (next && /^(?:figure|fig\.|table|scheme|chart|panel)\b/i.test(next)) {
+    return next;
+  }
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const previous = paragraphs[cursor]?.text.trim();
+    if (previous) {
+      return previous;
+    }
+  }
+  return null;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value.replace(/&quot;/g, "\"").replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+/** The document's pictures with their media bytes, sizes, alt text, and captions — what an agent needs to look at figures. */
+export async function extractDocxImages(buffer: Buffer, limit = 24): Promise<DocxExtractedImage[]> {
+  const zip = await JSZip.loadAsync(buffer);
+  const documentXml = await zip.file("word/document.xml")?.async("string");
+  if (!documentXml) {
+    return [];
+  }
+  const relsXml = (await zip.file("word/_rels/document.xml.rels")?.async("string")) ?? "";
+  const targets = documentRelationshipTargets(relsXml);
+  const paragraphs = [...documentXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)].map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+    text: paragraphText(match[0])
+  }));
+  const images: DocxExtractedImage[] = [];
+  const runs = drawingRunsInOrder(documentXml);
+  for (let index = 0; index < runs.length && images.length < limit; index += 1) {
+    const run = runs[index];
+    const embed = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(run.drawingXml)?.[1];
+    const target = embed ? targets.get(embed) : undefined;
+    if (!target) {
+      continue;
+    }
+    const mediaPath = target.startsWith("/") ? target.slice(1) : `word/${target}`;
+    const bytes = await zip.file(mediaPath)?.async("nodebuffer");
+    if (!bytes) {
+      continue;
+    }
+    const mime = sniffImageMime(bytes) ?? imageMimeForName(mediaPath);
+    if (!mime) {
+      // EMF/TIFF and friends: no CLI can look at them; leave them out.
+      continue;
+    }
+    const extent = /<wp:extent\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(run.drawingXml);
+    const docPr = /<wp:docPr\b[^>]*>/.exec(run.drawingXml)?.[0] ?? "";
+    const altText = /\bdescr="([^"]*)"/.exec(docPr)?.[1] ?? /\btitle="([^"]*)"/.exec(docPr)?.[1] ?? null;
+    const paragraphIndex = paragraphs.findIndex((paragraph) => paragraph.start <= run.start && run.end <= paragraph.end);
+    images.push({
+      index,
+      bytes,
+      mime,
+      width: extent ? Math.round(Number(extent[1]) / EMU_PER_PIXEL) : null,
+      height: extent ? Math.round(Number(extent[2]) / EMU_PER_PIXEL) : null,
+      altText: altText ? decodeXmlEntities(altText) : null,
+      context: captionContext(paragraphs, paragraphIndex),
+      paragraphIndex: paragraphIndex >= 0 ? paragraphIndex : null
+    });
+  }
+  return images;
+}
+
+function maxDocPrId(documentXml: string): number {
+  let max = 0;
+  for (const match of documentXml.matchAll(/<wp:docPr\b[^>]*\bid="(\d+)"/g)) {
+    max = Math.max(max, Number(match[1]));
+  }
+  return max;
+}
+
+/**
+ * Swap document pictures for the files image suggestions carry, as tracked
+ * changes: the old run is wrapped in <w:del>, a copy pointing at a new media
+ * part (same extent, fresh drawing id) in <w:ins>. Highest index first so the
+ * spans of earlier runs stay valid.
+ */
+async function replaceDocxImages(
+  zip: JSZip,
+  documentXml: string,
+  suggestions: AiSuggestion[],
+  revisionIds: RevisionIdAllocator
+): Promise<{ xml: string; applied: AiSuggestion[]; failed: Array<{ suggestion: AiSuggestion; reason: string }> }> {
+  if (!suggestions.length) {
+    return { xml: documentXml, applied: [], failed: [] };
+  }
+  const relsPath = "word/_rels/document.xml.rels";
+  let relsXml = (await zip.file(relsPath)?.async("string"))
+    ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  let contentTypesXml = (await zip.file("[Content_Types].xml")?.async("string")) ?? null;
+  let xml = documentXml;
+  const applied: AiSuggestion[] = [];
+  const failed: Array<{ suggestion: AiSuggestion; reason: string }> = [];
+  let nextDocPrId = maxDocPrId(xml) + 1;
+  const ordered = [...suggestions].sort((a, b) => (b.image?.index ?? 0) - (a.image?.index ?? 0));
+  for (const suggestion of ordered) {
+    const image = suggestion.image;
+    if (!image) {
+      failed.push({ suggestion, reason: "The image suggestion carries no replacement file." });
+      continue;
+    }
+    const runs = drawingRunsInOrder(xml);
+    const run = runs[image.index];
+    if (!run) {
+      failed.push({ suggestion, reason: `The document has ${runs.length} picture${runs.length === 1 ? "" : "s"}; there is no picture ${image.index + 1} to replace.` });
+      continue;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(image.path);
+    } catch {
+      failed.push({ suggestion, reason: "The replacement image file is no longer available." });
+      continue;
+    }
+    const mime = sniffImageMime(bytes);
+    const extension = mime ? IMAGE_EXTENSION_BY_MIME[mime] : undefined;
+    if (!mime || !extension) {
+      failed.push({ suggestion, reason: "The replacement file is not a PNG, JPEG, GIF, or WebP image." });
+      continue;
+    }
+    const relId = `rId${nextRelationshipIdFromXml(relsXml)}`;
+    const mediaName = `media/nebula-image-${randomUUID().slice(0, 8)}.${extension}`;
+    zip.file(`word/${mediaName}`, bytes);
+    relsXml = relsXml.replace("</Relationships>", `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${mediaName}"/></Relationships>`);
+    if (contentTypesXml && !new RegExp(`Extension="${extension}"`, "i").test(contentTypesXml)) {
+      contentTypesXml = contentTypesXml.replace("</Types>", `<Default Extension="${extension}" ContentType="${mime}"/></Types>`);
+    }
+    const author = suggestionAuthor(suggestion);
+    const replacementRun = run.runXml
+      .replace(/(<a:blip\b[^>]*\br:embed=")[^"]+(")/, `$1${relId}$2`)
+      .replace(/(<wp:docPr\b[^>]*\bid=")\d+(")/, `$1${nextDocPrId++}$2`);
+    const tracked = `<w:del w:id="${revisionIds.next()}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${run.runXml}</w:del>`
+      + `<w:ins w:id="${revisionIds.next()}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${replacementRun}</w:ins>`;
+    xml = `${xml.slice(0, run.start)}${tracked}${xml.slice(run.end)}`;
+    applied.push(suggestion);
+  }
+  if (applied.length) {
+    zip.file(relsPath, relsXml);
+    if (contentTypesXml) {
+      zip.file("[Content_Types].xml", contentTypesXml);
+    }
+  }
+  return { xml, applied, failed };
 }
 
 // Anchors at least this long are trusted even when repeated (long duplicated

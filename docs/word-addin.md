@@ -54,6 +54,24 @@ exactly what was sent** — click *Sent …* to expand it:
 If a reply looks truncated or odd, the raw CLI transcript for that run is in
 `~/.nebula-writer/cli-transcripts/` (prompt, stdout, stderr; last 30 runs).
 
+### Images
+
+The pane reads the document's inline pictures (size, alt text, and the
+paragraph they sit in, usually the caption) and, when you send a request,
+uploads each picture's bytes once to the sidecar. The AI can then look at
+them: Claude opens the file with its image-capable Read tool, Codex gets the
+files as image inputs and can also open them with its image viewer. The
+agent tools `writer_list_images` and `writer_read_image` expose the same
+list. When the AI produces a new picture — a regenerated figure, a cropped
+panel — it proposes it with `writer_stage_image_replacement` (or, in the
+one-shot pipeline, a suggestion carrying `imageIndex` and `imageFile`). The
+card shows the current and proposed pictures side by side; Apply replaces
+the picture in Word (Word tracks it like any other change when Track
+Changes is on), Locate selects it, and the comment button anchors a Word
+comment on it. In the web app the same card swaps the picture in the editor,
+and the source-based DOCX export replaces the media part as a tracked
+delete/insert pair. Supported formats: PNG, JPEG, GIF, WebP, up to 15 MB.
+
 **Tools the AI may use** (Settings) decides how much of the CLI's own tooling
 a request gets. *Everything your CLI has* (the default) runs Claude Code or
 Codex the way you run them yourself: their built-in tools, your own MCP

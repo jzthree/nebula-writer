@@ -2777,6 +2777,18 @@ function exportHttpDocx(body: Record<string, unknown>) {
   );
 }
 
+function uploadHttpImage(buffer: Buffer, filename: string, fields: Record<string, string> = {}) {
+  const boundary = `----nebula-writer-image-${Date.now()}`;
+  const parts: Buffer[] = [];
+  for (const [name, value] of Object.entries(fields)) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  }
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`));
+  parts.push(buffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return requestBuffer("POST", "/api/ai/images", { "Content-Type": `multipart/form-data; boundary=${boundary}` }, Buffer.concat(parts));
+}
+
 function importHttpDocx(buffer: Buffer, filename: string) {
   const boundary = `----nebula-writer-${Date.now()}`;
   const multipartHead = Buffer.from(
@@ -2821,12 +2833,13 @@ async function requestBufferInProcess(
     req.body = JSON.parse(payload.toString("utf8"));
   }
 
-  if (payload && path === "/api/docx/import") {
+  if (payload && requestHeaders["content-type"]?.includes("multipart/form-data")) {
     const parsed = parseMultipartUpload(payload, requestHeaders["content-type"] ?? "");
     req.file = {
       originalname: parsed.filename,
       buffer: parsed.buffer
     };
+    req.body = parsed.fields;
   }
 
   const res = createMockResponse();
@@ -2927,24 +2940,38 @@ function parseMultipartUpload(payload: Buffer, contentType: string) {
   if (!boundaryMatch) {
     throw new Error("Missing multipart boundary in request.");
   }
-
-  const boundary = boundaryMatch[1];
-  const marker = `--${boundary}`;
+  // Walk every part: text fields land in `fields`, the (single) file part in `buffer`.
+  const marker = `--${boundaryMatch[1]}`;
   const payloadText = payload.toString("latin1");
-  const headerStart = payloadText.indexOf(marker);
-  const headerEnd = payloadText.indexOf("\r\n\r\n", headerStart);
-  const fileStart = headerEnd + 4;
-  const fileEnd = payloadText.indexOf(`\r\n${marker}--`, fileStart);
-  const filenameMatch = /filename="([^"]+)"/i.exec(payloadText.slice(headerStart, headerEnd));
-
-  if (headerStart < 0 || headerEnd < 0 || fileEnd < 0 || !filenameMatch) {
+  const fields: Record<string, string> = {};
+  let filename: string | null = null;
+  let buffer: Buffer | null = null;
+  let cursor = payloadText.indexOf(marker);
+  while (cursor >= 0) {
+    const partStart = cursor + marker.length;
+    if (payloadText.startsWith("--", partStart)) {
+      break;
+    }
+    const headerEnd = payloadText.indexOf("\r\n\r\n", partStart);
+    const nextMarker = payloadText.indexOf(`\r\n${marker}`, headerEnd + 4);
+    if (headerEnd < 0 || nextMarker < 0) {
+      throw new Error("Malformed multipart upload payload in API test.");
+    }
+    const headers = payloadText.slice(partStart, headerEnd);
+    const name = /name="([^"]+)"/i.exec(headers)?.[1] ?? "";
+    const partFilename = /filename="([^"]+)"/i.exec(headers)?.[1];
+    if (partFilename) {
+      filename = partFilename;
+      buffer = payload.subarray(headerEnd + 4, nextMarker);
+    } else if (name) {
+      fields[name] = payloadText.slice(headerEnd + 4, nextMarker);
+    }
+    cursor = nextMarker + 2;
+  }
+  if (!filename || !buffer) {
     throw new Error("Malformed multipart upload payload in API test.");
   }
-
-  return {
-    filename: filenameMatch[1],
-    buffer: payload.subarray(fileStart, fileEnd)
-  };
+  return { filename, buffer, fields };
 }
 
 function createMockResponse() {
@@ -2966,6 +2993,14 @@ function createMockResponse() {
     },
     setHeader(name: string, value: string) {
       this.headers[name.toLowerCase()] = value;
+    },
+    type(mime: string) {
+      this.headers["content-type"] = mime;
+      return this;
+    },
+    sendFile(path: string) {
+      this.body = readFileSync(path);
+      return this;
     }
   };
 }
@@ -3132,3 +3167,37 @@ describe("AI model catalog", () => {
   });
 });
 
+describe("document images", () => {
+  const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+
+  it("stores an uploaded picture with its metadata and serves it back by name only", async () => {
+    const upload = await uploadHttpImage(ONE_PIXEL_PNG, "figure.png", { index: "2", width: "320", height: "200", altText: "Figure 3", context: "Figure 3. Overview." });
+    expect(upload.statusCode, upload.body.toString("utf8")).toBe(200);
+    const { image } = JSON.parse(upload.body.toString("utf8")) as { image: { index: number; url: string; mime: string; width: number; altText: string; context: string; path: string } };
+    expect(image).toMatchObject({ index: 2, mime: "image/png", width: 320, altText: "Figure 3", context: "Figure 3. Overview." });
+    expect(image.url).toMatch(/^\/api\/ai\/images\/[0-9a-f]{8}-figure\.png$/);
+
+    const served = await requestBuffer("GET", image.url);
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toContain("image/png");
+    expect(Buffer.from(served.body).equals(ONE_PIXEL_PNG)).toBe(true);
+
+    expect((await requestBuffer("GET", "/api/ai/images/..%2Fnope.png")).statusCode).toBe(404);
+    expect((await requestBuffer("GET", "/api/ai/images/missing.png")).statusCode).toBe(404);
+
+    const rejected = await uploadHttpImage(Buffer.from("not an image"), "notes.txt");
+    expect(rejected.statusCode).toBe(400);
+  });
+
+  it("only accepts documentImages that point at stored files", async () => {
+    const response = await requestBuffer("POST", "/api/ai/suggest", { "Content-Type": "application/json" }, JSON.stringify({
+      provider: "demo",
+      instruction: "x",
+      mode: "global",
+      documentText: "Hello world.",
+      documentImages: [{ index: 0, path: "/etc/passwd" }]
+    }));
+    expect(response.statusCode).toBe(400);
+    expect(response.body.toString("utf8")).toContain("uploaded through /api/ai/images");
+  });
+});

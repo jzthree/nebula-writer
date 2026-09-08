@@ -1896,7 +1896,7 @@ describe("proposeChanges", () => {
         suggestions: {
           type: "array",
           items: {
-            required: ["title", "original", "replacement", "rationale", "confidence"]
+            required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile"]
           }
         }
       }

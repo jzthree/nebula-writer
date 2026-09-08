@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -43,8 +43,7 @@ import {
   subscribeParagraphChanges,
   subscribeSelectionChanges,
   waitForWordHost,
-  type WordCapabilities
-} from "./wordHost";
+  type WordCapabilities, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture } from "./wordHost";
 import {
   appendSessionChat,
   fetchHealth,
@@ -54,8 +53,7 @@ import {
   requestWordSuggestions,
   subscribeWriterEvents,
   updateSuggestionStatus,
-  uploadAttachment
-} from "./writerClient";
+  uploadAttachment, fetchImageAsBase64, uploadDocumentImage } from "./writerClient";
 import {
   WordPane,
   type CardState,
@@ -217,6 +215,7 @@ export function App() {
   const snapshotInFlightRef = useRef<Promise<WordDocumentSnapshot | null> | null>(null);
   const lastStaleRefreshRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const imageUploadsRef = useRef(new Map<string, AiDocumentImage>());
   const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   // Provider conversation ids, keyed by provider + document, so follow-ups
@@ -656,6 +655,7 @@ export function App() {
       const currentFocus = focusRef.current;
       const resolved = resolveScope(settingsRef.current.scope, snap, currentFocus);
       const hostContext = buildHostContext(snap, currentFocus, trailRef.current);
+      const documentImages = await syncDocumentImages(snap);
       const sessionKey = `${provider}:${snap.documentName ?? "untitled"}`;
       const agentSessionId = agentSessionsRef.current[sessionKey] ?? null;
       const conversation = buildConversationDigest(turnsRef.current, suggestionsRef.current, cardsRef.current);
@@ -668,6 +668,7 @@ export function App() {
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || "Word",
         toolAccess: settingsRef.current.toolAccess,
+        ...(documentImages.length ? { documentImages } : {}),
         hostContext,
         ...(modelOptions ? { modelOptions } : {}),
         ...(attachmentsRef.current.length ? { attachments: attachmentsRef.current } : {}),
@@ -763,8 +764,52 @@ export function App() {
     return focusRef.current?.cursorOffset ?? null;
   }, []);
 
+  /**
+   * The document's pictures, as files the sidecar can hand to the AI. Bytes
+   * are read from Word and uploaded once per picture (keyed by index, size,
+   * alt text, and caption) and reused across requests.
+   */
+  const syncDocumentImages = useCallback(async (snap: WordDocumentSnapshot): Promise<AiDocumentImage[]> => {
+    const pictures = (snap.pictures ?? []).slice(0, AI_DOCUMENT_IMAGE_LIMIT);
+    const images: AiDocumentImage[] = [];
+    for (const picture of pictures) {
+      const key = `${picture.index}|${picture.width ?? ""}x${picture.height ?? ""}|${picture.altText ?? ""}|${picture.paragraphText.slice(0, 80)}`;
+      const cached = imageUploadsRef.current.get(key);
+      if (cached) {
+        images.push({ ...cached, index: picture.index });
+        continue;
+      }
+      try {
+        const { base64 } = await readInlinePictureBase64(picture.index);
+        const blob = base64ToBlob(base64);
+        if (!blob) {
+          continue;
+        }
+        const uploaded = await uploadDocumentImage(blob, {
+          index: picture.index,
+          width: picture.width,
+          height: picture.height,
+          altText: picture.altText,
+          context: picture.paragraphText || null,
+          paragraphIndex: picture.paragraphIndex,
+          label: `image-${picture.index + 1}`
+        });
+        imageUploadsRef.current.set(key, uploaded);
+        images.push(uploaded);
+      } catch {
+        // A picture Word cannot export (or the sidecar rejects) is simply left out.
+      }
+    }
+    return images;
+  }, []);
+
   const ensureMatches = useCallback(async (suggestion: AiSuggestion, snap: WordDocumentSnapshot, force = false): Promise<CardState> => {
     const existing = cardsRef.current[suggestion.id] ?? DEFAULT_CARD_STATE;
+    if (suggestion.kind === "image") {
+      const next: CardState = { ...existing, matchIndex: 0, matches: 1, heading: null, paragraphIndex: null, error: null };
+      patchCard(suggestion.id, next);
+      return next;
+    }
     if (existing.matches !== null && !force) {
       return existing;
     }
@@ -788,6 +833,18 @@ export function App() {
     setActiveId(suggestion.id);
     const snap = snapshotRef.current;
     if (!snap || hostStatus !== "ready") {
+      return;
+    }
+    if (suggestion.kind === "image" && suggestion.image) {
+      const image = suggestion.image;
+      void runBusy("Locating in Word…", async () => {
+        try {
+          await selectInlinePicture(image.index);
+          patchCard(suggestion.id, { error: null });
+        } catch (error) {
+          patchCard(suggestion.id, { error: errorMessage(error) });
+        }
+      });
       return;
     }
     if (cardsRef.current[suggestion.id]?.outcome === "applied" && !suggestion.commentOnly && suggestion.replacement.trim()) {
@@ -850,7 +907,9 @@ export function App() {
    * outcome; decisions are recorded in parallel afterwards.
    */
   const applyMany = useCallback(async (group: AiSuggestion[], snap: WordDocumentSnapshot): Promise<{ applied: AiSuggestion[]; failed: Array<{ suggestion: AiSuggestion; error: string }> }> => {
-    const items = group.map((suggestion) => {
+    const imageGroup = group.filter((suggestion) => suggestion.kind === "image" && suggestion.image);
+    const textGroup = group.filter((suggestion) => suggestion.kind !== "image");
+    const items = textGroup.map((suggestion) => {
       const state = cardsRef.current[suggestion.id];
       return {
         id: suggestion.id,
@@ -859,10 +918,26 @@ export function App() {
         preferredOffset: preferredOffset(suggestion, snap)
       };
     });
-    const outcomes = await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges });
+    const outcomes = items.length ? await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges }) : [];
     const byId = new Map(group.map((suggestion) => [suggestion.id, suggestion]));
     const applied: Array<{ suggestion: AiSuggestion; trackedChange: boolean }> = [];
     const failed: Array<{ suggestion: AiSuggestion; error: string }> = [];
+    // Picture replacements: one Word round trip each (bytes come from the sidecar).
+    for (const suggestion of imageGroup) {
+      const image = suggestion.image;
+      if (!image) {
+        continue;
+      }
+      try {
+        const base64 = await fetchImageAsBase64(image.url);
+        const result = await replaceInlinePicture(image.index, base64, { trackChanges: settingsRef.current.trackChanges });
+        patchCard(suggestion.id, { outcome: "applied", detail: result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)", error: null, matches: 1, matchIndex: 0 });
+        applied.push({ suggestion, trackedChange: result.trackedChange });
+      } catch (error) {
+        patchCard(suggestion.id, { error: errorMessage(error) });
+        failed.push({ suggestion, error: errorMessage(error) });
+      }
+    }
     for (const outcome of outcomes) {
       const suggestion = byId.get(outcome.id);
       if (!suggestion) {
@@ -945,11 +1020,15 @@ export function App() {
     setActiveId(suggestion.id);
     void runBusy("Adding a Word comment…", async () => {
       try {
-        const state = await ensureMatches(suggestion, snap);
-        if (!state.matches) {
-          return;
+        if (suggestion.kind === "image" && suggestion.image) {
+          await commentInlinePicture(suggestion.image.index, buildCommentText(suggestion));
+        } else {
+          const state = await ensureMatches(suggestion, snap);
+          if (!state.matches) {
+            return;
+          }
+          await commentSuggestion(snap, suggestion, buildCommentText(suggestion), state.matchIndex);
         }
-        await commentSuggestion(snap, suggestion, buildCommentText(suggestion), state.matchIndex);
         patchCard(suggestion.id, { outcome: "commented", detail: null, error: null });
         await recordDecision(suggestion, "accepted", "Left as a Word comment");
         showNotice("success", "Comment added in Word.");
@@ -1352,6 +1431,32 @@ function describeProgress(stage: string, passIndex: number | null, passTotal: nu
 
 function providerLabel(provider: string): string {
   return provider === "codex" ? "Codex CLI" : provider === "demo" ? "Demo provider" : "Claude Code";
+}
+
+/** Raw base64 (as Office.js returns it) to a Blob whose type is sniffed from the leading bytes. */
+function base64ToBlob(base64: string): Blob | null {
+  const clean = base64.replace(/^data:[^,]*,/, "").trim();
+  if (!clean) {
+    return null;
+  }
+  const type = clean.startsWith("iVBOR") ? "image/png"
+    : clean.startsWith("/9j/") ? "image/jpeg"
+      : clean.startsWith("R0lGOD") ? "image/gif"
+        : clean.startsWith("UklGR") ? "image/webp"
+          : null;
+  if (!type) {
+    return null;
+  }
+  try {
+    const binary = atob(clean);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type });
+  } catch {
+    return null;
+  }
 }
 
 function errorMessage(error: unknown): string {
