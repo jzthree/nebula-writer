@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, describedChangeCount, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -1705,6 +1705,69 @@ describe("proposeChanges", () => {
     expect(buildCliArgs("codex", "/tmp/schema.json")).toContain("--sandbox");
     expect(buildCliArgs("codex", "/tmp/schema.json")[0]).toBe("exec");
     expect(buildCliArgs("codex", "/tmp/schema.json")[1]).toBe("--json");
+  });
+
+  it("counts the changes a reply claims to contain", () => {
+    expect(describedChangeCount("These ten cuts save approximately 380 words.")).toBe(10);
+    expect(describedChangeCount("I staged 12 exact-source suggestions across the aims.")).toBe(12);
+    expect(describedChangeCount("Three small edits and one larger rewrite.")).toBe(3);
+    expect(describedChangeCount("The three aims are sound; no changes needed.")).toBeNull();
+    expect(describedChangeCount("Tightened one phrase.")).toBeNull();
+  });
+
+  it("asks once more when a reply describes more changes than it returned, and merges the rest", async () => {
+    const previousAllow = process.env.WRITER_ALLOW_CLI;
+    const previousOverride = process.env.WRITER_CODEX_PATH;
+    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-followup-"));
+    const fakeCodexPath = join(tempDir, "fake-codex");
+    const counterPath = join(tempDir, "runs.txt");
+    const argvPath = join(tempDir, "argv.json");
+    const first = { message: "These three cuts save about 40 words.", suggestions: [{ title: "Cut alpha", original: "Alpha sentence one.", replacement: "", rationale: "Repeats the intro.", confidence: 0.8 }] };
+    const rest = { message: "Here are the remaining two.", suggestions: [
+      { title: "Cut beta", original: "Beta sentence two.", replacement: "", rationale: "Transition only.", confidence: 0.8 },
+      { title: "Cut alpha", original: "Alpha sentence one.", replacement: "", rationale: "duplicate of the first reply", confidence: 0.8 },
+      { title: "Trim gamma", original: "Gamma sentence three.", replacement: "Gamma three.", rationale: "Shorter.", confidence: 0.7 }
+    ] };
+    writeFileSync(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        `import { existsSync, readFileSync, writeFileSync } from "node:fs";`,
+        `const runs = existsSync(${JSON.stringify(counterPath)}) ? Number(readFileSync(${JSON.stringify(counterPath)}, "utf8")) : 0;`,
+        `writeFileSync(${JSON.stringify(counterPath)}, String(runs + 1));`,
+        `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));`,
+        `const payload = runs === 0 ? ${JSON.stringify(first)} : ${JSON.stringify(rest)};`,
+        `process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "thread-7" }) + "\\n");`,
+        `process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }) + "\\n");`,
+        `process.stdout.write(JSON.stringify({ type: "turn.completed", usage: {} }) + "\\n");`
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.WRITER_ALLOW_CLI = "1";
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
+    try {
+      const documentText = "Alpha sentence one. Beta sentence two. Gamma sentence three.";
+      const response = await proposeChanges({ ...baseRequest, provider: "codex", instruction: "cut a bit", documentText, documentHtml: `<p>${documentText}</p>`, mode: "global", selection: null });
+      expect(readFileSync(counterPath, "utf8")).toBe("2");
+      expect(JSON.parse(readFileSync(argvPath, "utf8")).slice(0, 3)).toEqual(["exec", "resume", "thread-7"]);
+      expect(response.suggestions.map((suggestion) => [suggestion.title, suggestion.ref])).toEqual([["Cut alpha", "S1"], ["Cut beta", "S2"], ["Trim gamma", "S3"]]);
+      expect(response.message).toContain("These three cuts save about 40 words.");
+      expect(response.message).toContain("first returned 1 of the 3 changes it described; the other 2 came from an automatic follow-up");
+      expect(response.agentSessionId).toBe("thread-7");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      if (previousAllow === undefined) {
+        delete process.env.WRITER_ALLOW_CLI;
+      } else {
+        process.env.WRITER_ALLOW_CLI = previousAllow;
+      }
+      if (previousOverride === undefined) {
+        delete process.env.WRITER_CODEX_PATH;
+      } else {
+        process.env.WRITER_CODEX_PATH = previousOverride;
+      }
+    }
   });
 
   it("maps tool access onto the one-shot CLIs", () => {

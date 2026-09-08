@@ -327,6 +327,21 @@ describe("Word task pane", () => {
     expect(captured.statusUpdates[captured.statusUpdates.length - 1]).toMatchObject({ id: "s-2", status: "rejected", note: "Cleared from the Word pane" });
   });
 
+  it("never applies, comments, or dismisses from a bare keypress", async () => {
+    await renderPane();
+    send("Tighten the first sentence.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    const editsBefore = mock.edits.length;
+    for (const key of ["c", "a", "x"]) {
+      fireEvent.keyDown(window, { key });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mock.comments).toEqual([]);
+    expect(mock.edits.length).toBe(editsBefore);
+    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    expect(captured.statusUpdates).toEqual([]);
+  });
+
   it("starts a new conversation without dismissing pending suggestions", async () => {
     await renderPane();
     send("Tighten the first sentence.");

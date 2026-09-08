@@ -1093,28 +1093,16 @@ export function App() {
             locate(active);
           }
           break;
-        case "a":
-          if (active && !cardsRef.current[active.id]?.outcome) {
-            apply(active);
-          }
-          break;
-        case "c":
-          if (active && !cardsRef.current[active.id]?.outcome) {
-            comment(active);
-          }
-          break;
-        case "x":
-          if (active && !cardsRef.current[active.id]?.outcome) {
-            dismiss(active);
-          }
-          break;
+        // Applying, commenting, and dismissing change the document or the
+        // record; they are buttons only. Bare letter shortcuts (a/c/x) put a
+        // Word comment in a document after a stray keypress, so they are gone.
         default:
           break;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeId, apply, comment, dismiss, locate, navigate]);
+  }, [activeId, locate, navigate]);
 
   const presets = useMemo<WordPreset[]>(() => [
     ...WORD_PRESETS,

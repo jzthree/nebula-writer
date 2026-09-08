@@ -62,6 +62,13 @@ the review queue. *Document + web and read-only files* adds only web
 search/fetch and read-only file access to Writer's tools. *Document only* is
 the original lockdown. The web app has the same picker next to the provider.
 
+If a reply describes more changes than it returned ("these ten cuts…" with
+one card), Writer asks the CLI once more, in the same thread, for the rest
+and merges them in; the reply says so. Keyboard: j/k (or the arrows) move
+between cards and Enter locates the active one in Word. Applying, commenting,
+and dismissing are buttons only — there are no single-key shortcuts for
+actions that change the document.
+
 Follow-ups keep the provider's own conversation: Claude resumes its session
 and Codex resumes its recorded thread (`codex exec resume`), so "continue" or
 "yes, do it" carries the earlier turns, the document, and the decisions you

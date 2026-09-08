@@ -626,6 +626,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     "- Read by structure with writer_read_context: { what: \"paragraph\" } is the paragraph at the author's caret (before/after add neighbours), \"section\" the whole section under the nearest heading, \"page\" exactly what is on screen, \"outline\" every heading with offsets, \"document\" the size and outline. The window state is live: the author may move while you work, so re-read before staging when the request says \"here\" or \"this\".",
     "- For anything else, read windows with writer_read_document and locate passages with writer_search_document. Read what the instruction needs: start with the passage in scope, then widen freely — the section, the pages around it, or the entire document (writer_read_context({ what: \"document\" }) returns up to 60,000 characters at once) — whenever the scoped text is not enough to answer well. Never guess at content you could have read.",
     "- If the request is a question about the document rather than a request for edits, read what you need and answer it in your reply; stage nothing, or only commentOnly notes.",
+    "- Every change your reply mentions must actually have been staged: if you write that you cut ten passages, ten suggestions exist.",
     "- Propose edits with writer_stage_suggestions, in small batches as you go. Each item's `original` must be copied VERBATIM from the " + (request.mode === "selection" ? "selection" : "document") + " — the tool validates every item and tells you which were rejected and why; fix those and retry.",
     "- Change only what the instruction asks for: carry every other token of original — markers, numbers, labels, links, formulas — into replacement unchanged.",
     "- Use commentOnly: true for advisory notes that need the author's judgment rather than a text change.",
@@ -677,7 +678,8 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       threadId = null;
       result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess }, request.modelOptions ?? null, null);
     }
-    const response = parseCliProgressedResponse(provider, result, request);
+    const parsed = parseCliProgressedResponse(provider, result, request);
+    const response = await completeUnderDeliveredReply(provider, request, parsed, { ...options, onStreamEvent, toolAccess }, provider === "codex" ? threadId ?? resumeId : null);
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -790,6 +792,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "Return strict JSON only. The local CLI will validate the final answer against a JSON schema.",
     "Do not wrap the JSON in Markdown.",
     "This is a single turn and your reply is final: deliver the complete answer now. Never reply with a plan, a preamble, or a promise of what you will do next.",
+    "Every change your message mentions must be present in suggestions, one item per change: if the message says ten cuts, suggestions holds ten. Never describe an edit you did not include, and never refer to an item \"below\" that is not there.",
     "If the instruction asks a question or for an assessment (a review, a score, a judgement), answer it fully in message — several paragraphs with `## ` sections are welcome — and add suggestions only where a concrete edit follows from the answer.",
     "Every suggestion must use exact text from the document: normally from the Text block (the user's current focus).",
     "Set original to a verbatim substring of the source text. Do not paraphrase original.",
@@ -1620,6 +1623,84 @@ function createCliStreamObserver(provider: CliProviderName, onEvent: (event: Cli
       return new CliInvocationError(`${provider}: ${outcome.text.trim()}`, { code, signal, output: outcome.text.trim() });
     }
   };
+}
+
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20
+};
+const DESCRIBED_CHANGES = /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(?:[a-z-]+\s+){0,2}?(?:cuts?|edits?|changes?|suggestions?|revisions?|deletions?|trims?|replacements?|fixes|rewrites?|tweaks?|proposals?)\b/gi;
+
+/**
+ * How many changes a reply's message claims ("These ten cuts save…", "12
+ * suggestions"), or null when it names no count. Used to notice a model that
+ * summarised more than it returned.
+ */
+export function describedChangeCount(message: string): number | null {
+  let max: number | null = null;
+  for (const match of message.matchAll(DESCRIBED_CHANGES)) {
+    const token = match[1].toLowerCase();
+    const value = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token];
+    if (value && (max === null || value > max)) {
+      max = value;
+    }
+  }
+  return max;
+}
+
+/**
+ * A model sometimes writes "these ten cuts…" and returns one item (seen with
+ * codex at high reasoning: the budget went to thinking and the array was cut
+ * short while the JSON stayed valid). Rather than hand the user one edit and
+ * a summary of ten, ask once more — in the same thread when there is one —
+ * for the remainder, and merge it in. Bounded to a single follow-up.
+ */
+async function completeUnderDeliveredReply(
+  provider: CliProviderName,
+  request: AiRequest,
+  response: AiResponse,
+  runOptions: AiRunOptions,
+  threadId: string | null
+): Promise<AiResponse> {
+  const claimed = describedChangeCount(response.message);
+  const returned = response.suggestions.length;
+  if (claimed === null || claimed < 2 || claimed > 60 || returned >= claimed || runOptions.signal?.aborted) {
+    return response;
+  }
+  const label = providerLabel(provider);
+  setAiProgress(provider, `${label} described ${claimed} changes but returned ${returned} — asking for the rest`, undefined, request.requestedBy ?? null);
+  const already = response.suggestions.map((suggestion) => `"${suggestion.title}"`).join(", ");
+  const followUp: AiRequest = {
+    ...request,
+    agentSessionId: threadId,
+    conversation: [
+      ...(request.conversation ?? []),
+      { role: "user", content: request.instruction },
+      { role: "assistant", content: response.message }
+    ],
+    instruction: `Your previous reply described ${claimed} changes but its suggestions array contained only ${returned}. Return the remaining ${claimed - returned} now as suggestions — each with the exact original text copied verbatim from the document and its replacement (an empty replacement deletes the passage) — plus a one-line message.${returned ? ` Do not repeat the ${returned} already returned: ${already}.` : ""}`
+  };
+  try {
+    const raw = await runCli(provider, buildCliPrompt(followUp), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
+    const more = parseCliResponse(provider, raw, followUp);
+    const seen = new Set(response.suggestions.map((suggestion) => normalizeWhitespace(suggestion.original)));
+    const fresh = more.suggestions
+      .filter((suggestion) => !seen.has(normalizeWhitespace(suggestion.original)))
+      .map((suggestion, index) => ({ ...suggestion, ref: `S${returned + index + 1}` }));
+    if (!fresh.length) {
+      return { ...response, message: `${response.message}\n\n(${label} described ${claimed} changes but returned only ${returned}; a follow-up request produced no further exact-source edits.)` };
+    }
+    return {
+      ...response,
+      suggestions: [...response.suggestions, ...fresh],
+      message: `${response.message}\n\n(${label} first returned ${returned} of the ${claimed} changes it described; the other ${fresh.length} came from an automatic follow-up.)`
+    };
+  } catch (error) {
+    if (runOptions.signal?.aborted) {
+      return response;
+    }
+    return { ...response, message: `${response.message}\n\n(${label} described ${claimed} changes but returned only ${returned}; the follow-up failed: ${formatCliDiagnostic(error instanceof Error ? error.message : String(error))}.)` };
+  }
 }
 
 /** Parse the reply and publish the validation step so the UI never sits on a stale "writing" stage. */
