@@ -216,6 +216,12 @@ export function App() {
   const lastStaleRefreshRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const imageUploadsRef = useRef(new Map<string, AiDocumentImage>());
+  // One request runs at a time (the CLIs take a single prompt per turn), but
+  // typing never stops: a message sent meanwhile waits here and goes out the
+  // moment the current turn ends — in the same thread.
+  const runningRef = useRef(false);
+  const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
+  const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
 
   const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
@@ -635,10 +641,19 @@ export function App() {
 
   const ask = useCallback(async (overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) => {
     const typed = (overrides.instruction ?? instruction).trim();
-    if (requestState === "running" || !typed || hostStatus !== "ready") {
+    if (!typed || hostStatus !== "ready") {
       return;
     }
     const activeFocus = overrides.focus ?? null;
+    if (runningRef.current) {
+      queuedRef.current = { text: typed, focus: activeFocus };
+      setQueued(queuedRef.current);
+      if (overrides.instruction === undefined) {
+        setInstruction("");
+      }
+      return;
+    }
+    runningRef.current = true;
     setNotice(null);
     setRequestState("running");
     const controller = new AbortController();
@@ -732,8 +747,35 @@ export function App() {
     } finally {
       abortRef.current = null;
       runningTurnRef.current = null;
+      runningRef.current = false;
+      const next = queuedRef.current;
+      if (next) {
+        queuedRef.current = null;
+        setQueued(null);
+        void ask({ instruction: next.text, focus: next.focus });
+      }
     }
-  }, [appendTurn, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot, requestState]);
+  }, [appendTurn, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot]);
+
+  /** Stop the running request; the queued message (if any) goes out as soon as it winds down. */
+  const sendQueuedNow = useCallback(() => {
+    if (!queuedRef.current) {
+      return;
+    }
+    if (runningRef.current) {
+      abortRef.current?.abort();
+      return;
+    }
+    const next = queuedRef.current;
+    queuedRef.current = null;
+    setQueued(null);
+    void ask({ instruction: next.text, focus: next.focus });
+  }, [ask]);
+
+  const cancelQueued = useCallback(() => {
+    queuedRef.current = null;
+    setQueued(null);
+  }, []);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -1267,7 +1309,9 @@ export function App() {
     ];
   }, []);
 
-  const canAsk = hostStatus === "ready" && sidecarStatus === "ok" && Boolean(instruction.trim()) && requestState !== "running" && !busyLabel;
+  // Typing while a request runs is fine: the message queues and is sent when
+  // the turn ends. Only apply/locate work (busyLabel) blocks sending.
+  const canAsk = hostStatus === "ready" && sidecarStatus === "ok" && Boolean(instruction.trim()) && (requestState === "running" || !busyLabel);
 
   const setModelPreference = useCallback((patch: Partial<ModelPreference>) => {
     setSettings((current) => {
@@ -1309,6 +1353,9 @@ export function App() {
       onClearConversation={clearConversation}
       onNewConversation={startNewConversation}
       onDiscuss={discuss}
+      queued={queued ? { text: queued.text } : null}
+      onSendQueuedNow={sendQueuedNow}
+      onCancelQueued={cancelQueued}
       onComment={comment}
       onCycleMatch={cycleMatch}
       onDismiss={dismiss}

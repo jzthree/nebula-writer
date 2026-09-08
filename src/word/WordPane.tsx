@@ -165,6 +165,10 @@ export interface WordPaneProps {
   onDismiss: (suggestion: AiSuggestion) => void;
   /** A note typed on a card about that change: the reply revises the suggestion. */
   onDiscuss: (suggestion: AiSuggestion, note: string) => void;
+  /** A message typed while a request runs, waiting to go out when it ends. */
+  queued: { text: string } | null;
+  onSendQueuedNow: () => void;
+  onCancelQueued: () => void;
   onInstructionChange: (value: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
@@ -336,24 +340,28 @@ export function WordPane(props: WordPaneProps) {
             ))}
           </ul>
         ) : null}
+        {props.queued ? (
+          <div className="wp-queued" role="status">
+            <span className="wp-queued-text">Queued: "{props.queued.text}"</span>
+            <button type="button" className="wp-text-button" onClick={props.onSendQueuedNow} title="Stop the current request and send this now">Send now</button>
+            <button type="button" className="wp-icon-button tiny" onClick={props.onCancelQueued} aria-label="Discard the queued message" title="Discard"><X size={12} aria-hidden="true" /></button>
+          </div>
+        ) : null}
         <form
           className="wp-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (running) {
-              props.onStop();
-            } else {
-              props.onAsk();
-            }
+            props.onAsk();
           }}
         >
           <textarea
             value={props.instruction}
             onChange={(event) => props.onInstructionChange(event.currentTarget.value)}
-            placeholder="Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"
+            placeholder={running
+              ? "Type your next message — it is sent when this request finishes (Stop sends it now)"
+              : "Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"}
             aria-label="Instruction for Writer"
             rows={3}
-            disabled={running}
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                 event.preventDefault();
@@ -363,14 +371,19 @@ export function WordPane(props: WordPaneProps) {
               }
             }}
           />
+          {running ? (
+            <button type="button" className="wp-send stop" onClick={props.onStop} aria-label="Stop the request" title="Stop">
+              <Square size={15} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="submit"
-            className={`wp-send ${running ? "stop" : ""}`}
-            disabled={!running && !props.canAsk}
-            aria-label={running ? "Stop the request" : "Send to Writer (⌘↩)"}
-            title={running ? "Stop" : "Send (⌘↩)"}
+            className="wp-send"
+            disabled={!props.canAsk}
+            aria-label="Send to Writer (⌘↩)"
+            title={running ? "Queue — sent when the current request finishes (⌘↩)" : "Send (⌘↩)"}
           >
-            {running ? <Square size={15} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+            <Send size={16} aria-hidden="true" />
           </button>
         </form>
         <StatusLine notice={props.notice} busyLabel={props.busyLabel} />

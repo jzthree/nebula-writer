@@ -518,6 +518,9 @@ export function App() {
   });
   // A note typed on a review card: the next request is about that one suggestion.
   const [discussing, setDiscussing] = useState<{ id: string; note: string } | null>(null);
+  // A message sent while an AI request runs waits here and goes out when it ends.
+  const [queuedInstruction, setQueuedInstruction] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
+  const queuedInstructionRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const setToolAccess = useCallback((next: AiToolAccess) => {
     setToolAccessState(next);
     try {
@@ -4122,7 +4125,19 @@ export function App() {
   async function handleSend(overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) {
     const trimmedInstruction = (overrides.instruction ?? instruction).trim();
     const requestFocus = overrides.focus ?? null;
-    if (!editor || !trimmedInstruction || busy !== null || aiRequestInFlightRef.current) {
+    if (!editor || !trimmedInstruction) {
+      return;
+    }
+    if (aiRequestInFlightRef.current) {
+      // Typing never waits for the model: queue it for the moment this turn ends.
+      queuedInstructionRef.current = { text: trimmedInstruction, focus: requestFocus };
+      setQueuedInstruction(queuedInstructionRef.current);
+      if (overrides.instruction === undefined) {
+        setInstruction("");
+      }
+      return;
+    }
+    if (busy !== null) {
       return;
     }
     const maxSuggestions = parseMaxSuggestionsInput(maxSuggestionsInput);
@@ -4206,6 +4221,12 @@ export function App() {
         aiRequestInFlightRef.current = false;
         aiAbortControllerRef.current = null;
         setBusy(null);
+        const next = queuedInstructionRef.current;
+        if (next) {
+          queuedInstructionRef.current = null;
+          setQueuedInstruction(null);
+          void handleSend({ instruction: next.text, focus: next.focus });
+        }
       }
     }
   }
@@ -5253,7 +5274,7 @@ export function App() {
     : scope === "selection"
       ? "Ask for a change to the selected text..."
       : "Ask for a document-level revision...";
-  const canSendInstruction = Boolean(instruction.trim()) && busy === null && !aiRequestBlocked && !maxSuggestionsInvalid;
+  const canSendInstruction = Boolean(instruction.trim()) && (busy === null || isAskingAi) && !aiRequestBlocked && !maxSuggestionsInvalid;
   // The from-scratch "stand up a local Writer" sequence, shared by the cloud
   // guide and the hosted-but-unreachable guide — neither can assume the repo
   // is already on the viewer's machine.
@@ -6597,6 +6618,25 @@ export function App() {
             ) : null}
             </div>
 
+            {queuedInstruction ? (
+              <div className="cap-chip-row">
+                <span className="cap-chip queued-chip" title="Sent automatically when the current request finishes">
+                  Queued: "{queuedInstruction.text.length > 80 ? `${queuedInstruction.text.slice(0, 77)}…` : queuedInstruction.text}"
+                  <button type="button" onClick={handleInterruptAi} title="Stop the current request and send this now">Send now</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      queuedInstructionRef.current = null;
+                      setQueuedInstruction(null);
+                    }}
+                    aria-label="Discard the queued message"
+                    title="Discard"
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </span>
+              </div>
+            ) : null}
             {maxSuggestionsInput.trim() ? (
               <div className="cap-chip-row">
                 <span className="cap-chip" title="This cap was set by a saved skill or retry flow; remove it to let the AI return as many edits as it finds useful.">
@@ -6691,21 +6731,30 @@ export function App() {
                 aria-label="AI instruction"
                 aria-keyshortcuts="Shift+Enter Control+Enter Meta+Enter"
               />
-              <button
-                type={isAskingAi ? "button" : "submit"}
-                className={`send-button ${isAskingAi ? "is-interrupting" : ""}`}
-                disabled={isAskingAi ? false : !canSendInstruction}
-                aria-label={isAskingAi ? "Stop AI request" : "Send revision request"}
-                aria-keyshortcuts={isAskingAi ? "Escape" : "Shift+Enter Control+Enter Meta+Enter"}
-                title={isAskingAi ? "Stop AI request" : "Send"}
-                onClick={(event) => {
-                  if (isAskingAi) {
+              {isAskingAi ? (
+                <button
+                  type="button"
+                  className="send-button is-interrupting"
+                  aria-label="Stop AI request"
+                  aria-keyshortcuts="Escape"
+                  title="Stop AI request"
+                  onClick={(event) => {
                     event.preventDefault();
                     handleInterruptAi();
-                  }
-                }}
+                  }}
+                >
+                  <Square size={16} aria-hidden="true" />
+                </button>
+              ) : null}
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!canSendInstruction}
+                aria-label="Send revision request"
+                aria-keyshortcuts="Shift+Enter Control+Enter Meta+Enter"
+                title={isAskingAi ? "Queue — sent when the current request finishes" : "Send"}
               >
-                {isAskingAi ? <Square size={16} aria-hidden="true" /> : <Send size={18} aria-hidden="true" />}
+                <Send size={18} aria-hidden="true" />
               </button>
             </form>
           </div>

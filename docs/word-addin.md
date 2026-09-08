@@ -80,6 +80,14 @@ the review queue. *Document + web and read-only files* adds only web
 search/fetch and read-only file access to Writer's tools. *Document only* is
 the original lockdown. The web app has the same picker next to the provider.
 
+The box never locks while a request runs. A message sent meanwhile is
+queued — shown above the composer with *Send now* and a discard button —
+and goes out automatically, in the same thread, the moment the current turn
+ends; *Send now* (or Stop) interrupts the running turn and sends it at once.
+The CLIs take one prompt per turn, so steering a turn while it runs is not
+possible from `codex exec` or `claude -p`; the queue is the closest thing.
+The web app queues the same way.
+
 Quotes heal themselves where they safely can: a suggestion whose original
 differs from the document only in typography, spacing, or a small misquote
 inside a long passage is snapped to the document's exact text (the same

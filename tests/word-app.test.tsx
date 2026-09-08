@@ -79,8 +79,15 @@ vi.mock("../src/word/writerClient", () => ({
     return { index, path: `/tmp/images/img-${index}.png`, url: `/api/ai/images/img-${index}.png`, mime: "image/png", width: meta.width ?? null, height: meta.height ?? null, altText: meta.altText ?? null, context: meta.context ?? null, paragraphIndex: meta.paragraphIndex ?? null };
   },
   fetchImageAsBase64: async () => "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  requestWordSuggestions: async (request: WordLiveSuggestionRequest) => {
+  requestWordSuggestions: async (request: WordLiveSuggestionRequest, options: { signal?: AbortSignal } = {}) => {
     captured.requests.push(request);
+    if (request.instruction.startsWith("Slow:")) {
+      // A request that takes a while, so a second message can be typed meanwhile.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 200);
+        options.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+      });
+    }
     if (request.instruction.startsWith("Figure:")) {
       const image = request.documentImages?.[0];
       const suggestion: AiSuggestion = {
@@ -400,6 +407,31 @@ describe("Word task pane", () => {
     send("Figure: and again");
     await waitFor(() => expect(captured.requests.length).toBe(2));
     expect(captured.imageUploads).toHaveLength(1);
+  });
+
+  it("keeps the box open while a request runs: the next message queues and is sent when the turn ends", async () => {
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    expect(screen.getByLabelText("Instruction for Writer")).not.toBeDisabled();
+    send("second request");
+    expect(screen.getByText(/Queued: "second request"/)).toBeInTheDocument();
+    expect(captured.requests.length).toBe(1);
+    await waitFor(() => expect(captured.requests.length).toBe(2), { timeout: 3_000 });
+    expect(captured.requests[1].instruction).toBe("second request");
+    await waitFor(() => expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0));
+  });
+
+  it("sends a queued message now by stopping the running request", async () => {
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    send("urgent follow-up");
+    fireEvent.click(screen.getByText("Send now"));
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].instruction).toBe("urgent follow-up");
+    await waitFor(() => expect(screen.getByText("Stopped.")).toBeInTheDocument());
   });
 
   it("comments on one suggestion from its card: the reply revises it and the earlier card is withdrawn", async () => {
