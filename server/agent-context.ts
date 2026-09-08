@@ -11,6 +11,7 @@
  */
 
 import type { WordHostContext, WordHostContextParagraph } from "../src/shared";
+import { renderEmphasis } from "../src/emphasis";
 import { currentHostContext, type AgentRunContext } from "./agent-run";
 
 export type ContextKind = "selection" | "paragraph" | "section" | "page" | "outline" | "document";
@@ -62,6 +63,15 @@ const OUTLINE_LIMIT = 120;
 const SECTION_FALLBACK_NEIGHBOURS = 3;
 
 export function readAgentRunContext(run: AgentRunContext, params: ContextReadParams): ContextReadResult | { error: string } {
+  const result = readAgentRunContextPlain(run, params);
+  if ("error" in result || result.what === "outline" || !run.documentEmphasis?.length) {
+    return result;
+  }
+  // Document slices carry their emphasis as markers, like every other read.
+  return { ...result, text: renderEmphasis(result.text, run.documentEmphasis, result.from) };
+}
+
+function readAgentRunContextPlain(run: AgentRunContext, params: ContextReadParams): ContextReadResult | { error: string } {
   const what = parseKind(params.what);
   if (!what) {
     return { error: "what must be one of: selection, paragraph, section, page, outline, document." };

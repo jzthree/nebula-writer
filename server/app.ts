@@ -18,6 +18,7 @@ import { getProviderCatalogs, validateModelOptions } from "./model-catalog";
 import { cliChildEnv } from "./ai";
 import type { AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
 import { isSuggestionAnchor } from "../src/shared";
+import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
 import { agentTerminalStatus, ensureAgentTerminal } from "./agent-terminal";
 import { restartTerminalRoom } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
@@ -239,6 +240,8 @@ interface WriterSession {
   chatMessages: WriterChatMessage[];
   documentHtml: string;
   documentText: string;
+  /** Emphasis spans over documentText, when the source (the Word add-in) reports them. */
+  documentEmphasis?: EmphasisSpan[] | null;
   features: DocxFeatureSummary;
   id: string;
   importMessages: string[];
@@ -404,6 +407,8 @@ export function createWriterApp() {
       images: liveDocumentImages(),
       mode: "global",
       documentText: typeof live === "string" && live.trim() ? live : activeWriterSession.documentText,
+      // Emphasis spans only fit the text they were captured over.
+      documentEmphasis: typeof live === "string" && live.trim() && live !== activeWriterSession.documentText ? [] : activeWriterSession.documentEmphasis ?? [],
       selection: hostContextSelection(hostContext),
       hostContext,
       activity: [],
@@ -1010,7 +1015,7 @@ export function createWriterApp() {
       // already IS this Word document, or when nothing is active — never
       // silently displace a document someone is editing in the browser.
       if (typeof documentText === "string" && documentText.trim() && (parsed.update.adopt || isWordSession || !activeWriterSession)) {
-        const base = wordLiveSessionFor(documentName, documentText);
+        const base = wordLiveSessionFor(documentName, documentText, parsed.update.documentEmphasis ?? null);
         if (base !== activeWriterSession) {
           if (!isWordSession) {
             stashActiveSession();
@@ -1683,10 +1688,10 @@ function sessionFromImport(imported: ImportedDocument): WriterSession {
 }
 
 function wordLiveSessionForRequest(request: WordLiveSuggestionRequest): WriterSession {
-  return wordLiveSessionFor(wordLiveDocumentName(request.documentName), request.documentText);
+  return wordLiveSessionFor(wordLiveDocumentName(request.documentName), request.documentText, request.documentEmphasis ?? null);
 }
 
-function wordLiveSessionFor(documentName: string, documentText: string): WriterSession {
+function wordLiveSessionFor(documentName: string, documentText: string, documentEmphasis: EmphasisSpan[] | null = null): WriterSession {
   const sourceDocumentId = wordLiveSourceDocumentId(documentName);
   if (
     activeWriterSession
@@ -1708,6 +1713,7 @@ function wordLiveSessionFor(documentName: string, documentText: string): WriterS
     chatMessages: previous?.chatMessages ?? [],
     documentHtml: htmlFromPlainText(documentText),
     documentText,
+    documentEmphasis: documentEmphasis ?? null,
     features: emptyDocxFeatureSummary(),
     id: previous?.id ?? randomUUID(),
     importMessages: [
@@ -2470,6 +2476,7 @@ function parseSessionSuggestRequest(body: unknown, session: WriterSession): { re
       mode,
       documentHtml: "",
       documentText: session.documentText,
+      documentEmphasis: session.documentEmphasis ?? null,
       maxSuggestions: maxSuggestions.value,
       selection: selection ?? null,
       requestedBy: typeof requestedByRaw === "string" && requestedByRaw.trim() ? requestedByRaw.trim().slice(0, 80) : "Agent"
@@ -2742,6 +2749,7 @@ function parseRoutineSuggestion(value: unknown): AiSuggestion {
     target: suggestion.target === "selection" ? "selection" : "global",
     range: normalizeSuggestionRange(original, suggestion.range),
     ...(isSuggestionAnchor(suggestion.anchor) ? { anchor: suggestion.anchor } : {}),
+    ...(isSuggestionEmphasis(suggestion.emphasis) ? { emphasis: suggestion.emphasis } : {}),
     status: suggestion.status === "accepted" || suggestion.status === "rejected" ? suggestion.status : "pending",
     ...(proposedBy ? { proposedBy } : {}),
     ...(decidedBy ? { decidedBy } : {}),
@@ -3836,6 +3844,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
     return { error: "toolAccess must be one of document, read, or full." };
   }
+  const documentEmphasisValue = (body as { documentEmphasis?: unknown }).documentEmphasis;
+  if (documentEmphasisValue !== undefined && documentEmphasisValue !== null && !isEmphasisSpanList(documentEmphasisValue)) {
+    return { error: "documentEmphasis must be a list of { start, end, bold?, italic?, underline?, highlight? } spans." };
+  }
 
   return {
     request: {
@@ -3852,6 +3864,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       modelOptions: modelOptions.modelOptions,
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       documentImages: documentImages.value,
+      documentEmphasis: isEmphasisSpanList(documentEmphasisValue) ? documentEmphasisValue : null,
       focus: focus.value,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,
@@ -3962,11 +3975,15 @@ function parseWordHostContextUpdate(body: unknown): { update: WordHostContextUpd
   if (typeof raw.documentText === "string" && raw.documentText.length > WORD_CONTEXT_DOCUMENT_TEXT_LIMIT) {
     return { error: `Word context updates accept at most ${WORD_CONTEXT_DOCUMENT_TEXT_LIMIT.toLocaleString()} characters of documentText.` };
   }
+  if (raw.documentEmphasis !== undefined && raw.documentEmphasis !== null && !isEmphasisSpanList(raw.documentEmphasis)) {
+    return { error: "Word context updates require documentEmphasis to be a list of emphasis spans when provided." };
+  }
   return {
     update: {
       documentName: typeof raw.documentName === "string" ? raw.documentName : null,
       hostContext: hostContext.hostContext,
       documentText: typeof raw.documentText === "string" ? raw.documentText : null,
+      documentEmphasis: isEmphasisSpanList(raw.documentEmphasis) ? raw.documentEmphasis : null,
       adopt: raw.adopt === true
     }
   };

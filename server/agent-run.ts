@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasis";
 import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext } from "../src/shared";
 import { isImageCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, type SuggestionCandidate } from "./suggestion-validation";
 
@@ -19,6 +20,8 @@ export interface AgentRunContext {
   instruction: string;
   mode: AiRequest["mode"];
   documentText: string;
+  /** Emphasis spans over documentText; reads render them as markers. */
+  documentEmphasis: EmphasisSpan[];
   selection: AiRequest["selection"];
   /** Word add-in window state (caret, selection, pages on screen) as of the request. */
   hostContext?: WordHostContext | null;
@@ -59,6 +62,7 @@ export function createAgentRun(request: AiRequest): AgentRunContext {
     instruction: request.instruction,
     mode: request.mode,
     documentText: request.documentText,
+    documentEmphasis: request.documentEmphasis ?? [],
     selection: request.mode === "selection" ? request.selection ?? null : null,
     hostContext: request.hostContext ?? null,
     activity: [],
@@ -139,7 +143,7 @@ export function readAgentRunDocument(run: AgentRunContext, offsetInput?: unknown
   const offset = clampInteger(offsetInput, 0, Math.max(0, totalLength), 0);
   const limit = clampInteger(limitInput, 1, MAX_READ_LIMIT, DEFAULT_READ_LIMIT);
   return {
-    text: run.documentText.slice(offset, offset + limit),
+    text: renderEmphasis(run.documentText.slice(offset, offset + limit), run.documentEmphasis, offset),
     offset,
     limit,
     totalLength
@@ -154,6 +158,8 @@ export function searchAgentRunDocument(run: AgentRunContext, query: string, maxR
   const text = run.documentText;
   const matches: Array<{ offset: number; context: string }> = [];
   let totalMatches = 0;
+  // The agent may search with the emphasis markers it saw; the document is plain.
+  query = parseEmphasis(query).text;
   if (!query) {
     return { matches, totalMatches };
   }
@@ -167,7 +173,7 @@ export function searchAgentRunDocument(run: AgentRunContext, query: string, maxR
     if (matches.length < cap) {
       const start = Math.max(0, index - SEARCH_CONTEXT_CHARS);
       const end = Math.min(text.length, index + query.length + SEARCH_CONTEXT_CHARS);
-      matches.push({ offset: index, context: text.slice(start, end) });
+      matches.push({ offset: index, context: renderEmphasis(text.slice(start, end), run.documentEmphasis, start) });
     }
     cursor = index + Math.max(1, query.length);
   }

@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
 
 import { suggestionAnchorFor } from "../src/shared";
+import { EMPHASIS_NOTATION_NOTE, renderEmphasis } from "../src/emphasis";
+import { parseQuotedText, sameEmphasisSpans, stagedEmphasis } from "./emphasis-staging";
 import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecutionEnabled, resolveCliCommand, type CliProviderName } from "./cli-runtime";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
@@ -173,11 +175,11 @@ export const AI_RESPONSE_SCHEMA = {
           original: {
             type: "string",
             minLength: 1,
-            description: "Exact source text copied verbatim from the provided Text block."
+            description: "Exact source text copied verbatim from the provided Text block, including any emphasis markers (**bold**, *italic*, __underline__, ==highlight==) exactly as shown."
           },
           replacement: {
             type: "string",
-            description: "Replacement text that preserves meaning unless the instruction asks otherwise. An empty string proposes DELETING the original — never invent filler text to stand in for a deletion."
+            description: "Replacement text that preserves meaning unless the instruction asks otherwise. Emphasis markers in it set bold/italic/underline/highlight on the new text; leave them out to remove the original's emphasis. An empty string proposes DELETING the original — never invent filler text to stand in for a deletion."
           },
           rationale: {
             type: "string"
@@ -624,6 +626,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     describeToolAccessForAgent(resolveToolAccess(request)),
     "",
     `The document is ${request.documentText.length.toLocaleString()} characters long.`,
+    EMPHASIS_NOTATION_NOTE,
     ...(request.mode === "selection"
       ? selectionText.length <= AGENT_SELECTION_INLINE_LIMIT
         ? [
@@ -820,6 +823,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "If the instruction asks a question or for an assessment (a review, a score, a judgement), answer it fully in message — several paragraphs with `## ` sections are welcome — and add suggestions only where a concrete edit follows from the answer.",
     "Every suggestion must use exact text from the document: normally from the Text block (the user's current focus).",
     "Set original to a verbatim substring of the source text. Do not paraphrase original.",
+    EMPHASIS_NOTATION_NOTE,
     "When a Document context block is present, the Text block is the user's selection: what they were looking at when they asked. Decide from the instruction what the request is about. A request about that passage is answered inside it; a request about the document as a whole — its argument, flow, structure, consistency — is answered across the whole Document context, with edits staged wherever they are needed (originals copied verbatim from wherever they sit). Never ask the user to select more text: you already have the whole document.",
     "Avoid generic repeated source-text targets such as headings, \"Rationale.\", \"Preliminary studies.\", or one-word placeholders by themselves; include nearby unique context in original so the DOCX review export can place the suggestion in the intended section.",
     "Do not edit Writer display metadata such as \"DOCX image preview unavailable\" placeholders; those mark preserved DOCX media and should remain untouched.",
@@ -882,7 +886,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
     return [
       "Document context (the entire document; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the whole document, and edit wherever needed):",
       "<<<document",
-      document,
+      renderEmphasis(document, request.documentEmphasis),
       ">>>"
     ];
   }
@@ -899,7 +903,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
   return [
     `Document context (a window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()}; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the document, and edit wherever needed):`,
     "<<<document",
-    document.slice(start, end),
+    renderEmphasis(document.slice(start, end), request.documentEmphasis, start),
     ">>>"
   ];
 }
@@ -959,19 +963,34 @@ function buildAttachmentPromptLines(request: AiRequest): string[] {
 
 function buildPromptText(request: AiRequest, options: CliPromptOptions): { text: string } {
   if (options.coveragePass) {
-    return { text: options.coveragePass.text };
+    return { text: renderEmphasis(options.coveragePass.text, request.documentEmphasis, options.coveragePass.start) };
   }
 
-  const scopedText = request.mode === "selection" ? request.selection?.text ?? "" : request.documentText;
   if (request.mode === "selection") {
+    const selectionText = (request.selection?.text ?? "").slice(0, AI_CONTEXT_CHAR_LIMIT);
+    const offset = selectionOffsetInDocument(request);
     return {
-      text: scopedText.slice(0, AI_CONTEXT_CHAR_LIMIT)
+      text: offset === null ? selectionText : renderEmphasis(selectionText, request.documentEmphasis, offset)
     };
   }
 
   return {
-    text: scopedText
+    text: renderEmphasis(request.documentText, request.documentEmphasis)
   };
+}
+
+/** Where the selection's text sits in documentText (so its emphasis can be rendered), or null when it cannot be placed. */
+function selectionOffsetInDocument(request: AiRequest): number | null {
+  const text = request.selection?.text ?? "";
+  if (!text) {
+    return null;
+  }
+  const from = request.selection?.from;
+  if (typeof from === "number" && from >= 0 && request.documentText.slice(from, from + text.length) === text) {
+    return from;
+  }
+  const found = request.documentText.indexOf(text);
+  return found >= 0 ? found : null;
 }
 
 function shouldUseCoveragePasses(request: AiRequest): boolean {
@@ -2258,8 +2277,10 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
     const verdict = validateImageReplacementCandidate(item, request.documentImages ?? []);
     return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "image" };
   }
-  const original = String(item.original ?? "").trim();
-  let replacement = String(item.replacement ?? "").trim();
+  const quotedOriginal = parseQuotedText(item.original);
+  const quotedReplacement = parseQuotedText(item.replacement);
+  const original = quotedOriginal.text;
+  let replacement = quotedReplacement.text;
   let deletionRescued = false;
   if (!original) {
     return { skipped: "malformed" };
@@ -2273,7 +2294,7 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
   if (!replacement && typeof item.replacement !== "string" && !deletionRescued) {
     return { skipped: "malformed" };
   }
-  if (normalizeWhitespace(original) === normalizeWhitespace(replacement)) {
+  if (normalizeWhitespace(original) === normalizeWhitespace(replacement) && sameEmphasisSpans(quotedOriginal.spans, quotedReplacement.spans)) {
     return { skipped: "no-change" };
   }
 
@@ -2294,8 +2315,18 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
   }
 
   const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(anchoredReplacement);
+  const anchor = suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null);
+  const emphasis = stagedEmphasis({
+    documentEmphasis: request.documentEmphasis,
+    anchorOffset: anchor?.offset ?? null,
+    original: anchoredOriginal,
+    quotedReplacement,
+    replacement: anchoredReplacement,
+    explicit: quotedOriginal.marked || quotedReplacement.marked
+  });
   return { ...(note ? { note } : {}), suggestion: {
     ...(commentOnly ? { commentOnly: true } : {}),
+    ...(emphasis ? { emphasis } : {}),
     id: randomUUID(),
     title: item.title || "Revise passage",
     original: anchoredOriginal,
@@ -2304,7 +2335,7 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
     confidence: normalizeConfidence(item.confidence),
     target: inSelection ? "selection" : "global",
     range: inSelection ? request.selection ?? null : null,
-    anchor: suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null),
+    anchor,
     status: "pending"
   } };
 }

@@ -1,3 +1,6 @@
+import type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
+
+export type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
 export type AiProviderName = "demo" | "codex" | "claude";
 export type LocalAiProviderName = "codex" | "claude";
 
@@ -122,6 +125,8 @@ export interface AiRequest {
   attachments?: AiAttachment[];
   /** The document's images, extracted to files (Word add-in uploads them; DOCX sessions extract them server-side). */
   documentImages?: AiDocumentImage[];
+  /** Inline emphasis (bold/italic/underline/highlight) in documentText as spans; the model sees it as markers. */
+  documentEmphasis?: EmphasisSpan[] | null;
   /** When the message is feedback on one earlier suggestion: that suggestion. */
   focus?: AiRequestFocus | null;
   /**
@@ -230,6 +235,10 @@ export interface AiSuggestion {
   /** Where `original` sat when the suggestion was staged, so a later apply
    * picks that occurrence even if the same text now appears elsewhere. */
   anchor?: SuggestionAnchor | null;
+  /** Emphasis on the original (as the document carries it) and on the
+   * replacement (as the AI wrote it), present when the AI worked with
+   * emphasis markers. Absent: hosts carry the original's emphasis over. */
+  emphasis?: SuggestionEmphasis | null;
   /** For inline-mark cards: the changeIds of the marks this card covers, so
    * resolution touches exactly these marks even when another author's
    * suggestion overlaps the same text. */
@@ -390,6 +399,8 @@ export interface WordHostContextUpdate {
    * shared Writer session (what terminal/MCP agents read) tracks Word.
    */
   documentText?: string | null;
+  /** Emphasis spans over documentText (sent with it). */
+  documentEmphasis?: EmphasisSpan[] | null;
   /** Make this Word document the active Writer session even if another document is active. */
   adopt?: boolean;
 }

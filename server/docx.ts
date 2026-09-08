@@ -11,6 +11,7 @@ import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
 import { chooseAnchoredCandidate } from "../src/shared";
+import { carryEmphasis, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
 
 const WORD_STORY_PART_PATTERN = /^word\/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$/i;
 const BROWSER_IMAGE_CONTENT_TYPES = new Set([
@@ -604,7 +605,8 @@ function mammothImportOptions() {
       "p[style-name='Heading 1'] => h1:fresh",
       "p[style-name='Heading 2'] => h2:fresh",
       "p[style-name='Heading 3'] => h3:fresh",
-      "u => u"
+      "u => u",
+      "highlight => mark"
     ]
   };
 }
@@ -1386,7 +1388,7 @@ export function htmlToText(html: string): string {
 
 export interface TextBlock {
   type: "heading1" | "heading2" | "heading3" | "paragraph" | "bullet";
-  runs: Array<{ text: string; bold?: boolean; italics?: boolean; revision?: TextRunRevision }>;
+  runs: Array<{ text: string; bold?: boolean; italics?: boolean; underline?: boolean; highlight?: boolean; revision?: TextRunRevision }>;
 }
 
 /** A run that came from a suggestion mark in the editor HTML: the mark IS the
@@ -1448,19 +1450,29 @@ function parseInlineRuns(fragment: string, runs: TextBlock["runs"], revision?: T
   // Without this, an unrecognized tag (e.g. a suggestion-mark <span> with
   // attributes) fails both alternatives at its "<", and [^<]+ then captures
   // the tag's attribute text as literal document content.
-  const cleaned = fragment.replace(/<\/?(?!(?:strong|b|em|i)\b)[a-zA-Z][^>]*>/gi, "");
-  const tokenPattern = /<(strong|b|em|i)\b[^>]*>([\s\S]*?)<\/\1>|([^<]+)/gi;
+  const cleaned = fragment.replace(/<\/?(?!(?:strong|b|em|i|u|mark)\b)[a-zA-Z][^>]*>/gi, "");
+  const tokenPattern = /<(strong|b|em|i|u|mark)\b[^>]*>([\s\S]*?)<\/\1>|([^<]+)/gi;
   for (const token of cleaned.matchAll(tokenPattern)) {
     if (token[3]) {
       pushRun(runs, decodeEntities(token[3]), false, false, revision);
     } else {
       const tag = token[1].toLowerCase();
-      pushRun(runs, decodeEntities(stripTags(token[2])), tag === "strong" || tag === "b", tag === "em" || tag === "i", revision);
+      const inner = token[2];
+      // Nested emphasis (<strong><em>…</em></strong>) collapses to the union of the tags.
+      pushRun(
+        runs,
+        decodeEntities(stripTags(inner)),
+        tag === "strong" || tag === "b" || /<(?:strong|b)\b/i.test(inner),
+        tag === "em" || tag === "i" || /<(?:em|i)\b/i.test(inner),
+        revision,
+        tag === "u" || /<u\b/i.test(inner),
+        tag === "mark" || /<mark\b/i.test(inner)
+      );
     }
   }
 }
 
-function pushRun(runs: TextBlock["runs"], text: string, bold = false, italics = false, revision?: TextRunRevision): void {
+function pushRun(runs: TextBlock["runs"], text: string, bold = false, italics = false, revision?: TextRunRevision, underline = false, highlight = false): void {
   if (!text) {
     return;
   }
@@ -1468,6 +1480,8 @@ function pushRun(runs: TextBlock["runs"], text: string, bold = false, italics = 
     text,
     ...(bold ? { bold } : {}),
     ...(italics ? { italics } : {}),
+    ...(underline ? { underline } : {}),
+    ...(highlight ? { highlight } : {}),
     ...(revision ? { revision } : {})
   });
 }
@@ -1487,7 +1501,9 @@ function blockToParagraph(block: TextBlock): Paragraph {
     children: block.runs.map((run) => new TextRun({
       text: run.text,
       bold: run.bold,
-      italics: run.italics
+      italics: run.italics,
+      underline: run.underline ? {} : undefined,
+      highlight: run.highlight ? "yellow" : undefined
     }))
   });
 }
@@ -1636,7 +1652,8 @@ function patchOriginalParagraphs(
         {
           start: change.start + leadingOffset,
           end: change.end + leadingOffset,
-          replacement: change.suggestion.replacement
+          replacement: change.suggestion.replacement,
+          emphasis: change.suggestion.emphasis?.replacement ?? null
         },
         revisionIds,
         suggestionAuthor(change.suggestion)
@@ -1773,6 +1790,8 @@ interface MutableTextChange {
   end: number;
   replacement: string;
   start: number;
+  /** Emphasis the AI asked for on the replacement; null/undefined = carry the original's emphasis over. */
+  emphasis?: EmphasisSpan[] | null;
 }
 
 function patchParagraphTextRuns(paragraphXml: string, suggestion: AiSuggestion, revisionIds: RevisionIdAllocator): string | null {
@@ -1875,10 +1894,15 @@ function patchParagraphTextRunChange(
     runProperties: runPropertiesXml(run.xml),
     text: paragraphTextValue.slice(Math.max(run.textStart, change.start), Math.min(run.textEnd, change.end))
   }));
+  // Emphasis on the new text: what the AI asked for, else the original's
+  // carried across (kept words keep theirs, new words inherit from the word before).
+  const deletedText = paragraphTextValue.slice(change.start, change.end);
+  const originalEmphasis = emphasisFromPieces(deletedPieces.map((piece) => ({ text: piece.text, format: runEmphasis(piece.runProperties) })));
+  const replacementEmphasis = change.emphasis ?? carryEmphasis(deletedText, originalEmphasis, change.replacement);
   const replacementXml = [
     formattedTextRunXml(prefix, firstRunProperties),
     formattedDeletedXml(deletedPieces, revisionIds.next(), author),
-    change.replacement ? formattedInsertedXml(change.replacement, revisionIds.next(), author, firstRunProperties) : "",
+    change.replacement ? formattedInsertedXml(change.replacement, revisionIds.next(), author, firstRunProperties, replacementEmphasis) : "",
     formattedTextRunXml(suffix, runPropertiesXml(lastRun.xml))
   ].join("");
 
@@ -2721,7 +2745,7 @@ function trackedRunsXml(text: string, changes: TrackedRange[], revisionIds: Revi
     const author = suggestionAuthor(change.suggestion);
     xml.push(textRunXml(text.slice(cursor, change.start)));
     xml.push(deletedRunXml(text.slice(change.start, change.end), revisionIds.next(), author));
-    xml.push(insertedRunXml(change.suggestion.replacement, revisionIds.next(), author));
+    xml.push(formattedInsertedXml(change.suggestion.replacement, revisionIds.next(), author, "", change.suggestion.emphasis?.replacement ?? []));
     cursor = change.end;
   });
   xml.push(textRunXml(text.slice(cursor)));
@@ -2812,8 +2836,39 @@ function formattedDeletedXml(pieces: Array<{ runProperties: string; text: string
   return runs ? `<w:del w:id="${id}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${runs}</w:del>` : "";
 }
 
-function formattedInsertedXml(text: string, id: number, author: string, runProperties: string): string {
-  return text ? `<w:ins w:id="${id}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${formattedTextRunXml(text, runProperties)}</w:ins>` : "";
+function formattedInsertedXml(text: string, id: number, author: string, runProperties: string, emphasis: EmphasisSpan[] = []): string {
+  if (!text) {
+    return "";
+  }
+  const runs = splitByEmphasis(text, emphasis)
+    .map((piece) => formattedTextRunXml(piece.text, withRunEmphasis(runProperties, piece.format)))
+    .join("");
+  return `<w:ins w:id="${id}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${runs}</w:ins>`;
+}
+
+/** Bold/italic/underline/highlight as a run's properties declare them. */
+function runEmphasis(runProperties: string): EmphasisFormat {
+  const on = (tag: string) => new RegExp(`<w:${tag}\\b(?:\\s[^>]*)?/?>`).test(runProperties)
+    && !new RegExp(`<w:${tag}\\b[^>]*w:val="(?:0|false|none)"`).test(runProperties);
+  return {
+    ...(on("b") ? { bold: true } : {}),
+    ...(on("i") ? { italic: true } : {}),
+    ...(on("u") ? { underline: true } : {}),
+    ...(on("highlight") ? { highlight: true } : {})
+  };
+}
+
+/** The run properties with their emphasis replaced by `format` (everything else — fonts, size, colour — kept). */
+function withRunEmphasis(runProperties: string, format: EmphasisFormat): string {
+  const inner = (runProperties.match(/<w:rPr\b[^>]*>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "")
+    .replace(/<w:(?:b|bCs|i|iCs|u|highlight)\b(?:\s[^>]*)?\/>/g, "")
+    .replace(/<w:(?:b|bCs|i|iCs|u|highlight)\b(?:\s[^>]*)?>[\s\S]*?<\/w:(?:b|bCs|i|iCs|u|highlight)>/g, "");
+  const lead = `${format.bold ? "<w:b/><w:bCs/>" : ""}${format.italic ? "<w:i/><w:iCs/>" : ""}`;
+  const tail = `${format.highlight ? "<w:highlight w:val=\"yellow\"/>" : ""}${format.underline ? "<w:u w:val=\"single\"/>" : ""}`;
+  // Schema order: style and fonts first, then b/i; highlight and u come late.
+  const head = inner.match(/^(?:\s*<w:rStyle\b[^>]*\/>)?(?:\s*<w:rFonts\b[^>]*\/>)?/)?.[0] ?? "";
+  const content = `${head}${lead}${inner.slice(head.length)}${tail}`;
+  return content ? `<w:rPr>${content}</w:rPr>` : "";
 }
 
 function suggestionAuthor(suggestion?: Pick<AiSuggestion, "proposedBy"> | null): string {

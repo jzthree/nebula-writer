@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AiDocumentImage, AiRequest, AiSuggestion } from "../src/shared";
 import { suggestionAnchorFor } from "../src/shared";
+import { parseQuotedText, sameEmphasisSpans, stagedEmphasis } from "./emphasis-staging";
 import { importImageFile } from "./image-files";
 import { repairAnchor } from "./anchor-repair";
 
@@ -82,10 +83,12 @@ export type SuggestionValidation =
 
 export function validateSuggestionCandidate(
   item: SuggestionCandidate,
-  request: Pick<AiRequest, "mode" | "documentText" | "selection">
+  request: Pick<AiRequest, "mode" | "documentText" | "selection" | "documentEmphasis">
 ): SuggestionValidation {
-  const original = String(item.original ?? "").trim();
-  const replacement = String(item.replacement ?? "").trim();
+  const quotedOriginal = parseQuotedText(item.original);
+  const quotedReplacement = parseQuotedText(item.replacement);
+  const original = quotedOriginal.text;
+  const replacement = quotedReplacement.text;
   const advisory = item.commentOnly === true;
   if (!original) {
     return { ok: false, reason: "original is empty — copy the exact source text you want to change." };
@@ -104,7 +107,7 @@ export function validateSuggestionCandidate(
   }
   // Advisory notes (commentOnly) may keep the text unchanged — the rationale
   // carries the message. Text edits must actually change something.
-  if (!advisory && normalizeWhitespace(original) === normalizeWhitespace(replacement)) {
+  if (!advisory && normalizeWhitespace(original) === normalizeWhitespace(replacement) && sameEmphasisSpans(quotedOriginal.spans, quotedReplacement.spans)) {
     return { ok: false, reason: "replacement only changes whitespace — propose a substantive edit, or set commentOnly: true if this is an advisory note." };
   }
 
@@ -132,11 +135,21 @@ export function validateSuggestionCandidate(
   }
 
   const commentOnly = item.commentOnly === true || replacementRequiresAuthorConfirmation(anchoredReplacement);
+  const anchor = suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null);
+  const emphasis = stagedEmphasis({
+    documentEmphasis: request.documentEmphasis,
+    anchorOffset: anchor?.offset ?? null,
+    original: anchoredOriginal,
+    quotedReplacement,
+    replacement: anchoredReplacement,
+    explicit: quotedOriginal.marked || quotedReplacement.marked
+  });
   return {
     ok: true,
     ...(note ? { note } : {}),
     suggestion: {
       ...(commentOnly ? { commentOnly: true } : {}),
+      ...(emphasis ? { emphasis } : {}),
       id: randomUUID(),
       title: typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 160) : "Revise passage",
       original: anchoredOriginal,
@@ -145,7 +158,7 @@ export function validateSuggestionCandidate(
       confidence: normalizeConfidence(item.confidence),
       target: inSelection ? "selection" : "global",
       range: inSelection ? request.selection ?? null : null,
-      anchor: suggestionAnchorFor(request.documentText, anchoredOriginal, inSelection ? request.selection?.from ?? null : null),
+      anchor,
       status: "pending"
     }
   };

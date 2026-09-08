@@ -467,6 +467,23 @@ export function carryEmphasis(original: string, originalSpans: EmphasisSpan[] | 
   return bridgeEmphasisGaps(replacement, spans);
 }
 
+/** The text cut into consecutive pieces of uniform emphasis (whitespace included), for hosts that emit formatted runs. */
+export function splitByEmphasis(text: string, spans: EmphasisSpan[] | null | undefined): Array<{ text: string; format: EmphasisFormat }> {
+  const pieces: Array<{ text: string; format: EmphasisFormat }> = [];
+  let cursor = 0;
+  for (const span of normalizeEmphasis(sliceEmphasis(spans, 0, text.length))) {
+    if (span.start > cursor) {
+      pieces.push({ text: text.slice(cursor, span.start), format: {} });
+    }
+    pieces.push({ text: text.slice(span.start, span.end), format: formatOf(span) });
+    cursor = span.end;
+  }
+  if (cursor < text.length) {
+    pieces.push({ text: text.slice(cursor), format: {} });
+  }
+  return pieces.filter((piece) => piece.text);
+}
+
 /**
  * Emphasis spans over a text assembled from formatted pieces (a Word
  * paragraph's word ranges, an editor's text nodes): each piece contributes

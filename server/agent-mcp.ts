@@ -36,7 +36,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_read_document",
-      description: "Read a window of the document under revision. Returns { text, offset, limit, totalLength }. Call repeatedly with increasing offset to read long documents in slices. Read as much as the instruction needs: the whole document is fair game whenever the passage in scope does not tell you enough.",
+      description: "Read a window of the document under revision. Returns { text, offset, limit, totalLength }. Inline emphasis appears as markers: **bold**, *italic*, __underline__, ==highlight==. Call repeatedly with increasing offset to read long documents in slices. Read as much as the instruction needs: the whole document is fair game whenever the passage in scope does not tell you enough.",
       inputSchema: {
         type: "object",
         properties: {
@@ -67,7 +67,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_stage_suggestions",
-      description: "Stage revision suggestions into the user's review queue. Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document; for selection-scoped requests prefer the selection, but a passage elsewhere is accepted when the instruction requires it — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
+      description: "Stage revision suggestions into the user's review queue. Quote emphasis markers in original exactly as the document shows them; markers in replacement set bold/italic/underline/highlight (omit them to remove the emphasis). Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document; for selection-scoped requests prefer the selection, but a passage elsewhere is accepted when the instruction requires it — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
       inputSchema: {
         type: "object",
         properties: {
