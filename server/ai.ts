@@ -588,7 +588,7 @@ function capitalizeFirst(value: string): string {
 }
 
 const AGENT_SELECTION_INLINE_LIMIT = 2_000;
-const READ_BEYOND_SELECTION = "Reading is NOT limited to the selection: whenever it alone does not tell you enough — a term defined elsewhere, a cross-reference, a question about consistency with another section — read more of the document, up to all of it, before answering.";
+const READ_BEYOND_SELECTION = "Reading is NOT limited to the selection: whenever it alone does not tell you enough — a term defined elsewhere, a cross-reference, a question about consistency with another section — read more of the document, up to all of it, before answering. When the request is about the document as a whole, read all of it and stage edits across sections.";
 // One-shot providers have no tools, so a selection-scoped prompt carries the
 // surrounding document as read-only context: the whole document when it fits
 // the budget, otherwise a window around the selection.
@@ -624,13 +624,13 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     ...(request.mode === "selection"
       ? selectionText.length <= AGENT_SELECTION_INLINE_LIMIT
         ? [
-            "The user selected this passage; it is the focus of the request. Propose edits within it unless the instruction cannot be carried out there (it names other passages, asks for document-wide changes, or the selection holds nothing relevant) — then edit elsewhere in the document and say so in your reply:",
+            "The user selected this passage — it is where they are working. Decide from the instruction whether the request is about this passage or about the document as a whole, and act accordingly: edits may land anywhere in the document (say so when they do):",
             "<<<selection",
             selectionText,
             ">>>",
             READ_BEYOND_SELECTION
           ]
-        : ["The user selected a passage; read it with writer_get_selection. It is the focus of the request: propose edits within it unless the instruction cannot be carried out there — then edit elsewhere in the document and say so in your reply.", READ_BEYOND_SELECTION]
+        : ["The user selected a passage (read it with writer_get_selection) — it is where they are working. Decide from the instruction whether the request is about that passage or about the document as a whole, and act accordingly: edits may land anywhere in the document (say so when they do).", READ_BEYOND_SELECTION]
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request),
@@ -816,7 +816,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "If the instruction asks a question or for an assessment (a review, a score, a judgement), answer it fully in message — several paragraphs with `## ` sections are welcome — and add suggestions only where a concrete edit follows from the answer.",
     "Every suggestion must use exact text from the document: normally from the Text block (the user's current focus).",
     "Set original to a verbatim substring of the source text. Do not paraphrase original.",
-    "When a Document context block is present, the Text block is the user's current focus: prefer edits there. If the instruction cannot be carried out inside it — it names other passages, asks for document-wide changes, or the focus contains nothing relevant — take original verbatim from the Document context instead and say in message that the edit is outside the selection. Never ask the user to select more text: you already have the whole document.",
+    "When a Document context block is present, the Text block is the user's selection: what they were looking at when they asked. Decide from the instruction what the request is about. A request about that passage is answered inside it; a request about the document as a whole — its argument, flow, structure, consistency — is answered across the whole Document context, with edits staged wherever they are needed (originals copied verbatim from wherever they sit). Never ask the user to select more text: you already have the whole document.",
     "Avoid generic repeated source-text targets such as headings, \"Rationale.\", \"Preliminary studies.\", or one-word placeholders by themselves; include nearby unique context in original so the DOCX review export can place the suggestion in the intended section.",
     "Do not edit Writer display metadata such as \"DOCX image preview unavailable\" placeholders; those mark preserved DOCX media and should remain untouched.",
     suggestionLimit === null
@@ -876,7 +876,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
   }
   if (document.length <= budget) {
     return [
-      "Document context (the entire document; the Text block below is the user's focus — edit here only when the instruction cannot be carried out within the Text block):",
+      "Document context (the entire document; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the whole document, and edit wherever needed):",
       "<<<document",
       document,
       ">>>"
@@ -893,7 +893,7 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
   const start = Math.max(0, anchor - half);
   const end = Math.min(document.length, Math.max(anchor + selectionText.length + half, start + windowChars));
   return [
-    `Document context (a window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()}; the Text block below is the user's focus — edit here only when the instruction cannot be carried out within the Text block):`,
+    `Document context (a window around the selection: characters ${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${document.length.toLocaleString()}; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the document, and edit wherever needed):`,
     "<<<document",
     document.slice(start, end),
     ">>>"

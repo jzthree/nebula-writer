@@ -475,7 +475,7 @@ describe("agent task prompt", () => {
     const run = createAgentRun(request);
     const prompt = buildAgentTaskPrompt(request, run);
 
-    expect(prompt).toContain("it is the focus of the request");
+    expect(prompt).toContain("Decide from the instruction whether the request is about this passage or about the document as a whole");
     expect(prompt).toContain("The study will enroll participants.");
     expect(prompt).toContain("notes.md");
     expect(prompt).toContain("writer_read_attachment");

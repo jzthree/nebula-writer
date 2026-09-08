@@ -31,7 +31,7 @@ describe("reading beyond the selected scope", () => {
 
     const prompt = buildCliPrompt(request);
     expect(prompt).toContain("<<<document");
-    expect(prompt).toContain("prefer edits there");
+    expect(prompt).toContain("Decide from the instruction what the request is about");
     expect(prompt.indexOf("<<<document")).toBeLessThan(prompt.indexOf("Text:\n"));
     expect(prompt.endsWith(`Text:\n${SELECTION}`)).toBe(true);
   });
@@ -60,7 +60,7 @@ describe("reading beyond the selected scope", () => {
     const run = createAgentRun(request);
     try {
       const prompt = buildAgentTaskPrompt(request, run);
-      expect(prompt).toContain("it is the focus of the request");
+      expect(prompt).toContain("Decide from the instruction whether the request is about this passage or about the document as a whole");
       expect(prompt).toContain("Reading is NOT limited to the selection");
       expect(prompt).toContain("up to all of it");
       expect(prompt).toContain('writer_read_context({ what: "document" })');

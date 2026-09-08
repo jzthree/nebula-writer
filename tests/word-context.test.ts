@@ -252,7 +252,7 @@ describe("server: Word host context parsing and prompt rendering", () => {
     expect(selectionMode).toContain("The selection spans offsets");
     expect(selectionMode).not.toContain("<<<selected");
     expect(selectionMode).not.toContain("writer_read_document");
-    expect(selectionMode).toContain("orientation only");
+    expect(selectionMode).toContain("Use this state for orientation");
 
     expect(describeWordHostContext(null, { mode: "global", tooling: "mcp" })).toEqual([]);
   });
