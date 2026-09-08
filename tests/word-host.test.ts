@@ -490,7 +490,7 @@ describe("word host: placement anchors", () => {
     // The insertion half of the move lands first.
     const inserted = await applySuggestions(snapshot, [
       { id: "insert", suggestion: { original: "Epsilon.", replacement: "Epsilon. Moved clause." }, matchIndex: 0 }
-    ], { trackChanges: "off" });
+    ], { trackChanges: "word" });
     expect(inserted[0].ok).toBe(true);
     expect(mock.text).toBe("Alpha beta. Moved clause. Gamma.\nDelta. Epsilon. Moved clause.\nZeta.");
 
@@ -507,7 +507,7 @@ describe("word host: placement anchors", () => {
 
     const deleted = await applySuggestions(later, [
       { id: "delete", suggestion: { original: "Moved clause.", replacement: "", anchor }, matchIndex: null, preferredOffset: nearCaret }
-    ], { trackChanges: "off" });
+    ], { trackChanges: "word" });
     expect(deleted[0].ok).toBe(true);
     expect(mock.text).toBe("Alpha beta.  Gamma.\nDelta. Epsilon. Moved clause.\nZeta.");
   });
