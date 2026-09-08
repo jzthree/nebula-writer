@@ -92,6 +92,15 @@ and Codex resumes its recorded thread (`codex exec resume`), so "continue" or
 made on each suggestion. The thread lives until you start a new conversation
 or clear the pane.
 
+Applying edits only the words that change. The pane asks Word for the
+passage as word ranges and deletes or inserts just the differing words, so
+bold, italics, superscripts, links, and the rest of the passage keep their
+formatting (an inserted word takes the formatting of the word it follows);
+the tracked change Word shows is the minimal one. A near-total rewrite is
+replaced whole. An edit whose words would cut into a Word field — a citation
+or cross-reference — is refused with a reason rather than corrupting the
+field; leave it as a comment or edit the field in Word.
+
 Applying is batched: a card's Apply, and "Apply all" for a section or a
 reply, run as one exchange with Word (every search queued into one sync, one
 Track Changes toggle, every replacement queued into one sync, from the end of

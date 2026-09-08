@@ -28,6 +28,8 @@ export interface MockWordOptions {
   platform?: string;
   /** Inline pictures: which paragraph each sits in and its (base64) bytes. */
   pictures?: MockPictureSeed[];
+  /** Word fields (citations, cross-references) as absolute text spans. */
+  fields?: Array<{ from: number; to: number }>;
 }
 
 export interface MockPictureSeed {
@@ -79,6 +81,7 @@ export class MockWordHost {
   comments: MockComment[] = [];
   pictures: MockPictureSeed[] = [];
   pictureReplacements: MockPictureReplacement[] = [];
+  fields: Array<{ from: number; to: number }> = [];
   /** Every insertText/delete, tracked or not. */
   edits: MockTrackedChange[] = [];
   selectionHandlers = new Set<Handler>();
@@ -103,6 +106,7 @@ export class MockWordHost {
     };
     this.platform = options.platform ?? "Mac";
     this.pictures = (options.pictures ?? []).map((picture) => ({ ...picture }));
+    this.fields = (options.fields ?? []).map((field) => ({ ...field }));
   }
 
   /** Swap a picture's bytes, recording it (as tracked when tracking is on). */
@@ -490,11 +494,47 @@ export class MockRange {
   }
 
   insertText(text: string, location: string): MockRange {
+    if (location === "Start") {
+      const next = this.host.replaceRange(this.from, this.from, text);
+      return new MockRange(this.host, next.from, next.to);
+    }
+    if (location === "End") {
+      const next = this.host.replaceRange(this.to, this.to, text);
+      return new MockRange(this.host, next.from, next.to);
+    }
     if (location !== "Replace") {
       throw new Error(`Mock Word: unsupported insert location ${location}`);
     }
     const next = this.host.replaceRange(this.from, this.to, text);
     return new MockRange(this.host, next.from, next.to);
+  }
+
+  /** Word's getTextRanges: one range per piece ending at an ending mark (the mark kept when trimSpacing is false). */
+  getTextRanges(endingMarks: string[], trimSpacing = false): { items: MockRange[]; load: () => void } {
+    const text = this.text;
+    const items: MockRange[] = [];
+    let start = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      if (endingMarks.includes(text[index])) {
+        items.push(new MockRange(this.host, this.from + start, this.from + index + 1));
+        start = index + 1;
+      }
+    }
+    if (start < text.length) {
+      items.push(new MockRange(this.host, this.from + start, this.from + text.length));
+    }
+    if (trimSpacing) {
+      return { items: items.map((item) => { const piece = item.text; const trimmed = piece.trimEnd(); return new MockRange(this.host, item.from, item.from + trimmed.length); }), load: () => undefined };
+    }
+    return { items, load: () => undefined };
+  }
+
+  get fields(): { items: Array<{ result: MockRange; load: () => void }>; load: () => void } {
+    const host = this.host;
+    const items = host.fields
+      .filter((field) => field.from < this.to && field.to > this.from)
+      .map((field) => ({ result: new MockRange(host, field.from, field.to), load: () => undefined }));
+    return { items, load: () => undefined };
   }
 
   delete(): void {

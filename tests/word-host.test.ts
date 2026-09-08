@@ -9,6 +9,7 @@ import {
   readInlinePictureBase64,
   replaceInlinePicture,
   selectInlinePicture,
+  wordPieceOps,
   detectCapabilities,
   findSuggestionMatches,
   locateSuggestion,
@@ -184,9 +185,11 @@ describe("word host: suggestion actions", () => {
     expect(result.trackedChange).toBe(true);
     expect(mock.text).toContain(replacement);
     expect(mock.text).not.toContain(original);
-    expect(mock.trackedChanges).toEqual([{ from: expect.any(Number), to: expect.any(Number), original, replacement }]);
+    // Word-level application: several small tracked changes, none of them the whole sentence.
+    expect(mock.trackedChanges.length).toBeGreaterThan(1);
+    expect(mock.trackedChanges.every((change) => change.original !== original)).toBe(true);
     expect(mock.changeTrackingMode).toBe("Off");
-    expect(mock.text.slice(mock.selection.from, mock.selection.to)).toBe(replacement);
+    expect(mock.selection.from).toBeGreaterThanOrEqual(mock.text.indexOf(replacement));
   });
 
   it("follows Word's own tracking setting when asked", async () => {
@@ -194,7 +197,8 @@ describe("word host: suggestion actions", () => {
     const result = await applySuggestion(snapshot, { original, replacement }, { matchIndex: 0, trackChanges: "word" });
     expect(result.trackedChange).toBe(false);
     expect(mock.trackedChanges).toEqual([]);
-    expect(mock.edits.length).toBe(1);
+    expect(mock.edits.length).toBeGreaterThan(0);
+    expect(mock.text).toContain(replacement);
   });
 
   it("deletes text for an empty replacement", async () => {
@@ -379,5 +383,87 @@ describe("word host: inline pictures", () => {
     await commentInlinePicture(0, "Consider a higher-resolution export.");
     expect(mock.comments).toHaveLength(1);
     expect(mock.comments[0].text).toContain("higher-resolution");
+  });
+});
+
+describe("word host: formatting-safe application", () => {
+  const ORIGINAL = "Chromatin accessibility is actually a very important determinant of gene regulation, and it is the case that many studies have looked at it.";
+  const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
+
+  function pieces(text: string): string[] {
+    const out: string[] = [];
+    let start = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      if (text[index] === " ") {
+        out.push(text.slice(start, index + 1));
+        start = index + 1;
+      }
+    }
+    if (start < text.length) {
+      out.push(text.slice(start));
+    }
+    return out;
+  }
+
+  it("plans one operation per changed run: replace, delete, insert, and end-of-passage spacing", () => {
+    expect(wordPieceOps(pieces("The quick brown fox jumps"), "The quick red fox leaps")).toEqual([
+      { kind: "replace", from: 2, to: 2, text: "red " },
+      { kind: "replace", from: 4, to: 4, text: "leaps" }
+    ]);
+    expect(wordPieceOps(pieces("The quick brown fox"), "The brown fox")).toEqual([{ kind: "delete", from: 1, to: 1 }]);
+    expect(wordPieceOps(pieces("A b c d e"), "A e")).toEqual([{ kind: "delete", from: 1, to: 3 }]);
+    expect(wordPieceOps(pieces("The quick fox"), "The quick brown fox")).toEqual([{ kind: "insertEnd", index: 1, text: "brown " }]);
+    expect(wordPieceOps(pieces("quick fox"), "The quick fox")).toEqual([{ kind: "insertStart", index: 0, text: "The " }]);
+    expect(wordPieceOps(pieces("The quick fox"), "The quick fox again")).toEqual([{ kind: "insertEnd", index: 2, text: " again" }]);
+    expect(wordPieceOps(pieces("The quick fox jumps"), "The quick fox")).toEqual([{ kind: "replace", from: 2, to: 3, text: "fox" }]);
+    expect(wordPieceOps(pieces("Same text"), "Same text")).toEqual([]);
+    expect(wordPieceOps(pieces(ORIGINAL), REPLACEMENT)).toEqual([
+      { kind: "delete", from: 3, to: 3 },
+      { kind: "replace", from: 5, to: 6, text: "key " },
+      { kind: "delete", from: 12, to: 16 },
+      { kind: "replace", from: 20, to: 21, text: "examined " }
+    ]);
+  });
+
+  it("applies a rewrite by touching only the changed runs, so the rest keeps its formatting", async () => {
+    const { snapshot } = await boot();
+    expect(mock.text).toContain(ORIGINAL);
+    const result = await applySuggestion(snapshot, { original: ORIGINAL, replacement: REPLACEMENT }, { matchIndex: 0, trackChanges: "always" });
+    expect(result.strategy).toBe("words");
+    expect(mock.text).toContain(REPLACEMENT);
+    expect(mock.text).not.toContain(ORIGINAL);
+    expect(mock.trackedChanges.map((change) => [change.original, change.replacement])).toEqual([
+      ["looked at ", "examined "],
+      ["it is the case that ", ""],
+      ["very important ", "key "],
+      ["actually ", ""]
+    ]);
+    expect(mock.changeTrackingMode).toBe("Off");
+  });
+
+  it("keeps a whole-range replace for near-total rewrites", async () => {
+    const { snapshot } = await boot();
+    const result = await applySuggestion(snapshot, { original: ORIGINAL, replacement: "Open chromatin governs which genes fire." }, { matchIndex: 0, trackChanges: "word" });
+    expect(result.strategy).toBe("range");
+    expect(mock.edits).toHaveLength(1);
+    expect(mock.text).toContain("Open chromatin governs which genes fire.");
+  });
+
+  it("refuses to cut into a Word field and says so", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({ paragraphs: sampleGrantDocument(), documentName: "Aims draft.docx" }).install();
+    const start = mock.text.indexOf(ORIGINAL);
+    const fieldFrom = start + ORIGINAL.indexOf("determinant");
+    mock.fields = [{ from: fieldFrom, to: fieldFrom + "determinant".length }];
+    const { snapshot } = await boot();
+    const [blocked] = await applySuggestions(snapshot, [{ id: "a", suggestion: { original: ORIGINAL, replacement: ORIGINAL.replace("determinant", "driver") }, matchIndex: 0 }], { trackChanges: "word" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) {
+      expect(blocked.error).toContain("Word field");
+    }
+    expect(mock.edits).toHaveLength(0);
+    const [allowed] = await applySuggestions(snapshot, [{ id: "b", suggestion: { original: ORIGINAL, replacement: ORIGINAL.replace("looked at", "examined") }, matchIndex: 0 }], { trackChanges: "word" });
+    expect(allowed.ok).toBe(true);
+    expect(mock.text).toContain("many studies have examined it.");
   });
 });

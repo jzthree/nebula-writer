@@ -13,6 +13,7 @@
 
 /// <reference types="office-js" />
 
+import { wordDiffSegments } from "../wordDiff";
 import type { AiSuggestion, SelectionContext } from "../shared";
 import {
   collapseWhitespace,
@@ -75,8 +76,14 @@ export interface ApplyResult {
   trackedChange: boolean;
   matches: number;
   matchIndex: number;
-  /** "paragraphs": applied piece by piece inside each paragraph (marks and styles untouched). */
-  strategy: "range" | "paragraphs";
+  /**
+   * "words": only the changed words were deleted/inserted, so the formatting
+   * of everything else in the passage (bold, italics, superscripts, links,
+   * citation fields) survived. "paragraphs": applied piece by piece inside
+   * each paragraph (marks and styles untouched). "range": the whole passage
+   * was replaced (near-total rewrites).
+   */
+  strategy: "range" | "paragraphs" | "words";
 }
 
 const WORD_SEARCH_MAX_CHARS = 250;
@@ -706,7 +713,10 @@ async function runApplyPass(
   }
   try {
     const strategies = new Map<Target, ApplyResult["strategy"]>();
+    const failures = new Map<Target, string>();
     let earliest: Word.Range | null = null;
+    // Word-level plans for every eligible target, loaded in one sync.
+    const wordPlans = await planWordLevelEdits(context, ready.filter((target) => wordLevelEligible(target.item.suggestion)).map((target) => ({ key: target, range: target.range, suggestion: target.item.suggestion })));
     for (const target of ready) {
       const { suggestion } = target.item;
       if (await applyPerParagraph(context, target.range, suggestion)) {
@@ -714,13 +724,24 @@ async function runApplyPass(
         earliest = target.range;
         continue;
       }
-      strategies.set(target, "range");
       if (suggestion.replacement.trim() === "") {
+        strategies.set(target, "range");
         target.range.delete();
         earliest = target.range;
-      } else {
-        earliest = target.range.insertText(suggestion.replacement, "Replace");
+        continue;
       }
+      const plan = wordPlans.get(target);
+      if (plan && "error" in plan) {
+        failures.set(target, plan.error);
+        continue;
+      }
+      if (plan) {
+        strategies.set(target, "words");
+        earliest = applyWordPlan(plan);
+        continue;
+      }
+      strategies.set(target, "range");
+      earliest = target.range.insertText(suggestion.replacement, "Replace");
     }
     if (earliest) {
       // One selection for the whole batch: Word scrolls once, to the first change.
@@ -728,6 +749,11 @@ async function runApplyPass(
     }
     await context.sync();
     for (const target of ready) {
+      const failure = failures.get(target);
+      if (failure) {
+        outcomes.set(target.item.id, { id: target.item.id, ok: false, error: failure });
+        continue;
+      }
       outcomes.set(target.item.id, {
         id: target.item.id,
         ok: true,
@@ -741,6 +767,213 @@ async function runApplyPass(
     }
   }
   return [...deferred].map((target) => target.item);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Word-level application: edit only the words that change                   */
+/* ------------------------------------------------------------------------- */
+
+type PieceOp =
+  | { kind: "replace"; from: number; to: number; text: string }
+  | { kind: "delete"; from: number; to: number }
+  | { kind: "insertStart"; index: number; text: string }
+  | { kind: "insertEnd"; index: number; text: string };
+
+type WordPlan = { pieces: Word.Range[]; ops: PieceOp[] } | { error: string };
+
+/** Single-paragraph rewrites with something worth keeping: a whole-range replace would flatten the formatting of the untouched words. */
+function wordLevelEligible(suggestion: Pick<AiSuggestion, "original" | "replacement">): boolean {
+  if (!suggestion.replacement.trim() || normalizeWordText(suggestion.original).includes("\n") || suggestion.replacement.includes("\n")) {
+    return false;
+  }
+  return wordDiffSegments(suggestion.original, suggestion.replacement) !== null;
+}
+
+function opPieceIndexes(op: PieceOp): number[] {
+  if (op.kind === "insertStart" || op.kind === "insertEnd") {
+    return [op.index];
+  }
+  const indexes: number[] = [];
+  for (let index = op.from; index <= op.to; index += 1) {
+    indexes.push(index);
+  }
+  return indexes;
+}
+
+/**
+ * Word's view of the passage: one range per word (its trailing space kept),
+ * each carrying its own formatting. Replacing or deleting only the run of
+ * words that changed keeps every other word exactly as it was; new words
+ * inherit the formatting of the first word they replace or the word they
+ * follow. Fields inside the passage are protected: an edit whose words touch
+ * a field result fails with a reason instead of corrupting a citation or
+ * cross-reference.
+ */
+async function planWordLevelEdits<Key>(
+  context: Word.RequestContext,
+  targets: Array<{ key: Key; range: Word.Range; suggestion: Pick<AiSuggestion, "original" | "replacement"> }>
+): Promise<Map<Key, WordPlan>> {
+  const plans = new Map<Key, WordPlan>();
+  if (!targets.length) {
+    return plans;
+  }
+  const loaded = targets.map((target) => {
+    const pieces = target.range.getTextRanges([" ", "\t", "\u00a0"], false);
+    pieces.load("items/text");
+    let fields: Word.FieldCollection | null = null;
+    try {
+      fields = target.range.fields;
+      fields.load("items");
+    } catch {
+      fields = null;
+    }
+    return { target, pieces, fields };
+  });
+  await context.sync();
+
+  const checks: Array<{ key: Key; results: Array<OfficeExtension.ClientResult<Word.LocationRelation>> }> = [];
+  for (const entry of loaded) {
+    const pieces = entry.pieces.items ?? [];
+    const texts = pieces.map((piece) => piece.text ?? "");
+    if (!pieces.length || collapseWhitespace(normalizeWordText(texts.join(""))) !== collapseWhitespace(normalizeWordText(entry.target.suggestion.original))) {
+      continue; // Word split it differently than expected: fall back to a range replace.
+    }
+    const ops = wordPieceOps(texts, entry.target.suggestion.replacement);
+    if (!ops.length) {
+      continue;
+    }
+    plans.set(entry.target.key, { pieces, ops });
+    let fieldItems: Word.Field[] = [];
+    try {
+      fieldItems = entry.fields?.items ?? [];
+    } catch {
+      fieldItems = [];
+    }
+    if (fieldItems.length) {
+      const touched = [...new Set(ops.flatMap(opPieceIndexes))].map((index) => pieces[index]).filter(Boolean);
+      const results: Array<OfficeExtension.ClientResult<Word.LocationRelation>> = [];
+      for (const field of fieldItems) {
+        for (const piece of touched) {
+          results.push(piece.compareLocationWith(field.result));
+        }
+      }
+      checks.push({ key: entry.target.key, results });
+    }
+  }
+  if (checks.length) {
+    await context.sync();
+    for (const check of checks) {
+      if (check.results.some((result) => relationOrder(String(result.value)) === 0)) {
+        plans.set(check.key, { error: "This change would cut into a Word field (a citation or cross-reference). Leave it as a comment, or edit the field in Word." });
+      }
+    }
+  }
+  return plans;
+}
+
+/**
+ * Edit script over Word's word pieces (texts include their trailing space)
+ * that turns them into the replacement with one operation per changed run:
+ * a run of changed words becomes one replace (new words inherit the first
+ * replaced word's formatting), a run of dropped words one delete, and a pure
+ * insertion goes at the end of the previous piece (or the start of the first).
+ */
+export function wordPieceOps(pieceTexts: string[], replacement: string): PieceOp[] {
+  const words = pieceTexts.map((text) => collapseWhitespace(normalizeWordText(text)));
+  const targetWords = collapseWhitespace(normalizeWordText(replacement)).split(" ").filter(Boolean);
+  const n = words.length;
+  const m = targetWords.length;
+  if (n + m > 3000) {
+    return [];
+  }
+  const cols = m + 1;
+  const lcs = new Array<number>((n + 1) * cols).fill(0);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lcs[i * cols + j] = words[i] === targetWords[j]
+        ? lcs[(i + 1) * cols + j + 1] + 1
+        : Math.max(lcs[(i + 1) * cols + j], lcs[i * cols + j + 1]);
+    }
+  }
+  const trailingSpace = (index: number) => {
+    const text = pieceTexts[index] ?? "";
+    return text.slice(text.trimEnd().length);
+  };
+  const ops: PieceOp[] = [];
+  let i = 0;
+  let j = 0;
+  let lastKept = -1;
+  while (i < n || j < m) {
+    if (i < n && j < m && words[i] === targetWords[j]) {
+      lastKept = i;
+      i += 1;
+      j += 1;
+      continue;
+    }
+    const deleted: number[] = [];
+    const inserted: string[] = [];
+    while (i < n && (j >= m || words[i] !== targetWords[j]) && (j >= m || lcs[(i + 1) * cols + j] >= lcs[i * cols + j + 1])) {
+      deleted.push(i);
+      i += 1;
+    }
+    while (j < m && (i >= n || words[i] !== targetWords[j]) && (i >= n || lcs[i * cols + j + 1] > lcs[(i + 1) * cols + j])) {
+      inserted.push(targetWords[j]);
+      j += 1;
+    }
+    if (!deleted.length && !inserted.length) {
+      break;
+    }
+    const first = deleted[0];
+    const last = deleted[deleted.length - 1];
+    if (deleted.length && inserted.length) {
+      ops.push({ kind: "replace", from: first, to: last, text: `${inserted.join(" ")}${trailingSpace(last)}` });
+      lastKept = last;
+    } else if (deleted.length) {
+      if (last === n - 1 && first > 0 && lastKept === first - 1 && trailingSpace(first - 1)) {
+        // Dropping the passage's tail: the new last word must not keep the space that separated it.
+        ops.push({ kind: "replace", from: first - 1, to: last, text: pieceTexts[first - 1].trimEnd() });
+      } else {
+        ops.push({ kind: "delete", from: first, to: last });
+      }
+    } else {
+      const text = inserted.join(" ");
+      if (lastKept >= 0) {
+        ops.push({ kind: "insertEnd", index: lastKept, text: trailingSpace(lastKept) ? `${text} ` : ` ${text}` });
+      } else {
+        ops.push({ kind: "insertStart", index: 0, text: `${text} ` });
+      }
+    }
+  }
+  return ops;
+}
+
+/** Queue the plan's operations (later pieces first so earlier ones stay put); returns the earliest touched range for selection. */
+function applyWordPlan(plan: { pieces: Word.Range[]; ops: PieceOp[] }): Word.Range | null {
+  const position = (op: PieceOp) => (op.kind === "insertStart" || op.kind === "insertEnd" ? op.index : op.from);
+  const ordered = [...plan.ops].sort((a, b) => position(b) - position(a));
+  let earliest: Word.Range | null = null;
+  for (const op of ordered) {
+    if (op.kind === "insertStart" || op.kind === "insertEnd") {
+      const piece = plan.pieces[op.index];
+      if (piece) {
+        earliest = piece.insertText(op.text, op.kind === "insertStart" ? "Start" : "End");
+      }
+      continue;
+    }
+    const first = plan.pieces[op.from];
+    const last = plan.pieces[op.to];
+    if (!first || !last) {
+      continue;
+    }
+    const range = op.from === op.to ? first : first.expandTo(last);
+    if (op.kind === "replace") {
+      earliest = range.insertText(op.text, "Replace");
+    } else {
+      range.delete();
+      earliest = range;
+    }
+  }
+  return earliest;
 }
 
 /** -1: a precedes b; 1: a follows b; 0: they touch or overlap (or Word could not tell). */

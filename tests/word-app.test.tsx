@@ -270,8 +270,8 @@ describe("Word task pane", () => {
     expect(captured.chat[0].content).toContain("[Word pane sent Selection · 23 words");
 
     fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
-    await waitFor(() => expect(mock.trackedChanges.length).toBe(1));
-    expect(mock.text).toContain(REPLACEMENT);
+    await waitFor(() => expect(mock.text).toContain(REPLACEMENT));
+    expect(mock.trackedChanges.length).toBeGreaterThan(0);
     expect(mock.changeTrackingMode).toBe("Off");
     await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
     await waitFor(() => expect(captured.statusUpdates).toEqual([{ id: "s-1", status: "accepted", note: "Applied in Word as a tracked change" }]));
@@ -499,9 +499,11 @@ describe("Word task pane", () => {
     expect(screen.getByLabelText("Apply all 2 in this reply")).toBeInTheDocument();
     const runsBefore = mock.runCount;
     fireEvent.click(screen.getByLabelText("Apply all 2 in Significance"));
-    await waitFor(() => expect(mock.trackedChanges.length).toBe(2), { timeout: 8_000 });
-    expect(mock.text).toContain(REPLACEMENT);
-    expect(mock.text).toContain("which no prior study has attempted");
+    await waitFor(() => {
+      expect(mock.text).toContain(REPLACEMENT);
+      expect(mock.text).toContain("which no prior study has attempted");
+    }, { timeout: 8_000 });
+    expect(mock.trackedChanges.length).toBeGreaterThanOrEqual(2);
     await waitFor(() => expect(screen.getByText(/Applied 2 suggestions as tracked changes/)).toBeInTheDocument());
     expect(screen.getByText("1 pending")).toBeInTheDocument();
     expect(captured.statusUpdates.filter((update) => update.status === "accepted").length).toBe(2);
