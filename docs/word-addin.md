@@ -153,6 +153,31 @@ terminal `claude`, the web app) arrive as their own turn. With *Mirror this
 conversation* on, the turns are appended to the shared session's chat so the
 web app shows the same history.
 
+
+### Inline emphasis (bold, italic, underline, highlight)
+
+Emphasis is how key claims are signposted in a grant, so the pane reads it
+and the AI can write it. The snapshot carries bold/italic/underline/highlight
+spans over the body text (paragraphs with a uniform font cost nothing extra;
+mixed paragraphs are read word by word in one more round trip). Every request
+and the shared session text carry the spans, and the AI sees the document with
+markers:
+
+```
+**bold**   *italic*   __underline__   ==highlight==
+```
+
+The AI quotes originals with the markers as shown and uses them in
+replacements to keep, add, or remove emphasis; a replacement without markers
+where the original had them removes the emphasis, and an emphasis-only edit
+(bold this phrase) is a real suggestion. Cards render the emphasis on both
+sides of the diff. Apply sets the requested formatting word by word after the
+text lands, writing only what differs (so tracked changes stay clean) and
+formatting the spaces between equally emphasised words so an underline or
+highlight runs through. A suggestion the AI wrote in plain text still inherits
+the formatting of the words it replaces, as before. The web app and the DOCX
+export behave the same way (see `docs/agentic-ai.md`).
+
 ### What the agent can pull, and the tool-call trail
 
 The briefing pushed with a request stays small (window state, selection,

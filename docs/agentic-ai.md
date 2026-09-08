@@ -166,3 +166,33 @@ stream parsers, staging validation, prompt builder).
 ## Structural reads and live window state (2026-09-01)
 
 `writer_read_context` reads by structure (paragraph / section / page / selection / outline / document) against the run snapshot, anchored on the Word add-in's caret. The add-in pushes its window state and a paragraph index continuously (`POST /api/word/context`); `server/agent-run.ts` keeps a live source so `writer_get_selection` and `writer_read_context` follow the author mid-run when the document name matches. Every agent event is recorded in `AgentRunContext.activity` and returned as `AiResponse.activity`, which the Word pane renders as the reply's tool-call trail.
+
+## Inline emphasis (2026-09-08)
+
+Document text stays plain everywhere offsets matter (anchors, searches,
+placement); emphasis rides alongside as spans (`src/emphasis.ts`,
+`EmphasisSpan`: `{ start, end, bold?, italic?, underline?, highlight? }`).
+
+- **What the model reads.** `AiRequest.documentEmphasis` (from the Word
+  snapshot, the web editor's marks, or the live Yjs document for terminal
+  agents) is rendered into every prompt and tool read as markers:
+  `**bold**`, `*italic*`, `__underline__`, `==highlight==` — the Document
+  context block, the selection Text block, coverage chunks,
+  `writer_read_document`, `writer_search_document`, `writer_read_context`.
+  One generic line (`EMPHASIS_NOTATION_NOTE`) explains the notation.
+- **What the model writes.** `original` and `replacement` may carry markers.
+  Staging parses them out (`server/emphasis-staging.ts`): the suggestion's
+  `original`/`replacement` are stored plain, and when markers were used the
+  suggestion records `emphasis: { original, replacement }` — the original
+  side is what the document actually carries at the anchor, the replacement
+  side is what the AI asked for. No markers anywhere means "leave emphasis
+  alone": hosts carry the original's emphasis across the edit
+  (`carryEmphasis`: kept words keep theirs, inserted words inherit from the
+  word before). An emphasis-only edit is a valid suggestion.
+- **Hosts.** Word: a formatting pass after the text lands sets each word's
+  font to exactly the requested emphasis, writing only differences. Web:
+  requested emphasis becomes marks (`replacementToContent`,
+  inline suggestion marks), carried emphasis otherwise. DOCX export: inserted
+  runs are split by emphasis with `w:b`/`w:i`/`w:u`/`w:highlight` toggled on
+  the run properties inherited from the patched run.
+
