@@ -57,9 +57,11 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
+    "@google/clasp": "^3.4.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@types/express": "^5.0.0",
+    "@types/google-apps-script": "^2.0.13",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.2",
     "@types/office-js": "^1.0.608",

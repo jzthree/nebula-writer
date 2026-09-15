@@ -43,7 +43,7 @@ import {
   subscribeParagraphChanges,
   subscribeSelectionChanges,
   waitForWordHost,
-  type WordCapabilities, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture } from "./wordHost";
+  type WordCapabilities, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture } from "./hostBridge";
 import {
   appendSessionChat,
   fetchHealth,
@@ -77,6 +77,8 @@ interface ModelPreference {
 interface PaneSettings {
   requesterName: string;
   trackChanges: "always" | "word";
+  /** Hosts without tracked changes: colour the text Writer changed so it stands out. */
+  highlightChanges: boolean;
   shareWithAgents: boolean;
   mirrorChat: boolean;
   toolAccess: AiToolAccess;
@@ -93,6 +95,7 @@ const SETTINGS_KEY = "nebula-writer:word-pane:settings";
 const DEFAULT_SETTINGS: PaneSettings = {
   requesterName: "",
   trackChanges: "always",
+  highlightChanges: true,
   shareWithAgents: true,
   mirrorChat: true,
   toolAccess: DEFAULT_AI_TOOL_ACCESS,
@@ -139,6 +142,7 @@ function loadSettings(): PaneSettings {
     return {
       requesterName: typeof parsed.requesterName === "string" ? parsed.requesterName : DEFAULT_SETTINGS.requesterName,
       trackChanges: parsed.trackChanges === "word" ? "word" : "always",
+      highlightChanges: typeof parsed.highlightChanges === "boolean" ? parsed.highlightChanges : DEFAULT_SETTINGS.highlightChanges,
       shareWithAgents: typeof parsed.shareWithAgents === "boolean" ? parsed.shareWithAgents : DEFAULT_SETTINGS.shareWithAgents,
       mirrorChat: typeof parsed.mirrorChat === "boolean" ? parsed.mirrorChat : DEFAULT_SETTINGS.mirrorChat,
       toolAccess: isAiToolAccess(parsed.toolAccess) ? parsed.toolAccess : DEFAULT_SETTINGS.toolAccess,
@@ -177,7 +181,7 @@ function turnId(): string {
 
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus>("booting");
-  const [hostDetail, setHostDetail] = useState("Connecting to Microsoft Word…");
+  const [hostDetail, setHostDetail] = useState("Connecting to the document…");
   const [capabilities, setCapabilities] = useState<WordCapabilities>(() => detectCapabilities(false));
   const [snapshot, setSnapshot] = useState<WordDocumentSnapshot | null>(null);
   const [focus, setFocus] = useState<WordFocusState | null>(null);
@@ -581,7 +585,7 @@ export function App() {
       return;
     }
     const timer = setTimeout(() => {
-      const hostContext = buildHostContext(snapshot, focus, trailRef.current);
+      const hostContext = buildHostContext(snapshot, focus, trailRef.current, capabilities.hostName === "Google Docs" ? "google-docs" : "word-addin");
       const textChanged = lastPushedTextRef.current !== snapshot.bodyText;
       pushWordContext({
         documentName: snapshot.documentName,
@@ -686,7 +690,7 @@ export function App() {
         documentEmphasis: snap.emphasis ?? [],
         selection: resolved.selection ?? currentFocus?.selection ?? null,
         documentName: snap.documentName,
-        requestedBy: settingsRef.current.requesterName.trim() || "Word",
+        requestedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),
         toolAccess: settingsRef.current.toolAccess,
         ...(documentImages.length ? { documentImages } : {}),
         hostContext,
@@ -881,7 +885,7 @@ export function App() {
       matches: found.matches.length,
       heading: heading ? excerpt(heading.text, 60) : null,
       paragraphIndex: match?.paragraphIndex ?? null,
-      error: found.matches.length ? null : "Word could not find this text — the passage may have changed."
+      error: found.matches.length ? null : "The document no longer contains this text — the passage may have changed."
     };
     patchCard(suggestion.id, next);
     return next;
@@ -951,7 +955,7 @@ export function App() {
   const recordDecision = useCallback(async (suggestion: AiSuggestion, status: SuggestionStatus, note: string) => {
     try {
       await updateSuggestionStatus(suggestion.id, status, {
-        decidedBy: settingsRef.current.requesterName.trim() || "Word",
+        decidedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),
         decisionNote: note
       });
     } catch {
@@ -976,7 +980,7 @@ export function App() {
         preferredOffset: preferredOffset(suggestion, snap)
       };
     });
-    const outcomes = items.length ? await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges }) : [];
+    const outcomes = items.length ? await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges, highlightChanges: settingsRef.current.highlightChanges }) : [];
     const byId = new Map(group.map((suggestion) => [suggestion.id, suggestion]));
     const applied: Array<{ suggestion: AiSuggestion; trackedChange: boolean }> = [];
     const failed: Array<{ suggestion: AiSuggestion; error: string }> = [];
@@ -1292,8 +1296,8 @@ export function App() {
   }, [focus, sharedWithAgents, snapshot, trail]);
 
   const capabilityRows = useMemo<CapabilityRow[]>(() => [
-    { label: "Word host", ok: capabilities.host, detail: capabilities.host ? `${capabilities.platform ?? "desktop"}${capabilities.officeVersion ? ` · Office ${capabilities.officeVersion}` : ""}` : hostDetail },
-    { label: "Tracked changes & comments", ok: capabilities.trackChanges && capabilities.comments, detail: capabilities.trackChanges ? "WordApi 1.4" : "Needs WordApi 1.4 (update Word)" },
+    { label: `${capabilities.hostName ?? "Word"} host`, ok: capabilities.host, detail: capabilities.host ? `${capabilities.platform ?? "desktop"}${capabilities.officeVersion ? ` · Office ${capabilities.officeVersion}` : ""}` : hostDetail },
+    { label: "Tracked changes & comments", ok: capabilities.trackChanges && capabilities.comments, detail: capabilities.trackChanges ? "WordApi 1.4" : capabilities.hostName === "Google Docs" ? "Google Docs applies edits directly — turn on change highlighting below" : "Needs WordApi 1.4 (update Word)" },
     { label: "Viewport (pages on screen)", ok: capabilities.viewport, detail: capabilities.viewport ? "WordApiDesktop 1.2" : "Not available in this Word build — caret and selection still work" },
     { label: "Selection events", ok: capabilities.selectionEvents, detail: capabilities.selectionEvents ? "Live caret tracking" : "Polling only" },
     { label: "Paragraph events", ok: capabilities.paragraphEvents, detail: capabilities.paragraphEvents ? "WordApi 1.6 — re-reads on edits" : "Polling every 20 s" },
@@ -1395,7 +1399,9 @@ export function App() {
       scope={settings.scope}
       scopeLabel={scopeResolution?.label ?? "Waiting for the document…"}
       scopeOptions={scopeOptions}
-      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat, toolAccess: settings.toolAccess }}
+      hostName={capabilities.hostName ?? "Word"}
+      tracksChanges={capabilities.trackChanges}
+      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, highlightChanges: settings.highlightChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat, toolAccess: settings.toolAccess }}
       sidecarDetail={sidecarDetail}
       sidecarStatus={sidecarStatus}
       suggestionById={suggestionById}

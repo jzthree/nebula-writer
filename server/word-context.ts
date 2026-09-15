@@ -45,7 +45,7 @@ export function parseWordHostContext(value: unknown): { hostContext: WordHostCon
   }
   return {
     hostContext: {
-      source: "word-addin",
+      source: raw.source === "google-docs" ? "google-docs" : "word-addin",
       documentName: optionalString(raw.documentName, 200),
       capturedAt: typeof raw.capturedAt === "string" && raw.capturedAt.trim() ? raw.capturedAt.trim().slice(0, 40) : new Date().toISOString(),
       documentLength,

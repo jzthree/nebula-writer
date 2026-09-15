@@ -188,7 +188,11 @@ export interface WordPaneProps {
   scope: RequestScope;
   scopeLabel: string;
   scopeOptions: ScopeOption[];
-  settings: { requesterName: string; trackChanges: "always" | "word"; shareWithAgents: boolean; mirrorChat: boolean; toolAccess: AiToolAccess };
+  settings: { requesterName: string; trackChanges: "always" | "word"; highlightChanges: boolean; shareWithAgents: boolean; mirrorChat: boolean; toolAccess: AiToolAccess };
+  /** "Word" or "Google Docs" — for labels. */
+  hostName: "Word" | "Google Docs";
+  /** Whether the host records edits as tracked changes (Word) — else the highlight option is offered. */
+  tracksChanges: boolean;
   sidecarDetail: string;
   sidecarStatus: SidecarStatus;
   suggestionById: (id: string) => AiSuggestion | null;
@@ -205,13 +209,13 @@ export function WordPane(props: WordPaneProps) {
           <span className="wp-brand-mark" aria-hidden="true">N</span>
           <div>
             <p className="wp-eyebrow">Nebula Writer</p>
-            <h1>Word review pane</h1>
+            <h1>{props.hostName === "Google Docs" ? "Google Docs review pane" : "Word review pane"}</h1>
           </div>
         </div>
         <div className="wp-status-pills">
           <StatusPill
             tone={props.hostStatus === "ready" ? "ok" : props.hostStatus === "booting" ? "pending" : "warn"}
-            label={props.hostStatus === "ready" ? "Word" : props.hostStatus === "booting" ? "Word…" : "No Word"}
+            label={props.hostStatus === "ready" ? props.hostName : props.hostStatus === "booting" ? `${props.hostName}…` : `No ${props.hostName}`}
             title={props.hostDetail}
           />
           <StatusPill
@@ -240,7 +244,7 @@ export function WordPane(props: WordPaneProps) {
       ) : null}
 
       {settingsOpen ? (
-        <SettingsPanel capabilityRows={props.capabilityRows} modelControls={props.modelControls} onSettingsChange={props.onSettingsChange} settings={props.settings} />
+        <SettingsPanel tracksChanges={props.tracksChanges} capabilityRows={props.capabilityRows} modelControls={props.modelControls} onSettingsChange={props.onSettingsChange} settings={props.settings} />
       ) : null}
 
       <Transcript
@@ -880,6 +884,7 @@ function SettingsPanel(props: {
   modelControls: ModelControls;
   onSettingsChange: (patch: Partial<WordPaneProps["settings"]>) => void;
   settings: WordPaneProps["settings"];
+  tracksChanges: boolean;
 }) {
   const catalog = props.modelControls.catalog;
   return (
@@ -906,6 +911,12 @@ function SettingsPanel(props: {
         <input type="checkbox" checked={props.settings.shareWithAgents} onChange={(event) => props.onSettingsChange({ shareWithAgents: event.currentTarget.checked })} />
         <span>Share this document and my position with Writer agents (terminal / MCP)</span>
       </label>
+      {props.tracksChanges ? null : (
+        <label className="wp-toggle">
+          <input type="checkbox" checked={props.settings.highlightChanges} onChange={(event) => props.onSettingsChange({ highlightChanges: event.currentTarget.checked })} />
+          <span>Highlight the text Writer changes in the document</span>
+        </label>
+      )}
       <label className="wp-toggle">
         <input type="checkbox" checked={props.settings.mirrorChat} onChange={(event) => props.onSettingsChange({ mirrorChat: event.currentTarget.checked })} />
         <span>Mirror this conversation into the shared Writer session</span>

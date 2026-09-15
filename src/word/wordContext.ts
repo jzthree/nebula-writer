@@ -354,13 +354,13 @@ export function updateFocusTrail(trail: FocusTrailEntry[], focus: WordFocusState
   return [...base.filter((item) => item.paragraphIndex !== paragraph.index), entry].slice(-WORD_HOST_CONTEXT_LIMITS.recentFocus);
 }
 
-export function buildHostContext(snapshot: WordDocumentSnapshot, focus: WordFocusState | null, trail: FocusTrailEntry[]): WordHostContext {
+export function buildHostContext(snapshot: WordDocumentSnapshot, focus: WordFocusState | null, trail: FocusTrailEntry[], source: WordHostContext["source"] = "word-addin"): WordHostContext {
   const cursorParagraph = focus && focus.cursorParagraphIndex !== null ? snapshot.paragraphs[focus.cursorParagraphIndex] ?? null : null;
   const heading = cursorParagraph ? nearestHeading(snapshot.paragraphs, cursorParagraph.index) : null;
   const cursorOffset = focus?.cursorOffset ?? 0;
   const viewport = focus?.viewport ?? null;
   return {
-    source: "word-addin",
+    source,
     documentName: snapshot.documentName,
     capturedAt: focus?.capturedAt ?? snapshot.capturedAt,
     documentLength: snapshot.bodyText.length,

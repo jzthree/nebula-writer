@@ -360,7 +360,7 @@ export interface WordHostContextParagraph {
 }
 
 export interface WordHostContext {
-  source: "word-addin";
+  source: "word-addin" | "google-docs";
   documentName: string | null;
   capturedAt: string;
   documentLength: number;

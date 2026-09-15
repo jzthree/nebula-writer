@@ -30,8 +30,10 @@ import {
   type WordViewportState, type WordPictureInfo } from "./wordContext";
 
 export interface WordCapabilities {
-  /** Running inside Microsoft Word (not a plain browser). */
+  /** Running inside the host application (not a plain browser). */
   host: boolean;
+  /** "Word" or "Google Docs" — for labels; absent means Word. */
+  hostName?: "Word" | "Google Docs";
   /** WordApi 1.4: insertComment. */
   comments: boolean;
   /** WordApi 1.4: changeTrackingMode. */
@@ -123,6 +125,7 @@ export function detectCapabilities(host: boolean): WordCapabilities {
   const office = officeGlobal();
   return {
     host,
+    hostName: "Word",
     comments: host && isSetSupported("WordApi", "1.4"),
     trackChanges: host && isSetSupported("WordApi", "1.4"),
     paragraphStyles: host && isSetSupported("WordApi", "1.3"),
@@ -699,6 +702,8 @@ export type BatchApplyOutcome =
 
 export interface BatchApplyOptions {
   trackChanges: ApplyOptions["trackChanges"];
+  /** Hosts without tracked changes (Google Docs) mark the new text with a background colour when set. */
+  highlightChanges?: boolean;
 }
 
 /**
