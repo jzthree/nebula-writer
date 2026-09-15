@@ -13,7 +13,9 @@ export default defineConfig({
       // task pane (served by the sidecar at /word/taskpane.html over HTTPS).
       input: {
         main: resolve(root, "index.html"),
-        word: resolve(root, "word/taskpane.html")
+        word: resolve(root, "word/taskpane.html"),
+        // Google Docs sidebar pane (embedded by the add-in's Sidebar.html).
+        gdocs: resolve(root, "gdocs/pane.html")
       }
     }
   },

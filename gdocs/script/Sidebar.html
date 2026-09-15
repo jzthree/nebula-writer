@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top" />
+    <meta charset="UTF-8" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #fff; font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2933; }
+      iframe { border: 0; width: 100%; height: 100%; display: block; }
+      #notice { display: none; padding: 16px; }
+      #notice.show { display: block; }
+      #notice code { background: #f1f3f5; padding: 1px 4px; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <div id="notice">
+      <p><strong>Writer is not reachable.</strong></p>
+      <p>Start the Nebula Writer sidecar on this computer (it serves the pane at <code>https://localhost:8443/gdocs/pane.html</code>), then reopen this sidebar. If your browser asks to allow local network access, accept.</p>
+    </div>
+    <iframe id="pane" src="https://localhost:8443/gdocs/pane.html" allow="clipboard-write"></iframe>
+    <script>
+      // The pane (served by the local sidecar) runs in the iframe; this page
+      // owns google.script.run and relays {fn, args} calls to the add-in's
+      // Apps Script functions. Only the pane's origin is trusted, and only
+      // the add-in's nebula* functions can be called.
+      (function () {
+        var PANE_ORIGIN = "https://localhost:8443";
+        var ALLOWED = ["nebulaReadDocument","nebulaReadFocus","nebulaFocusKey","nebulaFingerprint","nebulaSelect","nebulaApply","nebulaReadImage","nebulaReplaceImage","nebulaSelectImage"];
+        var frame = document.getElementById("pane");
+        var notice = document.getElementById("notice");
+        var announced = false;
+
+        function announce() {
+          if (frame.contentWindow) {
+            frame.contentWindow.postMessage({ nebula: "host-ready" }, PANE_ORIGIN);
+            announced = true;
+          }
+        }
+
+        window.addEventListener("message", function (event) {
+          if (event.origin !== PANE_ORIGIN || !event.data || typeof event.data !== "object") {
+            return;
+          }
+          var data = event.data;
+          if (data.nebula === "pane-ready") {
+            announce();
+            return;
+          }
+          if (data.nebula !== "script-call" || typeof data.id !== "string") {
+            return;
+          }
+          var reply = function (payload) {
+            payload.nebula = "script-result";
+            payload.id = data.id;
+            event.source.postMessage(payload, PANE_ORIGIN);
+          };
+          if (ALLOWED.indexOf(data.fn) < 0 || typeof google.script.run[data.fn] !== "function") {
+            reply({ ok: false, error: "Unknown host function " + data.fn });
+            return;
+          }
+          var runner = google.script.run
+            .withSuccessHandler(function (result) { reply({ ok: true, result: result === undefined ? null : result }); })
+            .withFailureHandler(function (error) { reply({ ok: false, error: String((error && error.message) || error) }); });
+          runner[data.fn].apply(runner, Array.isArray(data.args) ? data.args : []);
+        });
+
+        frame.addEventListener("load", announce);
+        // If the pane never announces itself, the sidecar is probably down.
+        setTimeout(function () {
+          if (!announced) {
+            notice.className = "show";
+          }
+        }, 6000);
+      })();
+    </script>
+  </body>
+</html>
