@@ -127,6 +127,14 @@ suggestion cards, and a model / reasoning picker offers whatever the installed
 is open, terminal/MCP agents on the same document see your caret and selection
 through `writer_get_selection`.
 
+## Google Docs add-in (sidebar)
+
+The same review pane inside Google Docs, talking to the same local sidecar.
+Docs has no suggestion mode for add-ins, so edits land directly, with an
+option to highlight the text Writer changed. Setup: `npm run word:setup`
+once (HTTPS certificate), `npx clasp login`, then `npm run gdocs:setup` and
+install the test deployment it points you to. See `docs/google-docs.md`.
+
 ## Cloud deployment (writer.zhoulab.io style)
 
 The `cloudflare/` package deploys the Writer to Cloudflare Workers — static
