@@ -63,10 +63,11 @@ describe("google docs script: reading", () => {
     const doc = install(sampleDocument());
     doc.placeCursor(1, 12);
     expect(nebulaReadFocus()).toMatchObject({ paragraphIndex: 1, offset: 12, selection: null, paragraphText: "Our central hypothesis is that chromatin state drives fate." });
+    // Body child 4 ("Closing paragraph.") is walked block 5: the table's two cells come before it.
     doc.selectText(4, 0, 4);
     const focus = nebulaReadFocus();
-    expect(focus.selection).toEqual({ startParagraph: 4, startOffset: 0, endParagraph: 4, endOffset: 4, text: "Cell" });
-    expect(focus.paragraphIndex).toBe(4);
+    expect(focus.selection).toEqual({ startParagraph: 5, startOffset: 0, endParagraph: 5, endOffset: 4, text: "Clos" });
+    expect(focus.paragraphIndex).toBe(5);
     const key = nebulaFocusKey();
     doc.selectText(4, 0, 5);
     expect(nebulaFocusKey()).not.toBe(key);
