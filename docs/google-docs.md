@@ -74,3 +74,36 @@ pane-only changes need only a sidecar restart.
   reading, focus, selection, and every apply shape.
 - `tests/gdocs-plan.test.ts` covers match finding and operation planning.
 - `tests/gdocs-host.test.ts` drives the host through a fake transport.
+
+## Chrome extension (Grammarly-style install)
+
+The same pane as a Chrome side panel next to any Google Doc, installed once
+in the browser rather than deployed per Google account. `chrome-extension/`
+holds the extension (manifest template, side panel page); `src/chrome/`
+holds its code:
+
+- `docsApi.ts` (pure, tested): `documents.get` JSON → the same
+  `DocsDocumentPayload` the add-in produces, with a map from paragraph
+  offsets to API indices (inline objects occupy index space without text);
+  `DocsReplaceOp`s → `documents.batchUpdate` requests (delete, insert,
+  `updateTextStyle` for emphasis and the change highlight), later text
+  first, every operation verified against the freshly fetched document.
+- `sidepanel.ts`: embeds the sidecar-served pane and answers its `nebula*`
+  calls with the Docs REST API, authorised through `chrome.identity`.
+- `content.ts`: best-effort selection text from the Docs page (the API has
+  no cursor); `background.ts`: opens the panel from the toolbar button on
+  document tabs.
+
+What differs from the add-in: no caret (Writer defaults to the whole
+document; a selection is honoured when the page exposes it), Locate cannot
+scroll the document (the card shows the match), and picture replacement is
+not available (the Docs API needs a public image URL). Everything else —
+emphasis, placement anchors, agents, queueing, change highlighting — is the
+same code.
+
+Setup: `npm run chrome:setup` generates a stable extension id and builds;
+load the folder unpacked in `chrome://extensions`; create an OAuth client of
+type "Chrome Extension" for that id in Google Cloud Console (the script
+prints the exact steps) and rerun `npm run chrome:setup -- --client-id=…`;
+reload the extension. The key and client id stay in gitignored files.
+

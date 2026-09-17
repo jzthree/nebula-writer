@@ -20,9 +20,11 @@ export function setScriptTransport(next: ScriptTransport | null): void {
   transport = next;
 }
 
+/** Sidebars that may host the pane: Google's add-in sidebar frames, and the Nebula Writer Chrome extension's side panel. */
 function isGoogleOrigin(origin: string): boolean {
   return /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.googleusercontent\.com$/i.test(origin)
-    || /^https:\/\/(?:docs|script)\.google\.com$/i.test(origin);
+    || /^https:\/\/(?:docs|script)\.google\.com$/i.test(origin)
+    || /^chrome-extension:\/\/[a-p]{32}$/i.test(origin);
 }
 
 function listen(): void {

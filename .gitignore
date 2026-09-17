@@ -5,3 +5,9 @@ tmp/
 *.secrets.local
 # ai.test.ts relative-path fixtures (leaked only if a run is killed mid-test)
 .writer-codex-*/
+
+# Chrome extension: generated manifest/bundles and the per-machine key/client id
+chrome-extension/dist/
+chrome-extension/manifest.json
+chrome-extension/local.json
+chrome-extension/key.pem

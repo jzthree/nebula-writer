@@ -10,7 +10,7 @@
     "sidecar:locked": "WRITER_ALLOW_CLI=0 npm run sidecar",
     "dev:all": "concurrently -k -n sidecar,web -c cyan,magenta \"npm run sidecar\" \"npm run dev\"",
     "dev:share": "concurrently -k -n sidecar,web -c cyan,magenta \"WRITER_HOST=0.0.0.0 npm run sidecar\" \"vite --host 0.0.0.0\"",
-    "build": "tsc --noEmit && vite build && node scripts/gdocs-build.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/gdocs-build.mjs && node scripts/chrome-build.mjs",
     "qa": "node scripts/qa-loop.mjs",
     "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1",
@@ -20,7 +20,9 @@
     "word:doctor": "node scripts/word-addin-doctor.mjs",
     "word:icons": "node scripts/word-addin-icons.mjs",
     "gdocs:build": "node scripts/gdocs-build.mjs",
-    "gdocs:setup": "bash scripts/gdocs-setup.sh"
+    "gdocs:setup": "bash scripts/gdocs-setup.sh",
+    "chrome:build": "node scripts/chrome-build.mjs",
+    "chrome:setup": "bash scripts/chrome-setup.sh"
   },
   "dependencies": {
     "@tiptap/extension-collaboration": "^2.27.2",
@@ -62,6 +64,7 @@
     "@google/clasp": "^3.4.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
+    "@types/chrome": "^0.3.0",
     "@types/express": "^5.0.0",
     "@types/google-apps-script": "^2.0.13",
     "@types/multer": "^1.4.12",
