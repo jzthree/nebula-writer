@@ -954,8 +954,8 @@ describe("proposeChanges", () => {
       fakeCodexPath,
       [
         "#!/usr/bin/env node",
-        // Six computer-use steps, each returning a ~900 KB base64 screenshot (5.4 MB in all).
-        "const shot = 'iVBORw0KGgo' + 'A'.repeat(900000);",
+        // Six computer-use steps, each returning a ~360 KB base64 screenshot (2.2 MB in all, past the old 2 MB cap).
+        "const shot = 'iVBORw0KGgo' + 'A'.repeat(360000);",
         "for (let i = 0; i < 6; i += 1) {",
         "  const item = { id: 'item_' + i, type: 'mcp_tool_call', server: 'cua_repl', tool: 'js', arguments: { code: 'await cua.getState();', title: 'Look at the mail window' } };",
         "  process.stdout.write(JSON.stringify({ type: 'item.started', item }) + '\\n');",

@@ -787,8 +787,8 @@ export function lastCliTranscriptPath(): string | null {
   return lastTranscriptPath;
 }
 
-function recordCliTranscript(provider: CliProviderName, prompt: string, transcript: CliTranscript): void {
-  const dir = cliTranscriptDir();
+/** `dir` is resolved when the run starts: a run that closes late must not write into a directory configured since. */
+function recordCliTranscript(provider: CliProviderName, prompt: string, transcript: CliTranscript, dir: string | null = cliTranscriptDir()): void {
   if (!dir) {
     return;
   }
@@ -1151,12 +1151,13 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   const lastMessagePath = schemaFile ? join(schemaFile.dir, "last-message.txt") : null;
   const primaryArgs = buildCliArgs(provider, schemaFile?.path, modelOptions, lastMessagePath ?? undefined, provider === "codex" ? resumeThreadId : null, options.toolAccess ?? "document", options.imagePaths ?? []);
   const observer = options.onStreamEvent ? createCliStreamObserver(provider, options.onStreamEvent) : null;
+  const transcriptDir = cliTranscriptDir();
   const runOptions: AiRunOptions = {
     ...options,
     ...(observer ? { onStdoutLine: observer.consumeLine } : {}),
     onTranscript: (transcript) => {
       options.onTranscript?.(transcript);
-      recordCliTranscript(provider, prompt, transcript);
+      recordCliTranscript(provider, prompt, transcript, transcriptDir);
     }
   };
   const preferLastMessage = (output: string): string => {

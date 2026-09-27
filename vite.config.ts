@@ -36,6 +36,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["tests/setup.ts"],
+    // Several suites spawn fake CLIs; under a full parallel run 5 s is too tight.
+    testTimeout: 15_000,
     // writer-mcp is a nested package with its own vitest config and node test environment.
     exclude: ["**/node_modules/**", "writer-mcp/**"]
   }
