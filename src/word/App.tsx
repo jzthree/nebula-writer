@@ -563,8 +563,9 @@ export function App() {
             return turn;
           }
           const last = turn.activity[turn.activity.length - 1];
-          const activity = text && (!last || last.summary !== text)
-            ? [...turn.activity, { at: new Date().toISOString(), kind: /^Staging/i.test(text) || /^Reading|^Searching|^Looking/i.test(text) ? "tool" as const : "status" as const, summary: text }]
+          const isTool = Boolean(progress?.tool) || /^Staging|^Reading|^Searching|^Looking/i.test(text ?? "");
+          const activity = text && (isTool || !last || last.summary !== text)
+            ? [...turn.activity, { at: new Date().toISOString(), kind: isTool ? "tool" as const : "status" as const, summary: text }]
             : turn.activity;
           return { ...turn, progress: text, activity };
         }));

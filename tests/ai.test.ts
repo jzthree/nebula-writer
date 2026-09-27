@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, describedChangeCount, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, describedChangeCount, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload, elideLongPayloads } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -944,43 +944,36 @@ describe("proposeChanges", () => {
     }
   });
 
-  it("aborts local provider processes that exceed the output safety limit", async () => {
+  it("has no output cap: a computer-use run that streams megabytes of screenshots still completes", async () => {
     const previousAllow = process.env.WRITER_ALLOW_CLI;
     const previousOverride = process.env.WRITER_CODEX_PATH;
     const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-output-"));
     const fakeCodexPath = join(tempDir, "fake-codex");
-    const pidPath = join(tempDir, "provider.pid");
-    let providerPid: number | null = null;
+    const payload = { message: "Counted 4 committee services in the mailbox.", suggestions: [] };
     writeFileSync(
       fakeCodexPath,
       [
-        "#!/bin/sh",
-        `printf '%s' "$$" > ${JSON.stringify(pidPath)}`,
-        "trap '' TERM",
-        "i=0",
-        "chunk=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        // 1,000-char chunks x 2,200 = 2.2M, just past the 2M streaming-output guard.
-        "chunk=\"$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk\"",
-        "while [ \"$i\" -lt 2200 ]; do printf '%s' \"$chunk\"; i=$((i + 1)); done",
-        "while :; do sleep 1; done"
+        "#!/usr/bin/env node",
+        // Six computer-use steps, each returning a ~900 KB base64 screenshot (5.4 MB in all).
+        "const shot = 'iVBORw0KGgo' + 'A'.repeat(900000);",
+        "for (let i = 0; i < 6; i += 1) {",
+        "  const item = { id: 'item_' + i, type: 'mcp_tool_call', server: 'cua_repl', tool: 'js', arguments: { code: 'await cua.getState();', title: 'Look at the mail window' } };",
+        "  process.stdout.write(JSON.stringify({ type: 'item.started', item }) + '\\n');",
+        "  process.stdout.write(JSON.stringify({ type: 'item.completed', item: { ...item, result: { content: [{ type: 'image', data: shot, mimeType: 'image/png' }] } } }) + '\\n');",
+        "}",
+        `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }))} + '\\n');`
       ].join("\n"),
       "utf8"
     );
     chmodSync(fakeCodexPath, 0o755);
     process.env.WRITER_ALLOW_CLI = "1";
-    process.env.WRITER_CODEX_PATH = relative(process.cwd(), fakeCodexPath);
-
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
     try {
-      const pending = proposeChanges({ ...baseRequest, provider: "codex" });
-      providerPid = await waitForPidFile(pidPath, 1_000);
-      const response = await pending;
+      const response = await proposeChanges({ ...baseRequest, provider: "codex" });
       expect(response.provider).toBe("codex");
-      expect(response.suggestions).toHaveLength(0);
-      expect(response.message).toContain("produced more than 2000000 characters on stdout");
-
-      await waitForProcessExit(providerPid, 2_500);
+      expect(response.message).toContain("Counted 4 committee services");
+      expect(response.message).not.toContain("produced more than");
     } finally {
-      killProcessIfRunning(providerPid);
       rmSync(tempDir, { recursive: true, force: true });
       if (previousAllow === undefined) {
         delete process.env.WRITER_ALLOW_CLI;
@@ -993,6 +986,17 @@ describe("proposeChanges", () => {
         process.env.WRITER_CODEX_PATH = previousOverride;
       }
     }
+  });
+
+  it("elides binary payloads from kept output but leaves long text answers intact", () => {
+    const image = "iVBORw0KGgo" + "A".repeat(20_000);
+    const line = JSON.stringify({ type: "item.completed", item: { result: { content: [{ type: "image", data: image }, { type: "image", data: `data:image/png;base64,${image}` }] } } });
+    const kept = elideLongPayloads(line);
+    expect(kept.length).toBeLessThan(400);
+    expect(kept).toContain("[binary data elided: 20,011 chars]");
+    expect(JSON.parse(kept).item.result.content).toHaveLength(2);
+    const answer = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "A long answer with spaces. ".repeat(2_000) } });
+    expect(elideLongPayloads(answer)).toBe(answer);
   });
 
   it("preserves line breaks in multi-paragraph demo selections", async () => {

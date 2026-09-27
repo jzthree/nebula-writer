@@ -41,7 +41,6 @@ function codeRoot(): string {
 }
 
 const KILL_GRACE_MS = 500;
-const MAX_OUTPUT_CHARS = 400_000;
 
 const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   CLICOLOR: "0",
@@ -281,7 +280,6 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
       let settled = false;
       let stdoutBuffer = "";
       let stderr = "";
-      let outputChars = 0;
       let timeoutTimer: NodeJS.Timeout | undefined;
       let abortHandler: (() => void) | null = null;
 
@@ -324,11 +322,6 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
 
       proc.onStdout((chunk) => {
         if (settled) {
-          return;
-        }
-        outputChars += chunk.length;
-        if (outputChars > MAX_OUTPUT_CHARS) {
-          terminate(`${options.provider} produced too much output; stopping.`);
           return;
         }
         stdoutBuffer += chunk;
@@ -435,7 +428,9 @@ function summarizeToolInput(toolName: string, input: unknown): string {
     const noun = what === "page" ? "the pages on screen" : what === "selection" ? "the selection" : what === "outline" ? "the outline" : what === "document" ? "the document structure" : `the ${what} at the caret`;
     return `reading ${noun}${anchor}`;
   }
-  return bare;
+  // Any other tool: its own title/description when the caller gave one (computer-use steps do).
+  const label = typeof record.title === "string" ? record.title : typeof record.description === "string" ? record.description : "";
+  return label.trim() ? `${bare}: ${label.trim().slice(0, 80)}` : bare;
 }
 
 const GATEWAY_MAX_TIMEOUT_MS = 60 * 60_000;

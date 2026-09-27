@@ -24,7 +24,23 @@ const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
 // Streaming CLI output (JSONL events plus partial deltas) is several times the
 // size of the final reply, so the memory guard is generous.
-const MAX_CLI_OUTPUT_CHARS = 2_000_000;
+/**
+ * No cap on how much a CLI may print: agent runs with computer use stream a
+ * screenshot per step. Lines are kept for parsing with long base64 payloads
+ * (images, data URIs) replaced by a short marker, so memory stays bounded by
+ * the text, not the pictures; stderr keeps its last STDERR_TAIL_CHARS.
+ */
+const ELIDE_PAYLOAD_MIN_CHARS = 8_000;
+const STDERR_TAIL_CHARS = 200_000;
+const LONG_PAYLOAD = new RegExp(`"(?:data:[^";,]{1,80};base64,)?[A-Za-z0-9+/=_\\\\-]{${ELIDE_PAYLOAD_MIN_CHARS},}"`, "g");
+
+/** A stdout line with embedded binary payloads elided (text, including long JSON answers, is untouched). */
+export function elideLongPayloads(line: string): string {
+  if (line.length < ELIDE_PAYLOAD_MIN_CHARS) {
+    return line;
+  }
+  return line.replace(LONG_PAYLOAD, (match) => `"[binary data elided: ${(match.length - 2).toLocaleString()} chars]"`);
+}
 const MAX_CLI_DIAGNOSTIC_CHARS = 4_000;
 const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   CLICOLOR: "0",
@@ -77,6 +93,8 @@ interface AiRunOptions {
 export interface AiProgressSnapshot {
   provider: string;
   stage: string;
+  /** True when the stage describes a tool call (counted as one in the conversation). */
+  tool?: boolean;
   requestedBy: string | null;
   passIndex: number | null;
   passTotal: number | null;
@@ -134,11 +152,12 @@ async function runQueuedAiRequest<T>(entry: QueuedAiRequest, run: () => Promise<
   }
 }
 
-function setAiProgress(provider: string, stage: string, pass?: { index: number; total: number }, requestedBy?: string | null): void {
+function setAiProgress(provider: string, stage: string, pass?: { index: number; total: number }, requestedBy?: string | null, tool = false): void {
   const now = new Date().toISOString();
   currentAiProgress = {
     provider,
     stage,
+    ...(tool ? { tool: true } : {}),
     requestedBy: requestedBy ?? currentAiProgress?.requestedBy ?? null,
     passIndex: pass?.index ?? null,
     passTotal: pass?.total ?? null,
@@ -1255,16 +1274,17 @@ function runCliCommand(
       abortHandler();
       return;
     }
-    const appendOutput = (streamName: "stdout" | "stderr", current: string, chunk: Buffer | string) => {
-      if (settled) {
-        return current;
+    // stdout is kept line by line with binary payloads elided; the partial
+    // last line waits for its newline (or the close) before it is kept.
+    let stdoutPending = "";
+    const appendStdout = (chunk: Buffer | string) => {
+      stdoutPending += String(chunk);
+      let newline = stdoutPending.indexOf("\n");
+      while (newline >= 0) {
+        stdout += `${elideLongPayloads(stdoutPending.slice(0, newline))}\n`;
+        stdoutPending = stdoutPending.slice(newline + 1);
+        newline = stdoutPending.indexOf("\n");
       }
-      const next = current + String(chunk);
-      if (next.length > MAX_CLI_OUTPUT_CHARS) {
-        terminate(`${provider} produced more than ${MAX_CLI_OUTPUT_CHARS} characters on ${streamName}; aborting local provider request.`);
-        return next.slice(0, MAX_CLI_OUTPUT_CHARS);
-      }
-      return next;
     };
     if (timeoutMs > 0) {
       timeoutTimer = setTimeout(() => {
@@ -1275,14 +1295,17 @@ function runCliCommand(
     let stdoutLineBuffer = "";
     const onStdoutLine = options.onStdoutLine;
     stdoutStream.on("data", (chunk) => {
-      stdout = appendOutput("stdout", stdout, chunk);
-      if (!onStdoutLine || settled) {
+      if (settled) {
+        return;
+      }
+      appendStdout(chunk);
+      if (!onStdoutLine) {
         return;
       }
       stdoutLineBuffer += String(chunk);
       let newline = stdoutLineBuffer.indexOf("\n");
       while (newline >= 0) {
-        const line = stdoutLineBuffer.slice(0, newline);
+        const line = elideLongPayloads(stdoutLineBuffer.slice(0, newline));
         stdoutLineBuffer = stdoutLineBuffer.slice(newline + 1);
         try {
           onStdoutLine(line);
@@ -1293,7 +1316,9 @@ function runCliCommand(
       }
     });
     stderrStream.on("data", (chunk) => {
-      stderr = appendOutput("stderr", stderr, chunk);
+      if (!settled) {
+        stderr = (stderr + String(chunk)).slice(-STDERR_TAIL_CHARS);
+      }
     });
     stdinStream.on("error", (error) => {
       stdinError = error;
@@ -1304,6 +1329,10 @@ function runCliCommand(
     child.on("close", (code, signal) => {
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
+      }
+      if (stdoutPending) {
+        stdout += elideLongPayloads(stdoutPending);
+        stdoutPending = "";
       }
       try {
         options.onTranscript?.({ stdout, stderr, code, signal, ended: endedBy });
@@ -1592,12 +1621,12 @@ function createOneShotProgressReporter(
   const label = providerLabel(provider);
   let lastStage = "";
   let lastOutputPublishedAt = 0;
-  const publish = (stage: string, force = false) => {
+  const publish = (stage: string, force = false, tool = false) => {
     if (!force && stage === lastStage) {
       return;
     }
     lastStage = stage;
-    setAiProgress(provider, stage, pass, requestedBy);
+    setAiProgress(provider, stage, pass, requestedBy, tool);
   };
   return (event) => {
     switch (event.kind) {
@@ -1609,7 +1638,8 @@ function createOneShotProgressReporter(
         break;
       case "tool":
         // Claude runs with tools disabled, so its only "tool" is the structured reply.
-        publish(provider === "claude" ? "Writing suggestions" : capitalizeFirst(event.summary));
+        // Every tool call is its own step (two identical screenshots are two calls).
+        publish(provider === "claude" ? "Writing suggestions" : capitalizeFirst(event.summary), provider !== "claude", provider !== "claude");
         break;
       case "text":
         publish("Writing suggestions");

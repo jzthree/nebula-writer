@@ -254,6 +254,8 @@ export async function ensureAgentTerminalOnSidecar(apiBase: string, provider: "c
 export interface AiProgressSnapshot {
   provider: string;
   stage: string;
+  /** True when the stage describes a tool call (counted as one in the conversation). */
+  tool?: boolean;
   passIndex: number | null;
   passTotal: number | null;
   startedAt: string;
