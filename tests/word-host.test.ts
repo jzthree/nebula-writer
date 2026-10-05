@@ -599,3 +599,34 @@ describe("word host: inline emphasis", () => {
     expect(mock.emphasisOver(italic, italic + 15)).toEqual({ italic: true });
   });
 });
+
+describe("word host: cheap background reads", () => {
+  it("reuses mixed-paragraph emphasis for unchanged text in cached snapshots", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: [
+        { text: "Our central hypothesis is that chromatin state drives fate.", emphasis: [{ start: 4, end: 22, bold: true }] },
+        { text: "A plain paragraph." }
+      ],
+      documentName: "Cache.docx",
+      viewport: { pageChars: 600, visibleChars: 500 }
+    }).install();
+    const { capabilities } = await boot();
+    const { MockRange } = await import("../src/word/mockOffice");
+    const spy = vi.spyOn(MockRange.prototype, "getTextRanges");
+    const full = await readDocumentSnapshot(capabilities, { emphasis: "full" });
+    const fullCalls = spy.mock.calls.length;
+    expect(fullCalls).toBeGreaterThan(0);
+    const cached = await readDocumentSnapshot(capabilities, { emphasis: "cached" });
+    expect(spy.mock.calls.length).toBe(fullCalls);
+    expect(cached.emphasis).toEqual(full.emphasis);
+    spy.mockRestore();
+  });
+
+  it("keeps the last viewport when a caret read skips the page-layout query", async () => {
+    const { capabilities, snapshot } = await boot();
+    const withPages = await readFocus(snapshot, capabilities, null, { viewport: true });
+    const caretOnly = await readFocus(snapshot, capabilities, withPages, { viewport: false });
+    expect(caretOnly.viewport).toEqual(withPages.viewport);
+  });
+});

@@ -266,6 +266,18 @@ choice is remembered per provider. The same override rides `modelOptions` on
 `/api/ai/suggest` and `/api/word/suggest`, and `GET /api/ai/models` returns the
 catalog for any client.
 
+### Staying out of Word's way while you type
+
+Word runs an add-in's reads on its own thread, so reading the document
+while the author types is felt as lag. The pane therefore waits for a
+pause: nothing is read from Word until 1.5 s after the last edit (paragraph
+change events mark edits; caret moves alone do not). Caret reads skip the
+pages-on-screen query, which makes Word lay pages out; that query runs only
+on an idle 4 s poll. Background re-reads reuse the emphasis already read
+for paragraphs whose text is unchanged; a request and Re-sync read
+everything afresh. Measured against the mock host: a realistic 3 s typing
+burst caused 9 Word round trips before, none now.
+
 ### Applying suggestions
 
 - **Locate** selects the passage in Word (also on card click / ↩).

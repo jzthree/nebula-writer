@@ -629,6 +629,29 @@ describe("Word task pane", () => {
     expect(mock.runCount - runsBefore).toBeLessThanOrEqual(6);
   });
 
+  it("stays off Word's thread while the author types, and re-reads once after the pause", async () => {
+    await renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const runsBefore = mock.runCount;
+    // Realistic typing: keystrokes 80 ms apart, a short pause between words,
+    // and one longer pause to think — never the 1.5 s that counts as stopping.
+    const gaps = [80, 80, 80, 80, 350, 80, 80, 80, 350, 80, 80, 1_000, 80, 80, 350, 80, 80];
+    for (const gap of gaps) {
+      act(() => {
+        const at = mock.text.indexOf("Innovation");
+        mock.replaceRange(at, at, "x");
+        mock.setSelection(at + 1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, gap));
+    }
+    const duringTyping = mock.runCount - runsBefore;
+    expect(duringTyping).toBe(0);
+    // After the pause: one snapshot (plus its caret read), not one per keystroke.
+    await waitFor(() => expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument(), { timeout: 4_000 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(mock.runCount - runsBefore).toBeLessThanOrEqual(4);
+  });
+
   it("re-reads the document when Word changes outside the pane", async () => {
     await renderPane();
     expect(screen.getByText(/^\d+ words$/).textContent).toBe(`${mock.text.trim().split(/\s+/).length} words`);

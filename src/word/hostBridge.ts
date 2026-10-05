@@ -9,6 +9,8 @@ import type { AiSuggestion } from "../shared";
 import type { WordDocumentSnapshot, WordFocusState } from "./wordContext";
 import * as word from "./wordHost";
 import type {
+  FocusOptions,
+  SnapshotOptions,
   ApplyResult,
   BatchApplyItem,
   BatchApplyOptions,
@@ -25,8 +27,8 @@ export interface DocumentHost {
   /** Wait for the host application and report whether the pane runs inside it. */
   waitForHost(timeoutMs?: number): Promise<WordHostBoot>;
   detectCapabilities(host: boolean): WordCapabilities;
-  readDocumentSnapshot(capabilities: WordCapabilities): Promise<WordDocumentSnapshot>;
-  readFocus(snapshot: WordDocumentSnapshot, capabilities: WordCapabilities, previous?: WordFocusState | null): Promise<WordFocusState>;
+  readDocumentSnapshot(capabilities: WordCapabilities, options?: SnapshotOptions): Promise<WordDocumentSnapshot>;
+  readFocus(snapshot: WordDocumentSnapshot, capabilities: WordCapabilities, previous?: WordFocusState | null, options?: FocusOptions): Promise<WordFocusState>;
   /** Synchronous: returns the unsubscribe function. */
   subscribeSelectionChanges(handler: () => void): () => void;
   subscribeParagraphChanges(handler: () => void, capabilities: WordCapabilities): Promise<(() => Promise<void>) | null>;
@@ -72,8 +74,8 @@ export function activeDocumentHost(): DocumentHost {
 // Delegates with the names the pane has always imported.
 export const waitForWordHost: DocumentHost["waitForHost"] = (timeoutMs) => active.waitForHost(timeoutMs);
 export const detectCapabilities: DocumentHost["detectCapabilities"] = (host) => active.detectCapabilities(host);
-export const readDocumentSnapshot: DocumentHost["readDocumentSnapshot"] = (capabilities) => active.readDocumentSnapshot(capabilities);
-export const readFocus: DocumentHost["readFocus"] = (snapshot, capabilities, previous) => active.readFocus(snapshot, capabilities, previous);
+export const readDocumentSnapshot: DocumentHost["readDocumentSnapshot"] = (capabilities, options) => active.readDocumentSnapshot(capabilities, options);
+export const readFocus: DocumentHost["readFocus"] = (snapshot, capabilities, previous, options) => active.readFocus(snapshot, capabilities, previous, options);
 export const subscribeSelectionChanges: DocumentHost["subscribeSelectionChanges"] = (handler) => active.subscribeSelectionChanges(handler);
 export const subscribeParagraphChanges: DocumentHost["subscribeParagraphChanges"] = (handler, capabilities) => active.subscribeParagraphChanges(handler, capabilities);
 export const findSuggestionMatches: DocumentHost["findSuggestionMatches"] = (snapshot, suggestion) => active.findSuggestionMatches(snapshot, suggestion);

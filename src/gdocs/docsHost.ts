@@ -42,7 +42,7 @@ function detectCapabilities(host: boolean): WordCapabilities {
   return { ...docsCapabilities, host };
 }
 
-async function readDocumentSnapshot(): Promise<WordDocumentSnapshot> {
+async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?: unknown): Promise<WordDocumentSnapshot> {
   const payload = await callScript<DocsDocumentPayload>("nebulaReadDocument");
   lastFingerprint = payload.fingerprint;
   const bodyText = payload.paragraphs.map((paragraph) => paragraph.text).join("\n");
@@ -72,7 +72,7 @@ async function readDocumentSnapshot(): Promise<WordDocumentSnapshot> {
   };
 }
 
-async function readFocus(snapshot: WordDocumentSnapshot, _capabilities: WordCapabilities, previous: WordFocusState | null = null): Promise<WordFocusState> {
+async function readFocus(snapshot: WordDocumentSnapshot, _capabilities: WordCapabilities, previous: WordFocusState | null = null, _options?: unknown): Promise<WordFocusState> {
   const focus = await callScript<DocsFocusPayload>("nebulaReadFocus");
   const paragraph = focus.paragraphIndex !== null ? snapshot.paragraphs[focus.paragraphIndex] ?? null : null;
   const stale = focus.fingerprint !== lastFingerprint || (paragraph !== null && focus.paragraphText !== null && paragraph.text !== focus.paragraphText);

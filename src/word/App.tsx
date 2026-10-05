@@ -105,11 +105,16 @@ const DEFAULT_SETTINGS: PaneSettings = {
   models: {}
 };
 
-const FOCUS_DEBOUNCE_MS = 160;
-const VIEWPORT_POLL_MS = 2_500;
-const SNAPSHOT_DEBOUNCE_MS = 1_200;
+// Word runs the add-in's reads on its own thread, so reads while the author
+// types are felt as lag: everything below waits for a pause in typing.
+const FOCUS_DEBOUNCE_MS = 250;
+/** No edits for this long counts as a pause in typing. */
+const TYPING_IDLE_MS = 1_500;
+/** Pages on screen (a layout query): refreshed only on this idle poll. */
+const VIEWPORT_POLL_MS = 4_000;
+const SNAPSHOT_DEBOUNCE_MS = TYPING_IDLE_MS;
 const SNAPSHOT_POLL_MS = 20_000;
-const SNAPSHOT_STALE_THROTTLE_MS = 1_500;
+const SNAPSHOT_STALE_THROTTLE_MS = 3_000;
 const CONTEXT_PUSH_DEBOUNCE_MS = 700;
 const HEALTH_POLL_MS = 30_000;
 const MAX_TURNS = 200;
@@ -225,6 +230,8 @@ export function App() {
   // typing never stops: a message sent meanwhile waits here and goes out the
   // moment the current turn ends — in the same thread.
   const runningRef = useRef(false);
+  /** When Word last reported an edit (paragraph change): reads wait for a pause after it. */
+  const lastEditAtRef = useRef(0);
   /** Run id of the request in flight (mid-turn steering addresses it). */
   const runIdRef = useRef<string | null>(null);
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
@@ -275,13 +282,13 @@ export function App() {
   /* Word reads                                                         */
   /* ------------------------------------------------------------------ */
 
-  const refreshFocus = useCallback(async (snap: WordDocumentSnapshot | null = snapshotRef.current): Promise<WordFocusState | null> => {
+  const refreshFocus = useCallback(async (snap: WordDocumentSnapshot | null = snapshotRef.current, options: { viewport?: boolean } = {}): Promise<WordFocusState | null> => {
     if (!snap || focusInFlightRef.current || !capabilitiesRef.current.host) {
       return focusRef.current;
     }
     focusInFlightRef.current = true;
     try {
-      const next = await readFocus(snap, capabilitiesRef.current, focusRef.current);
+      const next = await readFocus(snap, capabilitiesRef.current, focusRef.current, { viewport: options.viewport ?? false });
       focusRef.current = next;
       setFocus(next);
       const nextTrail = updateFocusTrail(trailRef.current, next, snap);
@@ -298,16 +305,24 @@ export function App() {
     }
   }, []);
 
-  const refreshSnapshot = useCallback(async (): Promise<WordDocumentSnapshot | null> => {
+  /**
+   * Re-read the document. `full` (requests, Re-sync) reads every paragraph's
+   * emphasis afresh; background refreshes reuse what is cached for unchanged
+   * paragraphs, which keeps them cheap enough not to be felt in Word.
+   */
+  const refreshSnapshot = useCallback(async (options: { full?: boolean } = {}): Promise<WordDocumentSnapshot | null> => {
     if (!capabilitiesRef.current.host) {
       return null;
     }
     if (snapshotInFlightRef.current) {
-      return snapshotInFlightRef.current;
+      if (!options.full) {
+        return snapshotInFlightRef.current;
+      }
+      await snapshotInFlightRef.current;
     }
     const task = (async () => {
       try {
-        const next = await readDocumentSnapshot(capabilitiesRef.current);
+        const next = await readDocumentSnapshot(capabilitiesRef.current, { emphasis: options.full ? "full" : "cached" });
         snapshotRef.current = next;
         setSnapshot(next);
         await refreshFocus(next);
@@ -329,7 +344,9 @@ export function App() {
       return;
     }
     const now = Date.now();
-    if (now - lastStaleRefreshRef.current < SNAPSHOT_STALE_THROTTLE_MS) {
+    // Mid-typing the caret's paragraph never matches the snapshot; the
+    // paragraph-change handler re-reads once the author pauses.
+    if (now - lastStaleRefreshRef.current < SNAPSHOT_STALE_THROTTLE_MS || now - lastEditAtRef.current < TYPING_IDLE_MS) {
       return;
     }
     lastStaleRefreshRef.current = now;
@@ -353,14 +370,18 @@ export function App() {
       if (focusTimer) {
         clearTimeout(focusTimer);
       }
+      // Typing moves the caret on every keystroke: wait for the pause.
+      const sinceEdit = Date.now() - lastEditAtRef.current;
+      const delay = sinceEdit < TYPING_IDLE_MS ? TYPING_IDLE_MS - sinceEdit + FOCUS_DEBOUNCE_MS : FOCUS_DEBOUNCE_MS;
       focusTimer = setTimeout(() => {
         focusTimer = null;
         if (!cancelled) {
           void refreshFocus();
         }
-      }, FOCUS_DEBOUNCE_MS);
+      }, delay);
     };
     const scheduleSnapshot = () => {
+      lastEditAtRef.current = Date.now();
       if (snapshotTimer) {
         clearTimeout(snapshotTimer);
       }
@@ -385,10 +406,11 @@ export function App() {
         return;
       }
       setHostStatus("ready");
-      await refreshSnapshot();
+      await refreshSnapshot({ full: true });
       if (cancelled) {
         return;
       }
+      void refreshFocus(snapshotRef.current, { viewport: true });
       unsubscribeSelection = subscribeSelectionChanges(scheduleFocus);
       unsubscribeParagraphs = await subscribeParagraphChanges(scheduleSnapshot, boot.capabilities);
       if (cancelled) {
@@ -396,8 +418,9 @@ export function App() {
         return;
       }
       viewportInterval = setInterval(() => {
-        if (typeof document === "undefined" || document.visibilityState === "visible") {
-          void refreshFocus();
+        const typing = Date.now() - lastEditAtRef.current < TYPING_IDLE_MS * 2;
+        if (!typing && !busyRef.current && (typeof document === "undefined" || document.visibilityState === "visible")) {
+          void refreshFocus(snapshotRef.current, { viewport: true });
         }
       }, VIEWPORT_POLL_MS);
       if (!unsubscribeParagraphs) {
@@ -679,7 +702,7 @@ export function App() {
     runningTurnRef.current = assistantTurnId;
     setInstruction("");
     try {
-      const snap = (await refreshSnapshot()) ?? snapshotRef.current;
+      const snap = (await refreshSnapshot({ full: true })) ?? snapshotRef.current;
       if (!snap || !snap.bodyText.trim()) {
         throw new Error("The Word document is empty — type something first.");
       }
@@ -1458,7 +1481,7 @@ export function App() {
       onSync={() => {
         lastPushedTextRef.current = null;
         void runBusy("Re-reading the document…", async () => {
-          await refreshSnapshot();
+          await refreshSnapshot({ full: true });
           showNotice("info", "Document re-read from Word.");
         });
       }}

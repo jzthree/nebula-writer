@@ -187,7 +187,21 @@ function requireWord(): typeof Word {
 /* ------------------------------------------------------------------------- */
 
 /** Full read: body text + every paragraph (text, style, outline level). */
-export async function readDocumentSnapshot(capabilities: WordCapabilities): Promise<WordDocumentSnapshot> {
+export interface SnapshotOptions {
+  /**
+   * "full" reads every mixed-format paragraph's emphasis word by word (what a
+   * request needs). "cached" (background refreshes while the author works)
+   * reuses the emphasis read for paragraphs whose text is unchanged, so a
+   * re-read after typing costs one sync instead of one per mixed paragraph.
+   */
+  emphasis?: "full" | "cached";
+}
+
+/** Emphasis of mixed-format paragraphs by paragraph text (spans relative to the paragraph). */
+const mixedEmphasisCache = new Map<string, EmphasisSpan[]>();
+const MIXED_EMPHASIS_CACHE_LIMIT = 4_000;
+
+export async function readDocumentSnapshot(capabilities: WordCapabilities, options: SnapshotOptions = {}): Promise<WordDocumentSnapshot> {
   const word = requireWord();
   return word.run(async (context) => {
     const body = context.document.body;
@@ -241,7 +255,7 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities): Prom
     // mixed paragraphs are read word by word in one more round trip.
     let emphasis: EmphasisSpan[] = [];
     try {
-      emphasis = await readParagraphEmphasis(context, paragraphs.items ?? [], paragraphInfos);
+      emphasis = await readParagraphEmphasis(context, paragraphs.items ?? [], paragraphInfos, options.emphasis ?? "full");
     } catch {
       emphasis = [];
     }
@@ -288,7 +302,7 @@ function fontEmphasis(font: unknown): { format: EmphasisFormat; mixed: boolean }
   };
 }
 
-async function readParagraphEmphasis(context: Word.RequestContext, items: Word.Paragraph[], infos: WordParagraphInfo[]): Promise<EmphasisSpan[]> {
+async function readParagraphEmphasis(context: Word.RequestContext, items: Word.Paragraph[], infos: WordParagraphInfo[], mode: "full" | "cached"): Promise<EmphasisSpan[]> {
   const spans: EmphasisSpan[] = [];
   const mixed: Array<{ info: WordParagraphInfo; pieces: Word.RangeCollection }> = [];
   items.forEach((paragraph, index) => {
@@ -298,6 +312,11 @@ async function readParagraphEmphasis(context: Word.RequestContext, items: Word.P
     }
     const font = fontEmphasis(paragraph.font);
     if (font.mixed) {
+      const cached = mode === "cached" ? mixedEmphasisCache.get(info.text) : undefined;
+      if (cached) {
+        spans.push(...shiftEmphasis(cached, info.offset));
+        return;
+      }
       if (mixed.length < EMPHASIS_MIXED_PARAGRAPH_LIMIT) {
         const pieces = paragraph.getTextRanges(WORD_ENDING_MARKS, true);
         pieces.load(PIECE_FONT_PROPERTIES);
@@ -330,7 +349,12 @@ async function readParagraphEmphasis(context: Word.RequestContext, items: Word.P
       }
       // Words were read without their trailing spaces (a phrase's last space
       // would otherwise read as mixed); rejoin words that share a format.
-      spans.push(...shiftEmphasis(bridgeEmphasisGaps(entry.info.text, emphasisFromPieces(pieces)), entry.info.offset));
+      const local = bridgeEmphasisGaps(entry.info.text, emphasisFromPieces(pieces));
+      if (mixedEmphasisCache.size >= MIXED_EMPHASIS_CACHE_LIMIT) {
+        mixedEmphasisCache.clear();
+      }
+      mixedEmphasisCache.set(entry.info.text, local);
+      spans.push(...shiftEmphasis(local, entry.info.offset));
     }
   }
   return normalizeEmphasis(spans);
@@ -427,7 +451,17 @@ export async function commentInlinePicture(index: number, text: string): Promise
  * selection and the first/last paragraphs of the visible pages, then maps
  * them onto the snapshot — no full-document reads on every caret move.
  */
-export async function readFocus(snapshot: WordDocumentSnapshot, capabilities: WordCapabilities, previous: WordFocusState | null = null): Promise<WordFocusState> {
+export interface FocusOptions {
+  /**
+   * Read the pages on screen. Asking Word which pages enclose the viewport
+   * makes it lay pages out, which is noticeable while the author types, so
+   * caret-driven reads skip it (keeping the last viewport) and only an idle
+   * poll refreshes it.
+   */
+  viewport?: boolean;
+}
+
+export async function readFocus(snapshot: WordDocumentSnapshot, capabilities: WordCapabilities, previous: WordFocusState | null = null, options: FocusOptions = {}): Promise<WordFocusState> {
   const word = requireWord();
   return word.run(async (context) => {
     const selection = context.document.getSelection();
@@ -448,7 +482,7 @@ export async function readFocus(snapshot: WordDocumentSnapshot, capabilities: Wo
     beforeInLast.load("text");
 
     let pages: Word.PageCollection | null = null;
-    let viewportSupported = capabilities.viewport;
+    let viewportSupported = capabilities.viewport && options.viewport !== false;
     if (viewportSupported) {
       try {
         pages = context.document.activeWindow.activePane.pagesEnclosingViewport;
@@ -495,7 +529,7 @@ export async function readFocus(snapshot: WordDocumentSnapshot, capabilities: Wo
       selectionContext = canonicalSelection(snapshot.bodyText, cursorOffset, to, selectedText);
     }
 
-    let viewport: WordViewportState | null = null;
+    let viewport: WordViewportState | null = options.viewport === false ? previous?.viewport ?? null : null;
     if (pages && viewportSupported && pages.items.length) {
       viewport = await readViewport(context, snapshot, pages, firstIndex ?? near);
     }
