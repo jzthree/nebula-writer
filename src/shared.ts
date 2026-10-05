@@ -265,6 +265,8 @@ export interface AiResponse {
   message: string;
   suggestions: AiSuggestion[];
   provider: AiProviderName;
+  /** Messages sent during the run that never reached it (no session could take them): send them as the next turn. */
+  undeliveredSteers?: string[];
   stagedInSession?: boolean;
   /** Conversation id to pass back as agentSessionId on the next request. */
   agentSessionId?: string | null;
@@ -781,4 +783,4 @@ function commonPrefixLength(left: string, right: string): number {
 }
 
 /** Reply from POST /api/ai/steer. `queued`-style fallbacks are the client's: a run that cannot be steered says why. */
-export type AiSteerResponse = { ok: true } | { ok: false; reason: "not-running" | "not-steerable" | "failed"; detail?: string };
+export type AiSteerResponse = { ok: true; held?: boolean } | { ok: false; reason: "not-running" | "not-steerable" | "failed"; detail?: string };

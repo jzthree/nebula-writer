@@ -717,6 +717,10 @@ export function App() {
       const userMirrored = mirrorChat([userMessage]);
 
       const response = await requestWordSuggestions(request, { signal: controller.signal });
+      if (response.ai.undeliveredSteers?.length) {
+        // Sent during the run but no session could take them: they become the next turn.
+        queueMessage(response.ai.undeliveredSteers.join("\n\n"), null);
+      }
       if (controller.signal.aborted) {
         return;
       }

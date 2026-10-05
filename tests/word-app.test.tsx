@@ -139,6 +139,13 @@ vi.mock("../src/word/writerClient", () => ({
       status: "pending",
       ...(request.focus ? { revises: request.focus.suggestionId, ref: "S2" } : {})
     };
+    if (request.instruction.startsWith("Undelivered:")) {
+      return {
+        ai: { message: "Done.", provider: request.provider, suggestions: [], undeliveredSteers: ["then do the next page"] },
+        session: { id: "session-1", name: "doc", revision: 1, pendingSuggestions: 0 },
+        sessionReused: true
+      } as unknown as Awaited<ReturnType<typeof import("../src/word/writerClient").requestWordSuggestions>>;
+    }
     return {
       ai: {
         message: "Staged one edit near your caret.",
@@ -473,6 +480,13 @@ describe("Word task pane", () => {
     await waitFor(() => expect(captured.requests.length).toBe(2));
     expect(captured.requests[1].instruction).toBe("urgent follow-up");
     await waitFor(() => expect(screen.getByText("Stopped.")).toBeInTheDocument());
+  });
+
+  it("sends a message the running turn never received as the next turn", async () => {
+    await renderPane();
+    send("Undelivered: first request");
+    await waitFor(() => expect(captured.requests.length).toBe(2), { timeout: 3_000 });
+    expect(captured.requests[1].instruction).toBe("then do the next page");
   });
 
   it("comments on one suggestion from its card: the reply revises it and the earlier card is withdrawn", async () => {

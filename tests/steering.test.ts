@@ -113,7 +113,7 @@ describe("mid-turn steering: Codex app-server", () => {
     const steer = await steerWhenReady("run-codex", "End with BANANA.");
     const response = await pending;
     release();
-    expect(steer).toEqual({ ok: true });
+    expect(steer.ok).toBe(true);
     expect(response.message).toContain("Done. Also: BANANA");
     expect(response.agentSessionId).toBe("app-thread");
     expect(await steerRun("run-codex", "too late")).toEqual({ ok: false, reason: "not-running" });
@@ -157,7 +157,7 @@ describe("mid-turn steering: Claude agentic turn", () => {
     const pending = proposeChanges(request({ provider: "claude", runId: "run-claude" }), { runId: "run-claude" });
     const steer = await steerWhenReady("run-claude", "Say BANANA at the end.");
     const response = await pending;
-    expect(steer).toEqual({ ok: true });
+    expect(steer.ok).toBe(true);
     expect(response.message).toContain("BANANA");
     expect(response.agentSessionId).toBe("sess-1");
     expect((await steerRun("run-claude", "late")).ok).toBe(false);
@@ -165,11 +165,22 @@ describe("mid-turn steering: Claude agentic turn", () => {
 });
 
 describe("mid-turn steering: registry", () => {
-  it("tells a finished run apart from one between processes", async () => {
+  it("holds a message for a run that has no session yet and hands back what never got delivered", async () => {
     expect(await steerRun("nobody", "hi")).toEqual({ ok: false, reason: "not-running" });
     const release = markRunInFlight("between");
-    expect(await steerRun("between", "hi")).toEqual({ ok: false, reason: "not-steerable" });
-    release();
+    expect(await steerRun("between", "hi")).toEqual({ ok: true, held: true });
+    expect(release()).toEqual(["hi"]);
     expect(await steerRun("between", "hi")).toEqual({ ok: false, reason: "not-running" });
+  });
+
+  it("delivers a held message as soon as the run's session starts", async () => {
+    process.env.WRITER_CODEX_TRANSPORT = "app-server";
+    process.env.WRITER_CODEX_PATH = writeScript("fake-codex", FAKE_APP_SERVER);
+    const release = markRunInFlight("early");
+    // Sent before the CLI is even spawned (the request is still queued/starting).
+    expect(await steerRun("early", "End with BANANA.")).toEqual({ ok: true, held: true });
+    const response = await proposeChanges(request({ runId: "early" }), { runId: "early" });
+    expect(response.message).toContain("BANANA");
+    expect(release()).toEqual([]);
   });
 });

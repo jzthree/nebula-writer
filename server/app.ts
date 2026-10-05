@@ -955,8 +955,14 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
+      let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(parsed.request.runId);
-      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(releaseRun);
+      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(() => {
+        undeliveredSteers = releaseRun();
+      });
+      if (undeliveredSteers.length) {
+        ai.undeliveredSteers = undeliveredSteers;
+      }
       if (signal.aborted) {
         return;
       }
@@ -986,8 +992,14 @@ export function createWriterApp() {
       }
       rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages);
       const baseSession = wordLiveSessionForRequest(parsed.request);
+      let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(parsed.request.runId);
-      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(releaseRun);
+      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(() => {
+        undeliveredSteers = releaseRun();
+      });
+      if (undeliveredSteers.length) {
+        ai.undeliveredSteers = undeliveredSteers;
+      }
       if (signal.aborted) {
         return;
       }
@@ -1533,8 +1545,14 @@ export function createWriterApp() {
       const aiRequest = parsed.request.documentImages?.length
         ? parsed.request
         : { ...parsed.request, documentImages: await sessionDocumentImages(parsed.request) };
+      let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(aiRequest.runId);
-      const ai = await proposeChanges(aiRequest, { signal, runId: aiRequest.runId ?? null }).finally(releaseRun);
+      const ai = await proposeChanges(aiRequest, { signal, runId: aiRequest.runId ?? null }).finally(() => {
+        undeliveredSteers = releaseRun();
+      });
+      if (undeliveredSteers.length) {
+        ai.undeliveredSteers = undeliveredSteers;
+      }
       if (signal.aborted) {
         return;
       }

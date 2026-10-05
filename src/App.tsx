@@ -4211,6 +4211,10 @@ export function App() {
       if (response.agentSessionId) {
         agentSessionsRef.current[`${provider}:${docId ?? "scratch"}`] = response.agentSessionId;
       }
+      if (response.undeliveredSteers?.length) {
+        // Sent during the run but no session could take them: they become the next turn.
+        queueInstruction(response.undeliveredSteers.join("\n\n"), null);
+      }
       receiveAiResponse(response, {
         instruction: trimmedInstruction,
         mode: activeScope,
