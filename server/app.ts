@@ -19,6 +19,8 @@ import { cliChildEnv } from "./ai";
 import type { AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
 import { isSuggestionAnchor } from "../src/shared";
 import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
+import { isRunId, markRunInFlight, steerRun } from "./steering";
+import type { AiSteerResponse } from "../src/shared";
 import { agentTerminalStatus, ensureAgentTerminal } from "./agent-terminal";
 import { restartTerminalRoom } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
@@ -323,6 +325,23 @@ export function createWriterApp() {
       // Set by server/index.ts when the HTTPS listener (Word add-in) is up.
       tls: tlsHealth()
     });
+  });
+
+  // Mid-turn steering: deliver a message into the running turn of the request
+  // with this run id (see server/steering.ts). Not running / not steerable is
+  // a normal answer (200, ok:false) — the client then queues the message.
+  app.post("/api/ai/steer", async (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as { runId?: unknown; text?: unknown };
+      if (!isRunId(body.runId) || typeof body.text !== "string" || !body.text.trim() || body.text.length > 20_000) {
+        response.status(400).json({ error: "Steering requires { runId, text } with a non-empty text of at most 20,000 characters." });
+        return;
+      }
+      const result: AiSteerResponse = await steerRun(body.runId, body.text);
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/ai/progress", (_request, response) => {
@@ -936,7 +955,8 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      const ai = await proposeChanges(parsed.request, { signal });
+      const releaseRun = markRunInFlight(parsed.request.runId);
+      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(releaseRun);
       if (signal.aborted) {
         return;
       }
@@ -966,7 +986,8 @@ export function createWriterApp() {
       }
       rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages);
       const baseSession = wordLiveSessionForRequest(parsed.request);
-      const ai = await proposeChanges(parsed.request, { signal });
+      const releaseRun = markRunInFlight(parsed.request.runId);
+      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(releaseRun);
       if (signal.aborted) {
         return;
       }
@@ -1512,7 +1533,8 @@ export function createWriterApp() {
       const aiRequest = parsed.request.documentImages?.length
         ? parsed.request
         : { ...parsed.request, documentImages: await sessionDocumentImages(parsed.request) };
-      const ai = await proposeChanges(aiRequest, { signal });
+      const releaseRun = markRunInFlight(aiRequest.runId);
+      const ai = await proposeChanges(aiRequest, { signal, runId: aiRequest.runId ?? null }).finally(releaseRun);
       if (signal.aborted) {
         return;
       }
@@ -3843,6 +3865,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if ("error" in focus) {
     return focus;
   }
+  const runIdValue = (body as { runId?: unknown }).runId;
+  if (runIdValue !== undefined && runIdValue !== null && !isRunId(runIdValue)) {
+    return { error: "runId must be 1-64 letters, digits, '-' or '_'." };
+  }
   const toolAccessValue = (body as { toolAccess?: unknown }).toolAccess;
   if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
     return { error: "toolAccess must be one of document, read, or full." };
@@ -3868,6 +3894,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       documentImages: documentImages.value,
       documentEmphasis: isEmphasisSpanList(documentEmphasisValue) ? documentEmphasisValue : null,
+      runId: isRunId(runIdValue) ? runIdValue : null,
       focus: focus.value,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,

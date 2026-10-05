@@ -9,6 +9,9 @@ import { suggestionAnchorFor } from "../src/shared";
 import { EMPHASIS_NOTATION_NOTE, renderEmphasis } from "../src/emphasis";
 import { parseQuotedText, sameEmphasisSpans, stagedEmphasis } from "./emphasis-staging";
 import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecutionEnabled, resolveCliCommand, type CliProviderName } from "./cli-runtime";
+import { elideLongPayloads, STDERR_TAIL_CHARS } from "./cli-output";
+export { elideLongPayloads } from "./cli-output";
+import { CodexAppServerUnavailable, runCodexAppServer } from "./codex-app-server";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome } from "./cli-home";
@@ -24,23 +27,6 @@ const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
 // Streaming CLI output (JSONL events plus partial deltas) is several times the
 // size of the final reply, so the memory guard is generous.
-/**
- * No cap on how much a CLI may print: agent runs with computer use stream a
- * screenshot per step. Lines are kept for parsing with long base64 payloads
- * (images, data URIs) replaced by a short marker, so memory stays bounded by
- * the text, not the pictures; stderr keeps its last STDERR_TAIL_CHARS.
- */
-const ELIDE_PAYLOAD_MIN_CHARS = 8_000;
-const STDERR_TAIL_CHARS = 200_000;
-const LONG_PAYLOAD = new RegExp(`"(?:data:[^";,]{1,80};base64,)?[A-Za-z0-9+/=_\\\\-]{${ELIDE_PAYLOAD_MIN_CHARS},}"`, "g");
-
-/** A stdout line with embedded binary payloads elided (text, including long JSON answers, is untouched). */
-export function elideLongPayloads(line: string): string {
-  if (line.length < ELIDE_PAYLOAD_MIN_CHARS) {
-    return line;
-  }
-  return line.replace(LONG_PAYLOAD, (match) => `"[binary data elided: ${(match.length - 2).toLocaleString()} chars]"`);
-}
 const MAX_CLI_DIAGNOSTIC_CHARS = 4_000;
 const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   CLICOLOR: "0",
@@ -88,6 +74,8 @@ interface AiRunOptions {
   onStreamEvent?: (event: CliStreamEvent) => void;
   /** Called once with everything the process wrote, when it exits (diagnostics). */
   onTranscript?: (transcript: CliTranscript) => void;
+  /** Client run id: the running process registers under it so POST /api/ai/steer reaches it. */
+  runId?: string | null;
 }
 
 export interface AiProgressSnapshot {
@@ -437,6 +425,7 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
       toolAccess,
       modelOptions: request.modelOptions ?? null,
       signal: options.signal,
+      runId: options.runId ?? null,
       onEvent: (event) => {
         recordActivity(run, event);
         applyAgentProgress(provider, request, event);
@@ -1172,6 +1161,43 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
     }
   };
 
+  if (provider === "codex" && codexTransport() === "app-server") {
+    // The app-server takes input while a turn runs (mid-turn steering);
+    // an older Codex without it falls through to exec below.
+    try {
+      const result = await runCodexAppServer({
+        command,
+        prompt,
+        cwd: cliWorkspaceDir(),
+        env: cliChildEnv(provider, options.toolAccess ?? "document"),
+        resumeThreadId,
+        sandbox: (options.toolAccess ?? "document") === "full" ? "workspace-write" : "read-only",
+        model: modelOptions?.model ?? null,
+        effort: modelOptions?.reasoning ?? null,
+        outputSchema: AI_RESPONSE_SCHEMA,
+        imagePaths: options.imagePaths ?? [],
+        timeoutMs: cliTimeoutMs(),
+        signal: options.signal,
+        runId: options.runId ?? null,
+        onLine: (line) => runOptions.onStdoutLine?.(line)
+      });
+      runOptions.onTranscript?.({ stdout: result.output, stderr: result.stderr, code: 0, signal: null, ended: null });
+      if (schemaFile) {
+        rmSync(schemaFile.dir, { recursive: true, force: true });
+      }
+      return result.finalMessage && parseStructuredResponse(result.finalMessage) ? result.finalMessage : result.output;
+    } catch (error) {
+      if (!(error instanceof CodexAppServerUnavailable)) {
+        if (schemaFile) {
+          rmSync(schemaFile.dir, { recursive: true, force: true });
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        runOptions.onTranscript?.({ stdout: "", stderr: "", code: null, signal: null, ended: message });
+        throw observer?.describeFailure(error) ?? error;
+      }
+    }
+  }
+
   try {
     return preferLastMessage(await runCliCommand(provider, command, primaryArgs, prompt, runOptions));
   } catch (error) {
@@ -1408,6 +1434,11 @@ export function cliChildEnv(provider: CliProviderName, toolAccess: AiToolAccess 
     env[PROVIDER_CHILD_HOME_ENV[provider]] = cliHome;
   }
   return env;
+}
+
+/** How Codex runs: its app-server (steerable mid-turn; the default) or `codex exec` (WRITER_CODEX_TRANSPORT=exec). */
+export function codexTransport(env: NodeJS.ProcessEnv = process.env): "app-server" | "exec" {
+  return env.WRITER_CODEX_TRANSPORT?.trim().toLowerCase() === "exec" ? "exec" : "app-server";
 }
 
 const PROVIDER_CHILD_HOME_ENV: Record<CliProviderName, string> = {

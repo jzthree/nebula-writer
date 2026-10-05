@@ -10,6 +10,19 @@ import { createWriterApp } from "../server/app";
 const app = createWriterApp();
 
 describe("writer sidecar API", () => {
+  it("answers mid-turn steering: validates the body and reports a run that is not running", async () => {
+    const json = { "content-type": "application/json" };
+    const bad = await requestBuffer("POST", "/api/ai/steer", json, JSON.stringify({ runId: "has spaces", text: "x" }));
+    expect(bad.statusCode).toBe(400);
+    const empty = await requestBuffer("POST", "/api/ai/steer", json, JSON.stringify({ runId: "r1", text: "  " }));
+    expect(empty.statusCode).toBe(400);
+    const idle = await requestBuffer("POST", "/api/ai/steer", json, JSON.stringify({ runId: "r1", text: "also do this" }));
+    expect(idle.statusCode).toBe(200);
+    expect(JSON.parse(idle.body.toString("utf8"))).toEqual({ ok: false, reason: "not-running" });
+    const badRunId = await requestBuffer("POST", "/api/ai/suggest", json, JSON.stringify({ provider: "demo", instruction: "x", mode: "global", documentText: "Hello.", runId: "a b" }));
+    expect(badRunId.statusCode).toBe(400);
+  });
+
   it("reports health and local provider state", async () => {
     const response = await requestBuffer("GET", "/api/health");
     const body = JSON.parse(response.body.toString("utf8")) as {

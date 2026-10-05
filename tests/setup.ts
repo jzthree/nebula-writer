@@ -22,3 +22,6 @@ if (typeof window !== "undefined") {
 // developer's real ~/.nebula-writer/cli-transcripts. Individual tests that
 // exercise transcript writing point this at a temp dir themselves.
 process.env.WRITER_CLI_TRANSCRIPTS ??= "off";
+
+// Fake Codex CLIs in the suite speak `codex exec`; the app-server transport has its own tests.
+process.env.WRITER_CODEX_TRANSPORT ??= "exec";

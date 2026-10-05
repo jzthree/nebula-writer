@@ -55,6 +55,8 @@ export interface GatewayExecRequest {
   bin?: string;
   label?: string;
   stdin?: string;
+  /** Keep the child's stdin open after `stdin` (a gateway that supports it answers with a "started" frame). */
+  stdinOpen?: boolean;
   env?: Record<string, string>;
   cwd?: string;
   timeoutMs?: number;
@@ -69,6 +71,13 @@ export interface GatewayProcess {
   done: Promise<{ code: number | null; signal: string | null; timedOut: boolean }>;
   /** Abort the run (closes the connection → gateway SIGTERM→SIGKILL). */
   abort(): void;
+  /**
+   * More stdin for a stdinOpen exec. Resolves false when the gateway has no
+   * open input for this run (an older gateway, or the child already exited).
+   */
+  writeInput(data: string): Promise<boolean>;
+  /** Close the child's stdin (stdinOpen execs). */
+  endInput(): void;
 }
 
 /**
@@ -136,6 +145,35 @@ export function execViaGateway(exec: GatewayExecRequest): GatewayProcess | null 
   );
 
   let finished = false;
+  let execId: string | null = null;
+  const idWaiters: Array<(id: string | null) => void> = [];
+  const awaitId = (): Promise<string | null> => (execId || finished || !exec.stdinOpen
+    ? Promise.resolve(execId)
+    : new Promise((resolve) => {
+      idWaiters.push(resolve);
+      // An older gateway never sends "started": give up after a moment.
+      setTimeout(() => resolve(execId), 3_000).unref();
+    }));
+  const postInput = async (payload: { data?: string; end?: boolean }): Promise<boolean> => {
+    const id = await awaitId();
+    if (!id || finished) {
+      return false;
+    }
+    const json = JSON.stringify(payload);
+    return new Promise((resolve) => {
+      const input = httpRequest({
+        socketPath: socketPath(),
+        method: "POST",
+        path: `/exec/${id}/stdin`,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(json) }
+      }, (res) => {
+        res.resume();
+        resolve((res.statusCode ?? 500) < 300);
+      });
+      input.on("error", () => resolve(false));
+      input.end(json);
+    });
+  };
   const handleFrame = (line: string) => {
     let frame: { t?: string; b64?: string; message?: string; code?: number | null; signal?: string | null; timedOut?: boolean };
     try {
@@ -153,11 +191,19 @@ export function execViaGateway(exec: GatewayExecRequest): GatewayProcess | null 
       for (const cb of stderrCbs) {
         cb(text);
       }
+    } else if (frame.t === "started" && typeof (frame as { id?: unknown }).id === "string") {
+      execId = (frame as { id: string }).id;
+      for (const resolveId of idWaiters.splice(0)) {
+        resolveId(execId);
+      }
     } else if (frame.t === "error") {
       finished = true;
       rejectDone(new Error(frame.message || "Gateway exec error."));
     } else if (frame.t === "exit") {
       finished = true;
+      for (const resolveId of idWaiters.splice(0)) {
+        resolveId(null);
+      }
       resolveDone({ code: frame.code ?? null, signal: frame.signal ?? null, timedOut: Boolean(frame.timedOut) });
     }
   };
@@ -174,6 +220,10 @@ export function execViaGateway(exec: GatewayExecRequest): GatewayProcess | null 
     onStdout: (cb) => stdoutCbs.push(cb),
     onStderr: (cb) => stderrCbs.push(cb),
     done,
-    abort: () => req.destroy()
+    abort: () => req.destroy(),
+    writeInput: (data) => postInput({ data }),
+    endInput: () => {
+      void postInput({ end: true });
+    }
   };
 }

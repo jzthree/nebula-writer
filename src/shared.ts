@@ -127,6 +127,11 @@ export interface AiRequest {
   documentImages?: AiDocumentImage[];
   /** Inline emphasis (bold/italic/underline/highlight) in documentText as spans; the model sees it as markers. */
   documentEmphasis?: EmphasisSpan[] | null;
+  /**
+   * Client-chosen id for this request. While it runs, POST /api/ai/steer with
+   * the same id delivers a message into the running turn (mid-turn steering).
+   */
+  runId?: string | null;
   /** When the message is feedback on one earlier suggestion: that suggestion. */
   focus?: AiRequestFocus | null;
   /**
@@ -774,3 +779,6 @@ function commonPrefixLength(left: string, right: string): number {
   }
   return count;
 }
+
+/** Reply from POST /api/ai/steer. `queued`-style fallbacks are the client's: a run that cannot be steered says why. */
+export type AiSteerResponse = { ok: true } | { ok: false; reason: "not-running" | "not-steerable" | "failed"; detail?: string };

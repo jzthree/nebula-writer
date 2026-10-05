@@ -105,11 +105,11 @@ describe("model options validation and CLI arguments", () => {
     const oneShotClaude = buildCliArgs("claude", undefined, { model: "sonnet", reasoning: "medium" });
     expect(oneShotClaude.slice(0, 5)).toEqual(["-p", "--model", "sonnet", "--effort", "medium"]);
 
-    const agentClaude = buildAgentClaudeArgs("go", "/tmp/mcp.json", "sess-1", { model: "opus", reasoning: "xhigh" });
+    const agentClaude = buildAgentClaudeArgs("/tmp/mcp.json", "sess-1", { model: "opus", reasoning: "xhigh" });
     expect(agentClaude).toContain("--model");
     expect(agentClaude[agentClaude.indexOf("--model") + 1]).toBe("opus");
     expect(agentClaude.slice(-2)).toEqual(["--resume", "sess-1"]);
-    expect(buildAgentClaudeArgs("go", "/tmp/mcp.json", null)).not.toContain("--effort");
+    expect(buildAgentClaudeArgs("/tmp/mcp.json", null)).not.toContain("--effort");
 
     const agentCodex = buildAgentCodexArgs("go", "http://x", "/work", null, { model: "gpt-5.5", reasoning: "low" });
     expect(agentCodex[agentCodex.length - 1]).toBe("go");

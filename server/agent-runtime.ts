@@ -1,4 +1,5 @@
 import type { AiModelOptions } from "../src/shared";
+import { registerSteerable, steerMessageText, type SteerResult } from "./steering";
 import { modelCliArgs } from "./model-catalog";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -77,6 +78,8 @@ export interface AgentTurnOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   onEvent?: (event: AgentEvent) => void;
+  /** Client run id: a steerable turn (Claude) registers under it for POST /api/ai/steer. */
+  runId?: string | null;
 }
 
 export interface AgentTurnResult {
@@ -143,10 +146,17 @@ function claudeToolArgs(toolAccess: AiToolAccess): string[] {
   }
 }
 
-export function buildAgentClaudeArgs(prompt: string, mcpConfigPath: string, sessionId: string | null, modelOptions: AiModelOptions | null = null, toolAccess: AiToolAccess = "document"): string[] {
+/**
+ * Claude reads the prompt as a stream-json user message on stdin
+ * (claudeInputLine), and stdin stays open for the turn, so a message the user
+ * sends while it works is delivered into the running turn — the same thing
+ * typing into the Claude CLI does. Stdin is closed when the result arrives.
+ */
+export function buildAgentClaudeArgs(mcpConfigPath: string, sessionId: string | null, modelOptions: AiModelOptions | null = null, toolAccess: AiToolAccess = "document"): string[] {
   const args = [
     "-p",
-    prompt,
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--verbose",
@@ -186,6 +196,11 @@ export function buildAgentCodexArgs(prompt: string, runUrl: string, workspaceDir
   ];
 }
 
+/** One stream-json user message for Claude's stdin. */
+export function claudeInputLine(text: string): string {
+  return `${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } })}\n`;
+}
+
 function tomlString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -206,9 +221,12 @@ interface AgentProcess {
   onStderr(cb: (chunk: string) => void): void;
   wait(): Promise<{ code: number | null }>;
   abort(): void;
+  /** More stdin (Claude's stream-json input); false when the input is closed or unsupported. */
+  writeInput(data: string): Promise<boolean>;
+  endInput(): void;
 }
 
-function createAgentProcess(options: AgentTurnOptions, command: string, args: string[]): AgentProcess {
+function createAgentProcess(options: AgentTurnOptions, command: string, args: string[], input: string | null): AgentProcess {
   // Prefer the gateway. It builds a clean login-shell env and handles homes
   // correctly (notably: on macOS it does NOT redirect claude's CLAUDE_CONFIG_DIR,
   // which would break keychain auth), so the gateway path only forwards the
@@ -221,6 +239,7 @@ function createAgentProcess(options: AgentTurnOptions, command: string, args: st
       label: "writer",
       cwd: options.workspaceDir,
       env: { ...CLI_ENV_OVERRIDES } as Record<string, string>,
+      ...(input !== null ? { stdin: input, stdinOpen: true } : {}),
       // Let the client-side timeout below drive cancellation; give the gateway
       // a looser guard so the client wins the race and produces the nicer error.
       // With no local timeout, ask for the gateway's maximum (it caps at 1h).
@@ -231,17 +250,26 @@ function createAgentProcess(options: AgentTurnOptions, command: string, args: st
         onStdout: gw.onStdout,
         onStderr: gw.onStderr,
         wait: () => gw.done.then(({ code }) => ({ code })),
-        abort: gw.abort
+        abort: gw.abort,
+        writeInput: gw.writeInput,
+        endInput: gw.endInput
       };
     }
   }
   // In-process fallback: the gateway isn't running. Spawn exactly as before.
   const child = spawn(command, args, {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [input !== null ? "pipe" : "ignore", "pipe", "pipe"],
     cwd: options.workspaceDir,
     env: { ...process.env, ...CLI_ENV_OVERRIDES, ...options.env }
   });
   let forceKillTimer: NodeJS.Timeout | undefined;
+  let inputOpen = input !== null && Boolean(child.stdin);
+  child.stdin?.on("error", () => {
+    inputOpen = false;
+  });
+  if (input !== null) {
+    child.stdin?.write(input);
+  }
   return {
     onStdout: (cb) => child.stdout?.on("data", (chunk: Buffer) => cb(chunk.toString("utf8"))),
     onStderr: (cb) => child.stderr?.on("data", (chunk: Buffer) => cb(chunk.toString("utf8"))),
@@ -257,6 +285,19 @@ function createAgentProcess(options: AgentTurnOptions, command: string, args: st
     abort: () => {
       child.kill("SIGTERM");
       forceKillTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    },
+    writeInput: async (data) => {
+      if (!inputOpen || !child.stdin || child.stdin.destroyed || child.exitCode !== null) {
+        return false;
+      }
+      child.stdin.write(data);
+      return true;
+    },
+    endInput: () => {
+      if (inputOpen) {
+        inputOpen = false;
+        child.stdin?.end();
+      }
     }
   };
 }
@@ -270,7 +311,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   const onEvent = options.onEvent ?? (() => undefined);
   const mcpConfig = writeMcpConfig(options.runUrl);
   const args = options.provider === "claude"
-    ? buildAgentClaudeArgs(options.prompt, mcpConfig.path, options.sessionId ?? null, options.modelOptions ?? null, options.toolAccess ?? "document")
+    ? buildAgentClaudeArgs(mcpConfig.path, options.sessionId ?? null, options.modelOptions ?? null, options.toolAccess ?? "document")
     : buildAgentCodexArgs(options.prompt, options.runUrl, options.workspaceDir, options.sessionId ?? null, options.modelOptions ?? null, options.toolAccess ?? "document");
   const timeoutMs = options.timeoutMs ?? cliTimeoutMs();
   const parser = options.provider === "claude" ? new ClaudeStreamParser() : new CodexStreamParser();
@@ -282,14 +323,29 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
       let stderr = "";
       let timeoutTimer: NodeJS.Timeout | undefined;
       let abortHandler: (() => void) | null = null;
+      let unregisterSteer: () => void = () => undefined;
 
-      const proc = createAgentProcess(options, command, args);
+      const proc = createAgentProcess(options, command, args, options.provider === "claude" ? claudeInputLine(options.prompt) : null);
+      let resultSeen = false;
+      const unregister = options.provider === "claude"
+        ? registerSteerable(options.runId, {
+          provider: "claude",
+          steer: async (text): Promise<SteerResult> => {
+            if (settled || resultSeen) {
+              return { ok: false, reason: "not-running" };
+            }
+            return (await proc.writeInput(claudeInputLine(steerMessageText(text)))) ? { ok: true } : { ok: false, reason: "not-steerable" };
+          }
+        })
+        : () => undefined;
+      unregisterSteer = unregister;
 
       const finish = (fn: () => void) => {
         if (settled) {
           return;
         }
         settled = true;
+        unregisterSteer();
         if (timeoutTimer) {
           clearTimeout(timeoutTimer);
         }
@@ -330,6 +386,10 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
           const line = stdoutBuffer.slice(0, newlineIndex);
           stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
           for (const event of parser.consume(line)) {
+            if (event.kind === "result" && !resultSeen) {
+              resultSeen = true;
+              proc.endInput();
+            }
             onEvent(event);
           }
           newlineIndex = stdoutBuffer.indexOf("\n");

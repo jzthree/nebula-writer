@@ -245,10 +245,11 @@ describe("agent run context", () => {
 
 describe("agent CLI arguments", () => {
   it("locks Claude down to the writer MCP server", () => {
-    const args = buildAgentClaudeArgs("do the thing", "/tmp/mcp.json", null);
+    const args = buildAgentClaudeArgs("/tmp/mcp.json", null);
     expect(args).toEqual([
       "-p",
-      "do the thing",
+      "--input-format",
+      "stream-json",
       "--output-format",
       "stream-json",
       "--verbose",
@@ -263,12 +264,12 @@ describe("agent CLI arguments", () => {
   });
 
   it("opens Claude up by access level: read-only helpers, or everything the user's CLI has", () => {
-    const read = buildAgentClaudeArgs("go", "/tmp/mcp.json", null, null, "read");
+    const read = buildAgentClaudeArgs("/tmp/mcp.json", null, null, "read");
     expect(read).toContain("--strict-mcp-config");
     expect(read[read.indexOf("--tools") + 1]).toBe("ToolSearch WebSearch WebFetch Read Glob Grep");
     expect(read[read.indexOf("--allowedTools") + 1]).toBe("mcp__writer ToolSearch WebSearch WebFetch Read Glob Grep");
 
-    const full = buildAgentClaudeArgs("go", "/tmp/mcp.json", null, null, "full");
+    const full = buildAgentClaudeArgs("/tmp/mcp.json", null, null, "full");
     expect(full).not.toContain("--strict-mcp-config");
     expect(full).not.toContain("--tools");
     expect(full[full.indexOf("--allowedTools") + 1]).toBe("mcp__writer ToolSearch");
@@ -285,7 +286,7 @@ describe("agent CLI arguments", () => {
   });
 
   it("resumes Claude sessions", () => {
-    const args = buildAgentClaudeArgs("follow up", "/tmp/mcp.json", "sess-123");
+    const args = buildAgentClaudeArgs("/tmp/mcp.json", "sess-123");
     expect(args.slice(-2)).toEqual(["--resume", "sess-123"]);
   });
 
