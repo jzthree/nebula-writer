@@ -1,3 +1,4 @@
+import { newAiRunId } from "../sidecarClient";
 /**
  * Nebula Writer — Word task pane container.
  *
@@ -53,7 +54,7 @@ import {
   requestWordSuggestions,
   subscribeWriterEvents,
   updateSuggestionStatus,
-  uploadAttachment, fetchImageAsBase64, uploadDocumentImage } from "./writerClient";
+  uploadAttachment, fetchImageAsBase64, uploadDocumentImage, steerRun } from "./writerClient";
 import {
   WordPane,
   type CardState,
@@ -224,6 +225,9 @@ export function App() {
   // typing never stops: a message sent meanwhile waits here and goes out the
   // moment the current turn ends — in the same thread.
   const runningRef = useRef(false);
+  /** Run id of the request in flight (mid-turn steering addresses it). */
+  const runIdRef = useRef<string | null>(null);
+  const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
   const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
 
@@ -652,14 +656,17 @@ export function App() {
     }
     const activeFocus = overrides.focus ?? null;
     if (runningRef.current) {
-      queuedRef.current = { text: typed, focus: activeFocus };
-      setQueued(queuedRef.current);
+      // Like the Codex and Claude CLIs: a message sent while the AI works goes
+      // into the running turn; if that turn cannot take it, it is queued.
       if (overrides.instruction === undefined) {
         setInstruction("");
       }
+      void steerOrQueue(typed, activeFocus);
       return;
     }
     runningRef.current = true;
+    const runId = newAiRunId();
+    runIdRef.current = runId;
     setNotice(null);
     setRequestState("running");
     const controller = new AbortController();
@@ -685,6 +692,7 @@ export function App() {
       const conversation = buildConversationDigest(turnsRef.current, suggestionsRef.current, cardsRef.current);
       const request: WordLiveSuggestionRequest = {
         provider,
+        runId,
         instruction: askedText,
         mode: resolved.mode,
         documentText: snap.bodyText,
@@ -755,6 +763,7 @@ export function App() {
       abortRef.current = null;
       runningTurnRef.current = null;
       runningRef.current = false;
+      runIdRef.current = null;
       const next = queuedRef.current;
       if (next) {
         queuedRef.current = null;
@@ -764,20 +773,76 @@ export function App() {
     }
   }, [appendTurn, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot]);
 
-  /** Stop the running request; the queued message (if any) goes out as soon as it winds down. */
-  const sendQueuedNow = useCallback(() => {
-    if (!queuedRef.current) {
+  askRef.current = ask;
+
+  /** Hold a message for the turn after this one. */
+  const queueMessage = useCallback((text: string, focus: AiRequestFocus | null) => {
+    queuedRef.current = { text, focus };
+    setQueued(queuedRef.current);
+  }, []);
+
+  /** Deliver a message into the running turn; true when the AI took it. */
+  const steerRunning = useCallback(async (text: string, focus: AiRequestFocus | null): Promise<boolean> => {
+    const runId = runIdRef.current;
+    if (!runId) {
+      return false;
+    }
+    const body = focus ? `About ${focus.ref ? `${focus.ref} ` : ""}"${focus.title}": ${text}` : text;
+    const result = await steerRun(runId, body);
+    if (!result.ok || runIdRef.current !== runId) {
+      return false;
+    }
+    appendTurn({ id: turnId(), role: "user", at: new Date().toISOString(), text, steered: true, focus: focus ? { ref: focus.ref ?? null, title: focus.title } : null });
+    return true;
+  }, [appendTurn]);
+
+  const steerOrQueue = useCallback(async (text: string, focus: AiRequestFocus | null) => {
+    if (await steerRunning(text, focus)) {
       return;
     }
     if (runningRef.current) {
+      queueMessage(text, focus);
+      setNotice({ tone: "info", text: "This turn can't take new input right now — your message is queued and goes out when it finishes." });
+    } else {
+      void askRef.current?.({ instruction: text, focus });
+    }
+  }, [queueMessage, steerRunning]);
+
+  /** Typed while a request runs: hold it for the next turn instead of sending it into this one. */
+  const queueTyped = useCallback(() => {
+    const typed = instruction.trim();
+    if (!typed) {
+      return;
+    }
+    setInstruction("");
+    if (runningRef.current) {
+      queueMessage(typed, null);
+    } else {
+      void askRef.current?.({ instruction: typed });
+    }
+  }, [instruction, queueMessage]);
+
+  /** The queued message, now: into the running turn when it can take it, else stop the turn and send it. */
+  const sendQueuedNow = useCallback(async () => {
+    const next = queuedRef.current;
+    if (!next) {
+      return;
+    }
+    if (runningRef.current) {
+      if (await steerRunning(next.text, next.focus)) {
+        if (queuedRef.current === next) {
+          queuedRef.current = null;
+          setQueued(null);
+        }
+        return;
+      }
       abortRef.current?.abort();
       return;
     }
-    const next = queuedRef.current;
     queuedRef.current = null;
     setQueued(null);
     void ask({ instruction: next.text, focus: next.focus });
-  }, [ask]);
+  }, [ask, steerRunning]);
 
   const cancelQueued = useCallback(() => {
     queuedRef.current = null;
@@ -1364,7 +1429,8 @@ export function App() {
       onNewConversation={startNewConversation}
       onDiscuss={discuss}
       queued={queued ? { text: queued.text } : null}
-      onSendQueuedNow={sendQueuedNow}
+      onSendQueuedNow={() => void sendQueuedNow()}
+      onQueue={queueTyped}
       onCancelQueued={cancelQueued}
       onComment={comment}
       onCycleMatch={cycleMatch}

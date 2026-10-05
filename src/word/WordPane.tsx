@@ -36,8 +36,7 @@ import {
   Square,
   Trash2,
   User,
-  X
-} from "lucide-react";
+  X, ListPlus } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
@@ -115,7 +114,7 @@ export interface SentSummary {
 }
 
 export type ChatTurn =
-  | { id: string; role: "user"; at: string; text: string; sent: SentSummary; focus?: { ref: string | null; title: string } | null }
+  | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean }
   | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[] }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
@@ -169,6 +168,8 @@ export interface WordPaneProps {
   /** A message typed while a request runs, waiting to go out when it ends. */
   queued: { text: string } | null;
   onSendQueuedNow: () => void;
+  /** While a request runs: hold the typed message for the next turn instead of sending it into this one. */
+  onQueue: () => void;
   onCancelQueued: () => void;
   onInstructionChange: (value: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
@@ -348,7 +349,7 @@ export function WordPane(props: WordPaneProps) {
         {props.queued ? (
           <div className="wp-queued" role="status">
             <span className="wp-queued-text">Queued: "{props.queued.text}"</span>
-            <button type="button" className="wp-text-button" onClick={props.onSendQueuedNow} title="Stop the current request and send this now">Send now</button>
+            <button type="button" className="wp-text-button" onClick={props.onSendQueuedNow} title="Send it into the running turn now">Send now</button>
             <button type="button" className="wp-icon-button tiny" onClick={props.onCancelQueued} aria-label="Discard the queued message" title="Discard"><X size={12} aria-hidden="true" /></button>
           </div>
         ) : null}
@@ -363,7 +364,7 @@ export function WordPane(props: WordPaneProps) {
             value={props.instruction}
             onChange={(event) => props.onInstructionChange(event.currentTarget.value)}
             placeholder={running
-              ? "Type your next message — it is sent when this request finishes (Stop sends it now)"
+              ? "Add to the running turn (⌘↩), or queue it for after (⇧⌘↩)"
               : "Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"}
             aria-label="Instruction for Writer"
             rows={3}
@@ -371,7 +372,11 @@ export function WordPane(props: WordPaneProps) {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                 event.preventDefault();
                 if (props.canAsk) {
-                  props.onAsk();
+                  if (running && event.shiftKey) {
+                    props.onQueue();
+                  } else {
+                    props.onAsk();
+                  }
                 }
               }
             }}
@@ -381,12 +386,17 @@ export function WordPane(props: WordPaneProps) {
               <Square size={15} aria-hidden="true" />
             </button>
           ) : null}
+          {running ? (
+            <button type="button" className="wp-send queue" onClick={props.onQueue} disabled={!props.canAsk} aria-label="Queue for after this turn (⇧⌘↩)" title="Queue — sent when the current turn finishes (⇧⌘↩)">
+              <ListPlus size={15} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="submit"
             className="wp-send"
             disabled={!props.canAsk}
-            aria-label="Send to Writer (⌘↩)"
-            title={running ? "Queue — sent when the current request finishes (⌘↩)" : "Send (⌘↩)"}
+            aria-label={running ? "Send now, into the running turn (⌘↩)" : "Send to Writer (⌘↩)"}
+            title={running ? "Send now — the AI takes it into account in this turn (⌘↩)" : "Send (⌘↩)"}
           >
             <Send size={16} aria-hidden="true" />
           </button>
@@ -685,7 +695,8 @@ function TurnView(props: {
         <div className="wp-turn-head"><User size={12} aria-hidden="true" /> You <time dateTime={turn.at}>{clock(turn.at)}</time></div>
         {turn.focus ? <p className="wp-turn-focus"><Sparkles size={11} aria-hidden="true" /> About {turn.focus.ref ? `${turn.focus.ref} ` : ""}"{turn.focus.title}"</p> : null}
         <p className="wp-turn-text">{turn.text}</p>
-        <SentDetails sent={turn.sent} />
+        {turn.steered ? <p className="wp-turn-steered">Sent into the running turn — the AI takes it into account in this reply</p> : null}
+        {turn.sent ? <SentDetails sent={turn.sent} /> : null}
       </article>
     );
   }

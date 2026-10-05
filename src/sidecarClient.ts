@@ -606,3 +606,28 @@ function readContentDispositionFilename(response: Response): string | null {
   const match = /filename=\"?([^\";]+)\"?/i.exec(value);
   return match?.[1] ?? null;
 }
+
+/** Deliver a message into the running turn of request `runId` (mid-turn steering). */
+export async function steerAiRunOnSidecar(apiBase: string, runId: string, text: string): Promise<import("./shared").AiSteerResponse> {
+  try {
+    const response = await sidecarFetch(sidecarUrl(apiBase, "/api/ai/steer"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runId, text })
+    });
+    if (!response.ok) {
+      return { ok: false, reason: "failed", detail: `HTTP ${response.status}` };
+    }
+    return await response.json() as import("./shared").AiSteerResponse;
+  } catch (error) {
+    return { ok: false, reason: "failed", detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** A fresh id for one AI request (steering addresses the run by it). */
+export function newAiRunId(): string {
+  const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `run-${random}`.slice(0, 64);
+}

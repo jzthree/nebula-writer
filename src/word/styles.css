@@ -658,3 +658,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* Inline emphasis inside proposed changes */
 .wp-change mark { background: #fff1a3; color: inherit; padding: 0 1px; border-radius: 2px; }
 .wp-change u { text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+/* Mid-turn steering */
+.wp-send.queue { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line-strong); }
+.wp-turn-steered { margin: 2px 0 0; font-size: 11px; color: var(--ink-soft); font-style: italic; }

@@ -22,8 +22,7 @@ import {
   setWriterSuggestionStatusInSidecar,
   uploadAiAttachmentToSidecar,
   type AiProgressSnapshot,
-  type HealthResponse
-} from "../sidecarClient";
+  type HealthResponse, steerAiRunOnSidecar } from "../sidecarClient";
 
 const API_BASE = "";
 
@@ -211,4 +210,9 @@ export function subscribeWriterEvents(handlers: WriterEventHandlers): () => void
     }
     socket?.close();
   };
+}
+
+/** Deliver a message into the running turn (mid-turn steering); ok:false means queue it instead. */
+export function steerRun(runId: string, text: string) {
+  return steerAiRunOnSidecar(API_BASE, runId, text);
 }

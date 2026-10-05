@@ -10,13 +10,17 @@ const captured: {
   chat: WriterChatMessage[];
   catalogFetches: boolean[];
   imageUploads: Array<Record<string, unknown>>;
+  steers: Array<{ runId: string; text: string }>;
+  steerOk: boolean;
 } = {
   requests: [],
   contextPushes: [],
   statusUpdates: [],
   chat: [],
   catalogFetches: [],
-  imageUploads: []
+  imageUploads: [],
+  steers: [],
+  steerOk: true
 };
 
 const ORIGINAL = "Chromatin accessibility is actually a very important determinant of gene regulation, and it is the case that many studies have looked at it.";
@@ -79,6 +83,10 @@ vi.mock("../src/word/writerClient", () => ({
     return { index, path: `/tmp/images/img-${index}.png`, url: `/api/ai/images/img-${index}.png`, mime: "image/png", width: meta.width ?? null, height: meta.height ?? null, altText: meta.altText ?? null, context: meta.context ?? null, paragraphIndex: meta.paragraphIndex ?? null };
   },
   fetchImageAsBase64: async () => "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  steerRun: async (runId: string, text: string) => {
+    captured.steers.push({ runId, text });
+    return captured.steerOk ? { ok: true } : { ok: false, reason: "not-steerable" };
+  },
   requestWordSuggestions: async (request: WordLiveSuggestionRequest, options: { signal?: AbortSignal } = {}) => {
     captured.requests.push(request);
     if (request.instruction.startsWith("Slow:")) {
@@ -169,6 +177,8 @@ let mock: MockWordHost;
 
 beforeEach(() => {
   captured.requests = [];
+  captured.steers = [];
+  captured.steerOk = true;
   captured.imageUploads = [];
   captured.contextPushes = [];
   captured.statusUpdates = [];
@@ -198,7 +208,7 @@ async function renderPane() {
 
 function send(text: string) {
   fireEvent.change(screen.getByLabelText("Instruction for Writer"), { target: { value: text } });
-  fireEvent.click(screen.getByLabelText("Send to Writer (⌘↩)"));
+  fireEvent.click(screen.getByLabelText(/^Send to Writer \(⌘↩\)$|^Send now, into the running turn/));
 }
 
 describe("Word task pane", () => {
@@ -409,25 +419,56 @@ describe("Word task pane", () => {
     expect(captured.imageUploads).toHaveLength(1);
   });
 
-  it("keeps the box open while a request runs: the next message queues and is sent when the turn ends", async () => {
+  it("sends a message typed while the AI works into the running turn, like the CLIs", async () => {
     await renderPane();
     send("Slow: first request");
     await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
     expect(screen.getByLabelText("Instruction for Writer")).not.toBeDisabled();
+    send("also keep the citation");
+    await waitFor(() => expect(captured.steers).toHaveLength(1));
+    expect(captured.requests[0].runId).toMatch(/^run-/);
+    expect(captured.steers[0]).toEqual({ runId: captured.requests[0].runId, text: "also keep the citation" });
+    await waitFor(() => expect(screen.getByText("Sent into the running turn — the AI takes it into account in this reply")).toBeInTheDocument());
+    expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0), { timeout: 3_000 });
+    expect(captured.requests).toHaveLength(1);
+  });
+
+  it("queues the message when the running turn cannot take it, and sends it when the turn ends", async () => {
+    captured.steerOk = false;
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
     send("second request");
-    expect(screen.getByText(/Queued: "second request"/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/Queued: "second request"/)).toBeInTheDocument());
     expect(captured.requests.length).toBe(1);
     await waitFor(() => expect(captured.requests.length).toBe(2), { timeout: 3_000 });
     expect(captured.requests[1].instruction).toBe("second request");
     await waitFor(() => expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0));
   });
 
-  it("sends a queued message now by stopping the running request", async () => {
+  it("holds a message for the next turn with Queue, and Send now delivers it into the running turn", async () => {
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Instruction for Writer"), { target: { value: "after this, do the next page" } });
+    fireEvent.click(screen.getByLabelText("Queue for after this turn (⇧⌘↩)"));
+    expect(screen.getByText(/Queued: "after this, do the next page"/)).toBeInTheDocument();
+    expect(captured.steers).toHaveLength(0);
+    fireEvent.click(screen.getByText("Send now"));
+    await waitFor(() => expect(captured.steers).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0), { timeout: 3_000 });
+    expect(captured.requests).toHaveLength(1);
+  });
+
+  it("Send now on a queued message stops the turn and sends it when the turn cannot take input", async () => {
+    captured.steerOk = false;
     await renderPane();
     send("Slow: first request");
     await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
     send("urgent follow-up");
+    await waitFor(() => expect(screen.getByText(/Queued: "urgent follow-up"/)).toBeInTheDocument());
     fireEvent.click(screen.getByText("Send now"));
     await waitFor(() => expect(captured.requests.length).toBe(2));
     expect(captured.requests[1].instruction).toBe("urgent follow-up");
