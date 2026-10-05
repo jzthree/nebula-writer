@@ -54,8 +54,7 @@ import {
   type WriterAutosavedSessionsResult,
   type WriterSessionReviewExportRequest,
   type WriterSessionReviewExportResult,
-  type WriterSessionStateResult
-} from "./sidecarClient";
+  type WriterSessionStateResult, steerAiRunOnSidecar } from "./sidecarClient";
 
 export { SidecarHttpError } from "./sidecarClient";
 export type {
@@ -212,4 +211,9 @@ export async function downloadWriterRoutineArtifact(id: string): Promise<WriterR
 
 export async function syncWriterRoutineSuggestions(id: string): Promise<WriterRoutineSuggestionsResult> {
   return syncWriterRoutineSuggestionsFromSidecar("", id);
+}
+
+/** Deliver a message into the running turn of request `runId` on the sidecar running it (mid-turn steering). */
+export function steerAiRun(runId: string, text: string, target: "sidecar" | "local" = "sidecar") {
+  return steerAiRunOnSidecar(target === "local" ? LOCAL_AI_BASE : "", runId, text);
 }

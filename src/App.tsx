@@ -1,3 +1,4 @@
+import { newAiRunId } from "./sidecarClient";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { wordDiffSegments } from "./wordDiff";
 import Image from "@tiptap/extension-image";
@@ -57,10 +58,9 @@ import {
   Users,
   X,
   Eye,
-  EyeOff
-} from "lucide-react";
+  EyeOff, ListPlus } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
-import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict } from "./api";
+import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun } from "./api";
 import { markedSides, renderMarked } from "./emphasisView";
 import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
@@ -885,6 +885,8 @@ export function App() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const routineNameInputRef = useRef<HTMLInputElement | null>(null);
   const aiRequestInFlightRef = useRef(false);
+  /** The in-flight request's run id and which sidecar runs it (mid-turn steering addresses it). */
+  const aiRunRef = useRef<{ runId: string; local: boolean } | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
   const aiRequestSeqRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -4133,11 +4135,16 @@ export function App() {
       return;
     }
     if (aiRequestInFlightRef.current) {
-      // Typing never waits for the model: queue it for the moment this turn ends.
-      queuedInstructionRef.current = { text: trimmedInstruction, focus: requestFocus };
-      setQueuedInstruction(queuedInstructionRef.current);
+      // Like the Codex and Claude CLIs: a message sent while the AI works goes
+      // into the running turn; if that turn cannot take it, it is queued.
       if (overrides.instruction === undefined) {
         setInstruction("");
+      }
+      if (!(await steerRunningAi(trimmedInstruction, requestFocus)) && aiRequestInFlightRef.current) {
+        queueInstruction(trimmedInstruction, requestFocus);
+        appendMessage("system", "This turn can't take new input right now — your message is queued and goes out when it finishes.");
+      } else if (!aiRequestInFlightRef.current && !queuedInstructionRef.current) {
+        void handleSend({ instruction: trimmedInstruction, focus: requestFocus });
       }
       return;
     }
@@ -4162,6 +4169,8 @@ export function App() {
     aiRequestSeqRef.current = requestId;
     aiAbortControllerRef.current = controller;
     aiRequestInFlightRef.current = true;
+    const runId = newAiRunId();
+    aiRunRef.current = { runId, local: localAiActiveRef.current };
     setBusy("Asking AI");
     setError(null);
     setEmptyAiResult(null);
@@ -4179,6 +4188,7 @@ export function App() {
     try {
       const aiRequest: AiRequest = {
         provider,
+        runId,
         instruction: trimmedInstruction,
         mode: activeScope,
         documentHtml: "",
@@ -4224,6 +4234,7 @@ export function App() {
     } finally {
       if (aiRequestSeqRef.current === requestId) {
         aiRequestInFlightRef.current = false;
+        aiRunRef.current = null;
         aiAbortControllerRef.current = null;
         setBusy(null);
         const next = queuedInstructionRef.current;
@@ -4234,6 +4245,62 @@ export function App() {
         }
       }
     }
+  }
+
+  function queueInstruction(text: string, focus: AiRequestFocus | null) {
+    queuedInstructionRef.current = { text, focus };
+    setQueuedInstruction(queuedInstructionRef.current);
+  }
+
+  /** Deliver a message into the running turn; true when the AI took it. */
+  async function steerRunningAi(text: string, focus: AiRequestFocus | null): Promise<boolean> {
+    const run = aiRunRef.current;
+    if (!run) {
+      return false;
+    }
+    const body = focus ? `About ${focus.ref ? `${focus.ref} ` : ""}"${focus.title}": ${text}` : text;
+    const result = await steerAiRun(run.runId, body, run.local ? "local" : "sidecar");
+    if (!result.ok || aiRunRef.current?.runId !== run.runId) {
+      return false;
+    }
+    appendMessage("user", `${text}\n(sent into the running turn — the AI takes it into account in this reply)`);
+    return true;
+  }
+
+  /** Typed while the AI works: hold it for the next turn instead of sending it into this one. */
+  function handleQueueInstruction() {
+    const typed = instruction.trim();
+    if (!typed) {
+      return;
+    }
+    setInstruction("");
+    if (aiRequestInFlightRef.current) {
+      queueInstruction(typed, null);
+    } else {
+      void handleSend({ instruction: typed });
+    }
+  }
+
+  /** The queued message, now: into the running turn when it can take it, else stop the turn (the queue then sends it). */
+  async function sendQueuedNow() {
+    const next = queuedInstructionRef.current;
+    if (!next) {
+      return;
+    }
+    if (aiRequestInFlightRef.current && await steerRunningAi(next.text, next.focus)) {
+      if (queuedInstructionRef.current === next) {
+        queuedInstructionRef.current = null;
+        setQueuedInstruction(null);
+      }
+      return;
+    }
+    if (aiRequestInFlightRef.current) {
+      handleInterruptAi();
+      return;
+    }
+    queuedInstructionRef.current = null;
+    setQueuedInstruction(null);
+    void handleSend({ instruction: next.text, focus: next.focus });
   }
 
   function handleInterruptAi() {
@@ -5239,6 +5306,12 @@ export function App() {
       return;
     }
 
+    if (event.key === "Enter" && event.altKey && busy === "Asking AI" && !event.nativeEvent.isComposing) {
+      // Option+Enter while the AI works: queue for the next turn.
+      event.preventDefault();
+      handleQueueInstruction();
+      return;
+    }
     const isSendShortcut = event.key === "Enter" && (event.shiftKey || event.metaKey || event.ctrlKey);
     if (!isSendShortcut || event.nativeEvent.isComposing) {
       return;
@@ -6628,7 +6701,7 @@ export function App() {
               <div className="cap-chip-row">
                 <span className="cap-chip queued-chip" title="Sent automatically when the current request finishes">
                   Queued: "{queuedInstruction.text.length > 80 ? `${queuedInstruction.text.slice(0, 77)}…` : queuedInstruction.text}"
-                  <button type="button" onClick={handleInterruptAi} title="Stop the current request and send this now">Send now</button>
+                  <button type="button" onClick={() => void sendQueuedNow()} title="Send it into the running turn now">Send now</button>
                   <button
                     type="button"
                     onClick={() => {
@@ -6752,13 +6825,29 @@ export function App() {
                   <Square size={16} aria-hidden="true" />
                 </button>
               ) : null}
+              {isAskingAi ? (
+                <button
+                  type="button"
+                  className="send-button is-queueing"
+                  disabled={!canSendInstruction}
+                  aria-label="Queue for after this turn"
+                  aria-keyshortcuts="Alt+Enter"
+                  title="Queue — sent when the current turn finishes (⌥↩)"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    handleQueueInstruction();
+                  }}
+                >
+                  <ListPlus size={16} aria-hidden="true" />
+                </button>
+              ) : null}
               <button
                 type="submit"
                 className="send-button"
                 disabled={!canSendInstruction}
-                aria-label="Send revision request"
+                aria-label={isAskingAi ? "Send now, into the running turn" : "Send revision request"}
                 aria-keyshortcuts="Shift+Enter Control+Enter Meta+Enter"
-                title={isAskingAi ? "Queue — sent when the current request finishes" : "Send"}
+                title={isAskingAi ? "Send now — the AI takes it into account in this turn" : "Send"}
               >
                 <Send size={18} aria-hidden="true" />
               </button>

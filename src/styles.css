@@ -4746,3 +4746,6 @@ button:disabled {
 .suggestion-note textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; line-height: 1.4; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); resize: vertical; }
 .suggestion-note-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .suggestion-note-actions .primary { margin-left: auto; }
+
+/* Mid-turn steering: queue for the next turn */
+.send-button.is-queueing { background: var(--surface-soft, #f1f3f5); color: var(--ink, #1f2933); border: 1px solid var(--line-strong, #c9ced6); }

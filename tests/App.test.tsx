@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadWriterRoutineArtifact, ensureAgentTerminal, exportDocx, exportWriterSessionReview, exportWriterSessionState, getHealth, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, requestAiSuggestion, runProviderSmokeTest, setWriterSessionChatMessages, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, syncWriterRoutineSuggestions, uploadAiAttachment } from "../src/api";
+import { downloadWriterRoutineArtifact, ensureAgentTerminal, exportDocx, exportWriterSessionReview, exportWriterSessionState, getHealth, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, requestAiSuggestion, runProviderSmokeTest, setWriterSessionChatMessages, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, syncWriterRoutineSuggestions, uploadAiAttachment, steerAiRun } from "../src/api";
 import { App, bodySafeAnchorCandidates, formatReviewBacklogClipboard, formatWordCommentOverlapGroupClipboardPacket, formatWordCommentOverlapTriageClipboardPacket, isPiFactCheckSuggestion, nearbyAlternateAnchorCandidates, nearbyDocxVerifiedAnchorCandidates, reviewBacklogPressureStatus, suggestionForClickedBlockText, wordCommentOverlappingSuggestions, wordCommentOverlapGroupBySuggestionIdForSuggestions, wordCommentOverlapGroupCountForSuggestions, wordCommentOverlapGroupSizeBySuggestionIdForSuggestions, wordCommentOverlapGroupTitleSummaryBySuggestionIdForSuggestions, wordCommentOverlapRepresentativeSuggestions, wordCommentOverlapSummary } from "../src/App";
 import { selectSuggestionTarget } from "../src/editorOps";
 import { addReviewTrace, setReviewHighlight, setReviewTraces } from "../src/reviewHighlight";
@@ -72,6 +72,7 @@ vi.mock("../src/api", async () => ({
   importDocx: vi.fn(),
   importWriterSessionState: vi.fn(),
   loadWriterAutosavedSession: vi.fn(() => Promise.resolve({ session: null })),
+  steerAiRun: vi.fn(() => Promise.resolve({ ok: true })),
   requestAiSuggestion: vi.fn(() => Promise.resolve({
     provider: "codex",
     message: "One edit",
@@ -2685,6 +2686,38 @@ describe("App suggestion review", () => {
     expect(await screen.findByText("Stopped the in-flight AI request. You can revise the prompt and send a new one.")).toBeInTheDocument();
     expect(composer).toHaveValue("Actually, focus only on Aim 1");
     expect(screen.getByRole("button", { name: "Send revision request" })).not.toBeDisabled();
+  });
+
+  it("sends a message typed while the AI works into the running turn, or queues it for after", async () => {
+    let finish: ((value: Awaited<ReturnType<typeof requestAiSuggestion>>) => void) | undefined;
+    vi.mocked(requestAiSuggestion).mockImplementationOnce(() => new Promise((resolve) => {
+      finish = resolve;
+    }));
+    vi.mocked(steerAiRun).mockClear();
+    vi.mocked(steerAiRun).mockResolvedValueOnce({ ok: true });
+
+    render(<App />);
+    const composer = screen.getByLabelText("AI instruction");
+    fireEvent.change(composer, { target: { value: "Make the opening shorter" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send revision request" }));
+    expect(await screen.findByRole("button", { name: "Stop AI request" })).not.toBeDisabled();
+    const runId = vi.mocked(requestAiSuggestion).mock.calls.at(-1)?.[0].runId;
+    expect(runId).toMatch(/^run-/);
+
+    // Send: into the running turn.
+    fireEvent.change(composer, { target: { value: "Keep the citation" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send now, into the running turn" }));
+    await waitFor(() => expect(steerAiRun).toHaveBeenCalledWith(runId, "Keep the citation", "sidecar"));
+    expect(await screen.findByText(/sent into the running turn/)).toBeInTheDocument();
+
+    // Queue: held for the next turn.
+    fireEvent.change(composer, { target: { value: "Then do Aim 2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Queue for after this turn" }));
+    expect(screen.getByText(/Queued: "Then do Aim 2"/)).toBeInTheDocument();
+    expect(steerAiRun).toHaveBeenCalledTimes(1);
+
+    finish?.({ provider: "codex", message: "Done.", suggestions: [] });
+    await waitFor(() => expect(vi.mocked(requestAiSuggestion).mock.calls.at(-1)?.[0].instruction).toBe("Then do Aim 2"));
   });
 
   it("clears stale AI request errors as soon as the user starts a new prompt", async () => {

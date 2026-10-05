@@ -80,13 +80,27 @@ the review queue. *Document + web and read-only files* adds only web
 search/fetch and read-only file access to Writer's tools. *Document only* is
 the original lockdown. The web app has the same picker next to the provider.
 
-The box never locks while a request runs. A message sent meanwhile is
-queued — shown above the composer with *Send now* and a discard button —
-and goes out automatically, in the same thread, the moment the current turn
-ends; *Send now* (or Stop) interrupts the running turn and sends it at once.
-The CLIs take one prompt per turn, so steering a turn while it runs is not
-possible from `codex exec` or `claude -p`; the queue is the closest thing.
-The web app queues the same way.
+The box never locks while a request runs, and a message sent meanwhile
+works like typing into the CLI while it works:
+
+- **Send** (⌘↩) delivers it *into the running turn*. The AI sees it at its
+  next step (after the tool call it is in) and answers both in the same
+  reply; the conversation shows it as "Sent into the running turn". Codex
+  runs through `codex app-server` (`turn/steer`), Claude through
+  `claude -p --input-format stream-json` with stdin kept open for the turn
+  (through the agent gateway's open-stdin execs). Each request carries a
+  run id; `POST /api/ai/steer {runId, text}` reaches it.
+- **Queue** (the list button, ⇧⌘↩) holds it for the turn after — shown above
+  the composer with *Send now* and a discard button — and it goes out
+  automatically, in the same thread, when the current turn ends. *Send now*
+  delivers it into the running turn.
+- When the running turn cannot take input (between a turn and its
+  follow-up, a CLI without the app-server), the message is queued with a
+  notice; *Send now* then stops the turn and sends it.
+
+The web app behaves the same way (Shift/⌘+Enter sends, Option+Enter
+queues), and so does the Google Docs sidebar, which runs this pane.
+`WRITER_CODEX_TRANSPORT=exec` puts Codex back on `codex exec` (no steering).
 
 Quotes heal themselves where they safely can: a suggestion whose original
 differs from the document only in typography, spacing, or a small misquote
