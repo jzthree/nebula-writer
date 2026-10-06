@@ -1,4 +1,5 @@
 import { spawn as ptySpawn, type IPty } from "node-pty";
+import { ensureWriterCodexMirrorHome } from "./cli-home";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -92,6 +93,22 @@ function launcherEnv(): { [key: string]: string } {
   return env;
 }
 
+/**
+ * The inline terminal's environment. Codex runs on the Writer mirror of
+ * ~/.codex (the user's setup without their history), so terminal sessions
+ * stay out of the Codex app's chat history like every other Writer run.
+ */
+function terminalEnv(provider: Provider): { [key: string]: string } {
+  const env = launcherEnv();
+  if (provider === "codex") {
+    const mirror = ensureWriterCodexMirrorHome();
+    if (mirror) {
+      env.CODEX_HOME = mirror;
+    }
+  }
+  return env;
+}
+
 export interface TerminalSize {
   cols: number;
   rows: number;
@@ -131,7 +148,7 @@ function createRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
     cols: size?.cols ?? 80,
     rows: size?.rows ?? 24,
     cwd: repoRoot(),
-    env: launcherEnv()
+    env: terminalEnv(provider)
   });
   const room: TerminalRoom = { pty, provider, scrollback: [], scrollbackBytes: 0, clients: new Set(), disposed: false };
   pty.onData((data) => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliProviderName } from "./cli-runtime";
@@ -125,4 +125,81 @@ export function ensureWriterCliHome(
     }
   }
   return resolved.dir;
+}
+
+/**
+ * Entries of a Codex home that hold the user's history and runtime state —
+ * what the Codex app lists as chat history (sessions, the thread/state
+ * databases and their indexes) plus logs, locks, sockets and scratch space.
+ * A mirror home never links these, so Writer's threads are recorded in
+ * Writer's own home and never appear in the app.
+ */
+const CODEX_PRIVATE_ENTRY = /^(?:sessions|archived_sessions|session_index|history|log|logs?_\d|state_\d|thread_history|thread-writer-locks|goals_\d|queue_\d|memories|shell_snapshots|tmp|worktrees|app-server|ipc|process_manager|sqlite|automations|ambient-suggestions|attachments|generated_images|dictation-history|transcription-history|realtime-voice|visualizations|pets|tui-|rollout-migrations|external_agent_session_imports)|\.corrupt-|\.pre-index-repair-|\.backup-|-backup$|\.hop-backup$/i;
+
+export function isCodexPrivateEntry(name: string): boolean {
+  return CODEX_PRIVATE_ENTRY.test(name);
+}
+
+/**
+ * Codex home for "everything your CLI has" runs: the user's own setup
+ * without the user's history. Every entry of ~/.codex — config.toml, auth,
+ * MCP servers, plugins, computer use, skills, rules, hooks, caches — is
+ * linked in, except the history and state stores (isCodexPrivateEntry), so
+ * Codex runs exactly as the user runs it while the threads Writer starts are
+ * recorded here and stay out of the Codex app's chat history. Links are
+ * refreshed on every run, so anything the user adds to ~/.codex carries over.
+ * Null when opted out (WRITER_CODEX_HOME=default) or on a filesystem failure,
+ * in which case the CLI's own home is used.
+ */
+export function ensureWriterCodexMirrorHome(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string | null {
+  const resolved = resolveWriterCliHome("codex", env, home);
+  if (!resolved) {
+    return null;
+  }
+  const dir = env.WRITER_CODEX_FULL_HOME?.trim() || join(home, ".nebula-writer", "codex-full");
+  if (dir === resolved.sourceDir) {
+    return null;
+  }
+  try {
+    mkdirSync(dir, { recursive: true });
+    const sourceEntries = existsSync(resolved.sourceDir) ? readdirSync(resolved.sourceDir) : [];
+    const wanted = new Set(sourceEntries.filter((name) => !isCodexPrivateEntry(name)));
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      let link: string | null = null;
+      try {
+        link = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null;
+      } catch {
+        link = null;
+      }
+      // Drop links to entries that are gone (or have become private).
+      if (link !== null && (!wanted.has(name) || link !== join(resolved.sourceDir, name))) {
+        unlinkSync(path);
+      }
+    }
+    for (const name of wanted) {
+      const source = join(resolved.sourceDir, name);
+      const dest = join(dir, name);
+      let stat: ReturnType<typeof lstatSync> | null = null;
+      try {
+        stat = lstatSync(dest);
+      } catch {
+        stat = null;
+      }
+      if (stat?.isSymbolicLink()) {
+        continue;
+      }
+      if (stat && name === "config.toml") {
+        // Codex rewrote the linked config in place (a rename replaces the link):
+        // keep that copy aside and follow the user's config again.
+        renameSync(dest, join(dir, `config.toml.writer-local-${Date.now()}`));
+      } else if (stat) {
+        continue; // Codex created its own copy here (e.g. a refreshed auth.json): leave it.
+      }
+      symlinkSync(source, dest);
+    }
+    return dir;
+  } catch {
+    return null;
+  }
 }

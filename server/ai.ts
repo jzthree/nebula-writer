@@ -14,7 +14,7 @@ export { elideLongPayloads } from "./cli-output";
 import { CodexAppServerUnavailable, runCodexAppServer } from "./codex-app-server";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
-import { ensureWriterCliHome } from "./cli-home";
+import { ensureWriterCliHome, ensureWriterCodexMirrorHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
@@ -1429,7 +1429,12 @@ export function cliChildEnv(provider: CliProviderName, toolAccess: AiToolAccess 
   // Opt out with WRITER_CLAUDE_CONFIG_DIR=default / WRITER_CODEX_HOME=default.
   // Full tool access means "the CLI as you run it", so it keeps your own home:
   // your MCP servers, permission settings, and config defaults.
-  const cliHome = toolAccess === "full" ? null : ensureWriterCliHome(provider);
+  // Full access runs the CLI as the user runs it. For Codex that is a mirror
+  // of ~/.codex without its history, so Writer's threads stay out of the
+  // Codex app (cli-home.ts); Claude on macOS must keep its own home (keychain).
+  const cliHome = toolAccess === "full"
+    ? provider === "codex" ? ensureWriterCodexMirrorHome() : null
+    : ensureWriterCliHome(provider);
   if (cliHome) {
     env[PROVIDER_CHILD_HOME_ENV[provider]] = cliHome;
   }
