@@ -163,7 +163,7 @@ describe("Codex mirror home (full access without the user's history)", () => {
       expect(lstatSync(join(dir!, "state_5.sqlite")).isSymbolicLink()).toBe(false);
       expect(lstatSync(join(dir!, "sessions")).isSymbolicLink()).toBe(false);
       expect(ensureWriterCodexMirrorHome({ WRITER_CODEX_HOME: "default" }, home)).toBeNull();
-      for (const name of ["sessions", "archived_sessions", "session_index.jsonl", "state_5.sqlite-shm", "thread_history_1.sqlite", "goals_1.sqlite", "memories_1.sqlite", "app-server-daemon", "logs_2.sqlite"]) {
+      for (const name of ["sessions", "archived_sessions", "session_index.jsonl", "state_5.sqlite-shm", "thread_history_1.sqlite", "goals_1.sqlite", "memories_1.sqlite", "app-server-daemon", "logs_2.sqlite", ".codex-global-state.json", ".app-server-state-reconciled-v1", "..codex-global-state.json.tmp-1"]) {
         expect(isCodexPrivateEntry(name)).toBe(true);
       }
       for (const name of ["config.toml", "auth.json", "plugins", "computer-use", "skills", "rules", "AGENTS.md", "vendor_imports", "node_repl", "packages", "browser"]) {

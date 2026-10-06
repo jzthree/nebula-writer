@@ -137,7 +137,9 @@ export function ensureWriterCliHome(
 const CODEX_PRIVATE_ENTRY = /^(?:sessions|archived_sessions|session_index|history|log|logs?_\d|state_\d|thread_history|thread-writer-locks|goals_\d|queue_\d|memories|shell_snapshots|tmp|worktrees|app-server|ipc|process_manager|sqlite|automations|ambient-suggestions|attachments|generated_images|dictation-history|transcription-history|realtime-voice|visualizations|pets|tui-|rollout-migrations|external_agent_session_imports)|\.corrupt-|\.pre-index-repair-|\.backup-|-backup$|\.hop-backup$/i;
 
 export function isCodexPrivateEntry(name: string): boolean {
-  return CODEX_PRIVATE_ENTRY.test(name);
+  // Hidden entries are the Codex app's own state (.codex-global-state.json,
+  // migration markers, temp files), never user setup.
+  return name.startsWith(".") || CODEX_PRIVATE_ENTRY.test(name);
 }
 
 /**
