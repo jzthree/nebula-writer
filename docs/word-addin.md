@@ -266,6 +266,17 @@ choice is remembered per provider. The same override rides `modelOptions` on
 `/api/ai/suggest` and `/api/word/suggest`, and `GET /api/ai/models` returns the
 catalog for any client.
 
+### Writer's Codex threads stay out of the Codex app
+
+With *Everything your CLI has*, Codex runs on `~/.nebula-writer/codex-full`:
+every entry of `~/.codex` (config, auth, MCP servers, plugins, computer
+use, skills, rules, hooks) is linked in except the history and state
+stores, so Codex behaves exactly as you set it up while Writer's threads
+are recorded in Writer's home and never appear in the Codex app. The inline
+terminal uses the same home. Threads made before this (from 2026-10-05)
+can be moved out with `npm run codex:forget-writer-threads`; quit the
+Codex app first if it reports a thread is open.
+
 ### Staying out of Word's way while you type
 
 Word runs an add-in's reads on its own thread, so reading the document
