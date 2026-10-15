@@ -652,6 +652,26 @@ describe("Word task pane", () => {
     expect(mock.runCount - runsBefore).toBeLessThanOrEqual(4);
   });
 
+  it("sends the document's comments with a request", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: sampleGrantDocument(),
+      documentName: "Aims.docx",
+      viewport: { pageChars: 700, visibleChars: 600 },
+      comments: [{ anchorText: "Chromatin accessibility", text: "Cite the 2019 atlas here.", author: "Reviewer 2", replies: [{ author: "Jian", text: "Will do." }] }]
+    }).install();
+    await renderPane();
+    send("Address the reviewer comments.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0].documentComments).toEqual([expect.objectContaining({
+      author: "Reviewer 2",
+      text: "Cite the 2019 atlas here.",
+      anchorText: "Chromatin accessibility",
+      resolved: false,
+      replies: [expect.objectContaining({ author: "Jian", text: "Will do." })]
+    })]);
+  });
+
   it("re-reads the document when Word changes outside the pane", async () => {
     await renderPane();
     expect(screen.getByText(/^\d+ words$/).textContent).toBe(`${mock.text.trim().split(/\s+/).length} words`);

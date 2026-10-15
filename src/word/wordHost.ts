@@ -14,6 +14,7 @@
 /// <reference types="office-js" />
 
 import { wordDiffSegments } from "../wordDiff";
+import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../shared";
 import { bridgeEmphasisGaps, emphasisAt, emphasisFromPieces, hasEmphasis, normalizeEmphasis, sameFormat, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
 
 import { chooseAnchoredCandidate, type SuggestionAnchor } from "../shared";
@@ -259,16 +260,67 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
     } catch {
       emphasis = [];
     }
+    // Comments: on full reads only (requests, Re-sync), never while typing.
+    let comments: DocumentComment[] | undefined;
+    if (capabilities.comments && (options.emphasis ?? "full") === "full") {
+      try {
+        comments = await readDocumentComments(context, bodyText);
+      } catch {
+        comments = undefined;
+      }
+    }
     return {
       documentName: readDocumentName(),
       bodyText,
       paragraphs: paragraphInfos,
       pictures,
       emphasis,
+      ...(comments ? { comments } : {}),
       changeTrackingMode: capabilities.trackChanges ? safeString(context.document, "changeTrackingMode") : null,
       capturedAt: new Date().toISOString()
     };
   });
+}
+
+/** The document's comments with their replies and the text each is attached to (two syncs). */
+async function readDocumentComments(context: Word.RequestContext, bodyText: string): Promise<DocumentComment[]> {
+  const collection = context.document.body.getComments();
+  collection.load("items/id,items/content,items/authorName,items/resolved,items/creationDate,items/replies/items/content,items/replies/items/authorName,items/replies/items/creationDate");
+  await context.sync();
+  const items = (collection.items ?? []).slice(0, DOCUMENT_COMMENT_LIMIT);
+  const ranges = items.map((comment) => {
+    const range = comment.getRange();
+    range.load("text");
+    return range;
+  });
+  await context.sync();
+  return items.map((comment, index) => {
+    const anchorText = normalizeWordText(ranges[index].text ?? "").trim();
+    const replies = (comment.replies?.items ?? []).map((reply) => ({
+      author: safeString(reply, "authorName"),
+      text: safeString(reply, "content") ?? "",
+      createdAt: dateString(reply, "creationDate")
+    }));
+    return {
+      id: safeString(comment, "id") ?? `comment-${index + 1}`,
+      author: safeString(comment, "authorName"),
+      text: safeString(comment, "content") ?? "",
+      anchorText,
+      offset: locateCommentAnchor(bodyText, anchorText),
+      resolved: safeBoolean(comment, "resolved") ?? false,
+      createdAt: dateString(comment, "creationDate"),
+      replies
+    };
+  });
+}
+
+function dateString(target: object, key: string): string | null {
+  try {
+    const value = (target as Record<string, unknown>)[key];
+    return value instanceof Date ? value.toISOString() : typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 const PARAGRAPH_FONT_PROPERTIES = "items/font/bold,items/font/italic,items/font/underline,items/font/highlightColor";

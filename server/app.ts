@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxImages } from "./docx";
+import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxComments, extractDocxImages } from "./docx";
 import { getAiProgress, getAiQueue, proposeChanges, smokeTestProvider } from "./ai";
 import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
@@ -20,6 +20,7 @@ import type { AiConversationDecision, AiConversationTurn, WordHostContext, WordH
 import { isSuggestionAnchor } from "../src/shared";
 import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
 import { isRunId, markRunInFlight, steerRun } from "./steering";
+import { DOCUMENT_COMMENT_LIMIT, isDocumentCommentList, locateCommentAnchor, type DocumentComment } from "../src/shared";
 import type { AiSteerResponse } from "../src/shared";
 import { agentTerminalStatus, ensureAgentTerminal } from "./agent-terminal";
 import { restartTerminalRoom } from "./terminal-pty";
@@ -60,13 +61,13 @@ let writerSessionRevisionCounter = 0;
 // screen, recent focus). Terminal/MCP agents reading the "live" run see it
 // when the active session is that Word document, so "this paragraph"
 // resolves for them exactly as it does for the pane's own requests.
-let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; documentImages: AiDocumentImage[]; receivedAt: string } | null = null;
+let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; documentImages: AiDocumentImage[]; documentComments: DocumentComment[]; receivedAt: string } | null = null;
 
 // Agentic runs and the terminal agent read the add-in's latest push through
 // this source, so "the paragraph at the caret" follows the author mid-run.
 setLiveHostContextSource(() => (wordHostState ? { documentName: wordHostState.documentName, hostContext: wordHostState.hostContext } : null));
 
-function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined, documentImages?: AiDocumentImage[]): void {
+function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined, documentImages?: AiDocumentImage[], documentComments?: DocumentComment[] | null): void {
   if (!hostContext) {
     return;
   }
@@ -78,6 +79,8 @@ function rememberWordHostContext(documentName: string, hostContext: WordHostCont
     // Images arrive with AI requests, not with every context push: keep the
     // last set for the same document so terminal agents can see figures too.
     documentImages: documentImages ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentImages : []),
+    // Comments arrive with requests and full re-reads; keep the last set for terminal agents.
+    documentComments: documentComments ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentComments : []),
     receivedAt: new Date().toISOString()
   };
 }
@@ -424,6 +427,7 @@ export function createWriterApp() {
       provider: "terminal",
       instruction: "",
       images: liveDocumentImages(),
+      comments: wordHostState && wordHostState.sourceDocumentId === activeWriterSession.sourceDocumentId ? wordHostState.documentComments : [],
       mode: "global",
       documentText: typeof live === "string" && live.trim() ? live : activeWriterSession.documentText,
       documentEmphasis: typeof live === "string" && live.trim()
@@ -467,6 +471,21 @@ export function createWriterApp() {
     const selection = run.mode === "selection" ? run.selection : hostContextSelection(context.hostContext) ?? run.selection;
     const { paragraphs: _paragraphs, ...hostContext } = context.hostContext ?? { paragraphs: undefined };
     response.json({ mode: run.mode, selection, hostContext: context.hostContext ? hostContext : null, live: context.live });
+  });
+
+  app.get("/api/agent-run/:runId/comments", (request, response) => {
+    const run = resolveAgentRun(request.params.runId);
+    if (!run) {
+      response.status(404).json({ error: noRunError(request.params.runId) });
+      return;
+    }
+    const comments = request.query.resolved === "0" ? run.comments.filter((comment) => !comment.resolved) : run.comments;
+    response.json({
+      comments,
+      note: run.comments.length
+        ? "Comments are reviewers' notes anchored to anchorText — feedback on that passage, not part of the document."
+        : "This document has no comments (or the client did not send them)."
+    });
   });
 
   app.get("/api/agent-run/:runId/images", (request, response) => {
@@ -990,7 +1009,7 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages);
+      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages, parsed.request.documentComments);
       const baseSession = wordLiveSessionForRequest(parsed.request);
       let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(parsed.request.runId);
@@ -1043,7 +1062,7 @@ export function createWriterApp() {
       }
       const documentName = wordLiveDocumentName(parsed.update.documentName);
       const sourceDocumentId = wordLiveSourceDocumentId(documentName);
-      rememberWordHostContext(documentName, parsed.update.hostContext);
+      rememberWordHostContext(documentName, parsed.update.hostContext, undefined, parsed.update.documentComments);
       const isWordSession = activeWriterSession?.sourceDocumentId === sourceDocumentId;
       let adopted = isWordSession;
       const documentText = parsed.update.documentText;
@@ -1542,9 +1561,12 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      const aiRequest = parsed.request.documentImages?.length
+      const withImages = parsed.request.documentImages?.length
         ? parsed.request
         : { ...parsed.request, documentImages: await sessionDocumentImages(parsed.request) };
+      const aiRequest = withImages.documentComments
+        ? withImages
+        : { ...withImages, documentComments: await sessionDocumentComments(withImages) };
       let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(aiRequest.runId);
       const ai = await proposeChanges(aiRequest, { signal, runId: aiRequest.runId ?? null }).finally(() => {
@@ -3780,6 +3802,38 @@ function liveDocumentImages(): AiDocumentImage[] {
 // its pictures are extracted once (per source file size) and handed to the AI.
 const sessionImageCache = new Map<string, { size: number; images: AiDocumentImage[] }>();
 
+// Web-app requests carry no comments; when the active session came from a
+// DOCX, its comments (comments.xml) are read once per source file and sent.
+const sessionCommentCache = new Map<string, { size: number; comments: DocumentComment[] }>();
+
+async function sessionDocumentComments(request: AiRequest): Promise<DocumentComment[] | undefined> {
+  if (!activeWriterSession) {
+    return undefined;
+  }
+  const sourceDocumentId = activeWriterSession.sourceDocumentId;
+  let buffer: Buffer | null = null;
+  try {
+    buffer = (await sourceBufferForReviewExport(sourceDocumentId, activeWriterSessionPath)).buffer;
+  } catch {
+    buffer = null;
+  }
+  if (!buffer) {
+    return undefined;
+  }
+  const cached = sessionCommentCache.get(sourceDocumentId);
+  let comments = cached && cached.size === buffer.length ? cached.comments : null;
+  if (!comments) {
+    try {
+      comments = await extractDocxComments(buffer, request.documentText);
+    } catch {
+      comments = [];
+    }
+    sessionCommentCache.set(sourceDocumentId, { size: buffer.length, comments });
+  }
+  // Re-locate anchors in the text this request carries (the draft may have moved on).
+  return comments.length ? comments.map((comment) => ({ ...comment, offset: locateCommentAnchor(request.documentText, comment.anchorText) })) : undefined;
+}
+
 async function sessionDocumentImages(request: AiRequest): Promise<AiDocumentImage[] | undefined> {
   if (!activeWriterSession || request.documentText !== activeWriterSession.documentText) {
     return undefined;
@@ -3891,6 +3945,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if (toolAccessValue !== undefined && toolAccessValue !== null && !isAiToolAccess(toolAccessValue)) {
     return { error: "toolAccess must be one of document, read, or full." };
   }
+  const documentCommentsValue = (body as { documentComments?: unknown }).documentComments;
+  if (documentCommentsValue !== undefined && documentCommentsValue !== null && !isDocumentCommentList(documentCommentsValue)) {
+    return { error: `documentComments must be a list of at most ${DOCUMENT_COMMENT_LIMIT} comments ({ id, author, text, anchorText, offset, resolved, replies }).` };
+  }
   const documentEmphasisValue = (body as { documentEmphasis?: unknown }).documentEmphasis;
   if (documentEmphasisValue !== undefined && documentEmphasisValue !== null && !isEmphasisSpanList(documentEmphasisValue)) {
     return { error: "documentEmphasis must be a list of { start, end, bold?, italic?, underline?, highlight? } spans." };
@@ -3912,6 +3970,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       documentImages: documentImages.value,
       documentEmphasis: isEmphasisSpanList(documentEmphasisValue) ? documentEmphasisValue : null,
+      documentComments: isDocumentCommentList(documentCommentsValue) ? documentCommentsValue : null,
       runId: isRunId(runIdValue) ? runIdValue : null,
       focus: focus.value,
       agentSessionId: agentSessionId.value,
@@ -4023,6 +4082,9 @@ function parseWordHostContextUpdate(body: unknown): { update: WordHostContextUpd
   if (typeof raw.documentText === "string" && raw.documentText.length > WORD_CONTEXT_DOCUMENT_TEXT_LIMIT) {
     return { error: `Word context updates accept at most ${WORD_CONTEXT_DOCUMENT_TEXT_LIMIT.toLocaleString()} characters of documentText.` };
   }
+  if (raw.documentComments !== undefined && raw.documentComments !== null && !isDocumentCommentList(raw.documentComments)) {
+    return { error: "Word context updates require documentComments to be a list of comments when provided." };
+  }
   if (raw.documentEmphasis !== undefined && raw.documentEmphasis !== null && !isEmphasisSpanList(raw.documentEmphasis)) {
     return { error: "Word context updates require documentEmphasis to be a list of emphasis spans when provided." };
   }
@@ -4032,6 +4094,7 @@ function parseWordHostContextUpdate(body: unknown): { update: WordHostContextUpd
       hostContext: hostContext.hostContext,
       documentText: typeof raw.documentText === "string" ? raw.documentText : null,
       documentEmphasis: isEmphasisSpanList(raw.documentEmphasis) ? raw.documentEmphasis : null,
+      documentComments: isDocumentCommentList(raw.documentComments) ? raw.documentComments : null,
       adopt: raw.adopt === true
     }
   };

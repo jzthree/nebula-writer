@@ -266,6 +266,18 @@ choice is remembered per provider. The same override rides `modelOptions` on
 `/api/ai/suggest` and `/api/word/suggest`, and `GET /api/ai/models` returns the
 catalog for any client.
 
+### Comments
+
+The AI sees the document's comments. The pane reads Word's comments (text,
+author, the passage each is attached to, replies, resolved state) on every
+full read — when you send a request or press Re-sync, never while you type
+— and sends them with the request. Prompts list them as reviewers' notes
+anchored to text, open threads first; agents also get
+`writer_list_comments`, and terminal agents see the last set the pane sent.
+In the web app, comments come from the imported DOCX (`comments.xml`, with
+replies and resolved state from `commentsExtended.xml`). Google Docs
+comments are not read yet (they need Drive API access).
+
 ### Writer's Codex threads stay out of the Codex app
 
 With *Everything your CLI has*, Codex runs on `~/.nebula-writer/codex-full`:

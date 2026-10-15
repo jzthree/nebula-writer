@@ -34,6 +34,8 @@ export interface MockWordOptions {
   pictures?: MockPictureSeed[];
   /** Word fields (citations, cross-references) as absolute text spans. */
   fields?: Array<{ from: number; to: number }>;
+  /** Existing comments, anchored to the first occurrence of `anchorText`. */
+  comments?: Array<{ anchorText: string; text: string; author?: string; resolved?: boolean; replies?: Array<{ author: string; text: string }> }>;
 }
 
 export interface MockPictureSeed {
@@ -63,6 +65,9 @@ export interface MockComment {
   to: number;
   anchorText: string;
   text: string;
+  author?: string;
+  resolved?: boolean;
+  replies?: Array<{ author: string; text: string }>;
 }
 
 const PARAGRAPH_SEPARATOR = "\n";
@@ -113,6 +118,12 @@ export class MockWordHost {
     this.platform = options.platform ?? "Mac";
     this.pictures = (options.pictures ?? []).map((picture) => ({ ...picture }));
     this.fields = (options.fields ?? []).map((field) => ({ ...field }));
+    for (const seed of options.comments ?? []) {
+      const from = this.text.indexOf(seed.anchorText);
+      if (from >= 0) {
+        this.comments.push({ from, to: from + seed.anchorText.length, anchorText: seed.anchorText, text: seed.text, author: seed.author, resolved: seed.resolved, replies: seed.replies });
+      }
+    }
     const offsets = this.paragraphOffsets();
     this.emphasis = normalizeEmphasis(options.paragraphs.flatMap((paragraph, index) => shiftEmphasis(paragraph.emphasis ?? [], offsets[index] ?? 0)));
   }
@@ -491,6 +502,24 @@ class MockBody {
   get inlinePictures(): { items: MockInlinePicture[]; load: () => void } {
     const host = this.host;
     return { items: host.pictures.map((_, index) => new MockInlinePicture(host, index)), load: () => undefined };
+  }
+
+  /** Word's Body.getComments (WordApi 1.4): content, author, resolved, replies, and the anchored range. */
+  getComments(): { items: Array<Record<string, unknown>>; load: () => void } {
+    const host = this.host;
+    return {
+      items: host.comments.map((comment, index) => ({
+        id: `comment-${index + 1}`,
+        content: comment.text,
+        authorName: comment.author ?? "Mock Author",
+        resolved: Boolean(comment.resolved),
+        creationDate: new Date(Date.UTC(2026, 9, 1, 12, index)).toISOString(),
+        replies: { items: (comment.replies ?? []).map((reply) => ({ content: reply.text, authorName: reply.author })), load: () => undefined },
+        getRange: () => new MockRange(host, comment.from, comment.to),
+        load: () => undefined
+      })),
+      load: () => undefined
+    };
   }
 
   getRange(location: string = "Whole"): MockRange {

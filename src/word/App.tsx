@@ -620,6 +620,7 @@ export function App() {
         hostContext,
         documentText: textChanged ? snapshot.bodyText : null,
         documentEmphasis: textChanged ? snapshot.emphasis ?? [] : null,
+        ...(snapshot.comments ? { documentComments: snapshot.comments } : {}),
         adopt: true
       }).then((response) => {
         if (textChanged) {
@@ -720,6 +721,7 @@ export function App() {
         mode: resolved.mode,
         documentText: snap.bodyText,
         documentEmphasis: snap.emphasis ?? [],
+        ...(snap.comments ? { documentComments: snap.comments } : {}),
         selection: resolved.selection ?? currentFocus?.selection ?? null,
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),

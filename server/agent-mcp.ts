@@ -156,6 +156,18 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   },
   {
     definition: {
+      name: "writer_list_comments",
+      description: "List the reviewer comments in the document (Word comments / DOCX comments): { comments: [{ id, author, text, anchorText, offset, resolved, replies: [{ author, text }] }] }. Comments are notes in the margin anchored to `anchorText` — feedback on that passage, not part of the document. Use them when the user asks about \"the comments\" or to address reviewers' notes; quote originals from the document, never from a comment.",
+      inputSchema: {
+        type: "object",
+        properties: { include_resolved: { type: "boolean", description: "Include resolved threads (default true)." } },
+        additionalProperties: false
+      }
+    },
+    handler: (args) => forward("GET", `/comments${args.include_resolved === false ? "?resolved=0" : ""}`)
+  },
+  {
+    definition: {
       name: "writer_list_images",
       description: "List the document's images (figures, inline pictures) in document order: { images: [{ index, path, mime, width, height, altText, context, paragraphIndex }] }. `path` is a file on this machine — open it with your image-capable file reader (Claude: Read; Codex: view_image) to actually see the picture. `context` is the paragraph the picture sits in, usually its caption.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false }

@@ -9,6 +9,7 @@
  */
 
 import type { EmphasisSpan } from "../emphasis";
+import type { DocumentComment } from "../shared";
 import {
   WORD_HOST_CONTEXT_LIMITS,
   type SelectionContext,
@@ -57,6 +58,8 @@ export interface WordDocumentSnapshot {
   pictures?: WordPictureInfo[];
   /** Inline emphasis (bold/italic/underline/highlight) as spans over bodyText. */
   emphasis?: EmphasisSpan[];
+  /** Reviewer comments (read on full snapshots; absent on cheap background re-reads). */
+  comments?: DocumentComment[];
   changeTrackingMode: string | null;
   capturedAt: string;
 }

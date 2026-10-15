@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
 
-import { suggestionAnchorFor } from "../src/shared";
+import { describeDocumentComments, suggestionAnchorFor } from "../src/shared";
 import { EMPHASIS_NOTATION_NOTE, renderEmphasis } from "../src/emphasis";
 import { parseQuotedText, sameEmphasisSpans, stagedEmphasis } from "./emphasis-staging";
 import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecutionEnabled, resolveCliCommand, type CliProviderName } from "./cli-runtime";
@@ -666,6 +666,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
       ? ["- This is a follow-up in an ongoing conversation. The document may have changed since your earlier reads — re-verify anchors (writer_search_document) before staging."]
       : []),
     ...attachmentLines,
+    ...(request.documentComments?.length ? describeDocumentComments(request.documentComments, { tool: true }) : []),
     ...(images.length
       ? [
           `The document has ${images.length} image${images.length === 1 ? "" : "s"}: ${images.map((image) => documentImageLabel(image)).join("; ")}. writer_list_images gives their file paths — open one with your image reader to see it. To replace one, write a new PNG/JPEG/GIF/WebP file and call writer_stage_image_replacement; the reviewer sees before/after previews.`
@@ -869,6 +870,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
       : null,
     ...buildAttachmentPromptLines(request),
     ...buildDocumentImagePromptLines(request),
+    ...describeDocumentComments(request.documentComments),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
     ...(options.coveragePass ? [] : describeConversation(request)),
     ...(options.coveragePass ? [] : describeFocus(request.focus, "oneshot")),

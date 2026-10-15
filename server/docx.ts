@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
+import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../src/shared";
 import { chooseAnchoredCandidate } from "../src/shared";
 import { carryEmphasis, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
 
@@ -1179,6 +1180,86 @@ function decodeXmlEntities(value: string): string {
 }
 
 /** The document's pictures with their media bytes, sizes, alt text, and captions — what an agent needs to look at figures. */
+/**
+ * The comments of a DOCX: each w:comment in word/comments.xml with the body
+ * text it is anchored to (between its commentRangeStart/End in
+ * document.xml), threaded by word/commentsExtended.xml (a reply names its
+ * parent's paragraph id; `done` marks a resolved thread). `documentText`
+ * locates each anchor for ordering.
+ */
+export async function extractDocxComments(buffer: Buffer, documentText = ""): Promise<DocumentComment[]> {
+  const zip = await JSZip.loadAsync(buffer);
+  const commentsXml = await zip.file("word/comments.xml")?.async("string");
+  if (!commentsXml) {
+    return [];
+  }
+  const documentXml = (await zip.file("word/document.xml")?.async("string")) ?? "";
+  const extendedXml = (await zip.file("word/commentsExtended.xml")?.async("string")) ?? "";
+  const attr = (tag: string, name: string): string | null => {
+    const match = new RegExp(`\\b${name}="([^"]*)"`).exec(tag);
+    return match ? decodeEntities(match[1]) : null;
+  };
+  const textOf = (xml: string): string => [...xml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)]
+    .map((paragraph) => [...paragraph[0].matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)].map((run) => decodeEntities(stripTags(run[1]))).join(""))
+    .join("\n")
+    .trim();
+  const parsed = [...commentsXml.matchAll(/<w:comment\b([^>]*)>([\s\S]*?)<\/w:comment>/g)].map((match) => {
+    const paraIds = [...match[2].matchAll(/<w:p\b[^>]*\bw14:paraId="([^"]+)"/g)].map((id) => id[1]);
+    return {
+      id: attr(match[1], "w:id") ?? "",
+      author: attr(match[1], "w:author"),
+      createdAt: attr(match[1], "w:date"),
+      text: textOf(match[2]),
+      paraId: paraIds.at(-1) ?? null
+    };
+  });
+  const extended = new Map<string, { parent: string | null; done: boolean }>();
+  for (const match of extendedXml.matchAll(/<w15:commentEx\b([^>]*)\/?>/g)) {
+    const paraId = attr(match[1], "w15:paraId");
+    if (paraId) {
+      extended.set(paraId, { parent: attr(match[1], "w15:paraIdParent"), done: attr(match[1], "w15:done") === "1" });
+    }
+  }
+  const anchorFor = (id: string): string => {
+    const start = documentXml.search(new RegExp(`<w:commentRangeStart\\b[^>]*w:id="${id}"`));
+    const endMatch = new RegExp(`<w:commentRangeEnd\\b[^>]*w:id="${id}"[^>]*/?>`).exec(documentXml);
+    if (start < 0 || !endMatch || endMatch.index < start) {
+      return "";
+    }
+    const slice = documentXml.slice(start, endMatch.index);
+    // Close the open paragraph so a slice that starts mid-paragraph still yields its text.
+    const runs = slice.split(/<\/w:p>/).map((part) => [...part.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)].map((run) => decodeEntities(stripTags(run[1]))).join(""));
+    return runs.filter((part, index) => part || index === 0).join("\n").trim();
+  };
+  const byParaId = new Map(parsed.filter((comment) => comment.paraId).map((comment) => [comment.paraId as string, comment]));
+  const threads: DocumentComment[] = [];
+  const threadByParaId = new Map<string, DocumentComment>();
+  for (const comment of parsed) {
+    const info = comment.paraId ? extended.get(comment.paraId) : undefined;
+    const parent = info?.parent ? byParaId.get(info.parent) : undefined;
+    if (parent && parent.paraId && threadByParaId.has(parent.paraId)) {
+      threadByParaId.get(parent.paraId)!.replies.push({ author: comment.author, text: comment.text, createdAt: comment.createdAt });
+      continue;
+    }
+    const anchorText = anchorFor(comment.id);
+    const thread: DocumentComment = {
+      id: comment.id,
+      author: comment.author,
+      text: comment.text,
+      anchorText,
+      offset: locateCommentAnchor(documentText, anchorText),
+      resolved: info?.done ?? false,
+      createdAt: comment.createdAt,
+      replies: []
+    };
+    threads.push(thread);
+    if (comment.paraId) {
+      threadByParaId.set(comment.paraId, thread);
+    }
+  }
+  return threads.slice(0, DOCUMENT_COMMENT_LIMIT);
+}
+
 export async function extractDocxImages(buffer: Buffer, limit = 24): Promise<DocxExtractedImage[]> {
   const zip = await JSZip.loadAsync(buffer);
   const documentXml = await zip.file("word/document.xml")?.async("string");

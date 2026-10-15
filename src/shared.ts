@@ -127,6 +127,8 @@ export interface AiRequest {
   documentImages?: AiDocumentImage[];
   /** Inline emphasis (bold/italic/underline/highlight) in documentText as spans; the model sees it as markers. */
   documentEmphasis?: EmphasisSpan[] | null;
+  /** Reviewer comments in the document (Word comments, DOCX comments.xml), with replies. */
+  documentComments?: DocumentComment[] | null;
   /**
    * Client-chosen id for this request. While it runs, POST /api/ai/steer with
    * the same id delivers a message into the running turn (mid-turn steering).
@@ -408,6 +410,8 @@ export interface WordHostContextUpdate {
   documentText?: string | null;
   /** Emphasis spans over documentText (sent with it). */
   documentEmphasis?: EmphasisSpan[] | null;
+  /** The document's comments, when the client read them (kept by the sidecar for terminal agents). */
+  documentComments?: DocumentComment[] | null;
   /** Make this Word document the active Writer session even if another document is active. */
   adopt?: boolean;
 }
@@ -784,3 +788,112 @@ function commonPrefixLength(left: string, right: string): number {
 
 /** Reply from POST /api/ai/steer. `queued`-style fallbacks are the client's: a run that cannot be steered says why. */
 export type AiSteerResponse = { ok: true; held?: boolean } | { ok: false; reason: "not-running" | "not-steerable" | "failed"; detail?: string };
+
+/** One reply in a comment thread. */
+export interface DocumentCommentReply {
+  author: string | null;
+  text: string;
+  createdAt?: string | null;
+}
+
+/**
+ * A reviewer comment anchored to text: what a collaborator wrote in the
+ * margin. Comments are feedback on the passage they mark, not part of the
+ * document text.
+ */
+export interface DocumentComment {
+  id: string;
+  author: string | null;
+  text: string;
+  /** The text the comment is attached to ("" for a point comment). */
+  anchorText: string;
+  /** Offset of the anchor in documentText when it could be located, else null. */
+  offset: number | null;
+  resolved: boolean;
+  createdAt?: string | null;
+  replies: DocumentCommentReply[];
+}
+
+export const DOCUMENT_COMMENT_LIMIT = 300;
+const COMMENT_PROMPT_CHAR_BUDGET = 16_000;
+const COMMENT_FIELD_LIMIT = 2_000;
+
+export function isDocumentCommentList(value: unknown): value is DocumentComment[] {
+  return Array.isArray(value) && value.length <= DOCUMENT_COMMENT_LIMIT && value.every((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+    const comment = item as Partial<DocumentComment>;
+    return typeof comment.id === "string"
+      && typeof comment.text === "string" && comment.text.length <= COMMENT_FIELD_LIMIT * 4
+      && typeof comment.anchorText === "string"
+      && (comment.author === null || comment.author === undefined || typeof comment.author === "string")
+      && (comment.offset === null || comment.offset === undefined || (typeof comment.offset === "number" && Number.isFinite(comment.offset)))
+      && typeof comment.resolved === "boolean"
+      && Array.isArray(comment.replies)
+      && comment.replies.every((reply) => reply && typeof reply === "object" && typeof (reply as DocumentCommentReply).text === "string");
+  });
+}
+
+function clipCommentText(text: string, limit: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+/**
+ * The document's comments as prompt lines: open threads first (in document
+ * order), then resolved ones, each with its anchor and replies. Bounded; what
+ * does not fit is counted so the model knows to call writer_list_comments.
+ */
+export function describeDocumentComments(comments: DocumentComment[] | null | undefined, options: { tool?: boolean } = {}): string[] {
+  const list = comments ?? [];
+  if (!list.length) {
+    return [];
+  }
+  const byPosition = (a: DocumentComment, b: DocumentComment) => (a.offset ?? Number.MAX_SAFE_INTEGER) - (b.offset ?? Number.MAX_SAFE_INTEGER);
+  const open = list.filter((comment) => !comment.resolved).sort(byPosition);
+  const resolved = list.filter((comment) => comment.resolved).sort(byPosition);
+  const lines = [
+    `Comments in the document (${open.length} open, ${resolved.length} resolved). These are reviewers' notes in the margin, anchored to the quoted text — feedback on that passage, not part of the document. When the user refers to "the comments", these are what they mean; quote original text from the document itself, never from a comment.`
+  ];
+  let used = lines[0].length;
+  let omitted = 0;
+  const all = [...open, ...resolved];
+  all.forEach((comment, index) => {
+    const anchor = comment.anchorText.trim() ? ` on "${clipCommentText(comment.anchorText, 160)}"` : "";
+    const head = `[C${index + 1}]${comment.resolved ? " (resolved)" : ""} ${comment.author ?? "Reviewer"}${anchor}: ${clipCommentText(comment.text, 600)}`;
+    const replies = comment.replies.map((reply) => `    ↳ ${reply.author ?? "Reply"}: ${clipCommentText(reply.text, 400)}`);
+    const block = [head, ...replies];
+    const size = block.reduce((sum, line) => sum + line.length + 1, 0);
+    if (used + size > COMMENT_PROMPT_CHAR_BUDGET) {
+      omitted += 1;
+      return;
+    }
+    used += size;
+    lines.push(...block);
+  });
+  if (omitted) {
+    lines.push(`(${omitted} more comment${omitted === 1 ? "" : "s"} not shown${options.tool ? " — writer_list_comments returns all of them" : ""}.)`);
+  }
+  return lines;
+}
+
+/** Offset of a comment's anchor in the document text: the occurrence nearest `near`, else the first. */
+export function locateCommentAnchor(documentText: string, anchorText: string, near: number | null = null): number | null {
+  const needle = anchorText.trim();
+  if (!needle) {
+    return null;
+  }
+  let best: number | null = null;
+  let index = documentText.indexOf(needle);
+  while (index >= 0) {
+    if (best === null || (near !== null && Math.abs(index - near) < Math.abs(best - near))) {
+      best = index;
+    }
+    if (near === null) {
+      break;
+    }
+    index = documentText.indexOf(needle, index + 1);
+  }
+  return best;
+}
