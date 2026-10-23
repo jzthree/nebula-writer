@@ -54,3 +54,25 @@ export async function resolveDocumentTab(
   }
   return { tabId, docId };
 }
+
+/**
+ * The tab a panel serves: the one named in its URL, or — for a panel Chrome
+ * opened without one (opened before the tab was configured, or still open
+ * across an extension reload) — the Google Doc showing in the panel's own
+ * window. Null when that window is not showing a Google Doc.
+ */
+export async function bindPanelTab(
+  panelUrl: string,
+  activeTabInPanelWindow: () => Promise<DocumentTab | undefined>
+): Promise<number | null> {
+  const named = panelTabId(panelUrl);
+  if (named !== null) {
+    return named;
+  }
+  try {
+    const tab = await activeTabInPanelWindow();
+    return tab?.id !== undefined && googleDocId(tab.url) ? tab.id : null;
+  } catch {
+    return null;
+  }
+}
