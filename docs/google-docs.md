@@ -97,11 +97,17 @@ holds its code:
   document tabs.
 
 What differs from the add-in: no caret (Writer defaults to the whole
-document), Locate cannot scroll the document (the card shows the match),
-and picture replacement is not available (the Docs API needs a public image
+document), and picture replacement is not available (the Docs API needs a public image
 URL). Everything else —
 emphasis, placement anchors, agents, queueing, change highlighting — is the
 same code.
+
+Locate is carried out by the content script (`locate.ts`). Docs paints text
+on a canvas; when its accessible text layer is present (SVG rects labelled
+with each run's text — Docs turns it on for some extensions, such as
+Grammarly), Locate finds the passage there, scrolls it into view and
+highlights it briefly, telling repeated passages apart by their order in the
+document. Without that layer it scrolls to the passage's estimated position.
 
 Neither Google Docs integration currently reads reviewer comment threads.
 Their absence from AI context does not mean the document has no comments.

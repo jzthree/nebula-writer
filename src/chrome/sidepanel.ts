@@ -8,6 +8,7 @@
 
 import { buildBatchPlan, imageContentUri, parseDocument, type ApiDocument, type ParsedDocument } from "./docsApi";
 import { bindPanelTab, resolveDocumentTab } from "./documentTab";
+import { buildLocateRequest } from "./locate";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction } from "../gdocs/protocol";
@@ -146,8 +147,23 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     return `${docId}|${text.length}|${text.slice(0, 80)}`;
   },
 
-  async nebulaSelect() {
-    // The Docs API cannot move the reader's cursor; the card's preview shows the match instead.
+  async nebulaSelect(range) {
+    // The Docs API cannot move the reader's view; the content script scrolls the page to the passage.
+    const { tabId, docId } = await activeDoc();
+    const parsed = lastParsed?.docId === docId ? lastParsed.parsed : await fetchParsed(docId);
+    const request = buildLocateRequest(parsed.payload.paragraphs, range as Parameters<typeof buildLocateRequest>[1]);
+    if (!request) {
+      throw new Error("The passage could not be found in the document.");
+    }
+    let reply: { error?: string; url?: string } | undefined;
+    try {
+      reply = await chrome.tabs.sendMessage(tabId, { type: "nebula-locate", request });
+    } catch {
+      throw new Error("Writer cannot reach this Google Doc's page. Refresh the document, then close and reopen Writer from Chrome's toolbar.");
+    }
+    if (reply?.error) {
+      throw new Error(reply.error);
+    }
     return null;
   },
 
