@@ -7,7 +7,7 @@
  */
 
 import { buildBatchPlan, imageContentUri, parseDocument, type ApiDocument, type ParsedDocument } from "./docsApi";
-import { panelTabId, resolveDocumentTab } from "./documentTab";
+import { bindPanelTab, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
@@ -22,7 +22,6 @@ declare const __PICKER_APP_ID__: string;
 
 const PANE_ORIGIN = __PANE_ORIGIN__;
 const DOCS_API = "https://docs.googleapis.com/v1/documents";
-const documentTabId = panelTabId(location.href);
 
 const frame = document.getElementById("pane") as HTMLIFrameElement;
 const notice = document.getElementById("notice") as HTMLDivElement;
@@ -160,8 +159,21 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
 /* The document this panel was opened beside                                */
 /* ------------------------------------------------------------------------- */
 
+// Bound once: later focus changes never retarget the panel.
+let documentTabId: Promise<number | null> | null = null;
+
 async function activeDoc(): Promise<{ tabId: number; docId: string }> {
-  return resolveDocumentTab(documentTabId, (tabId) => chrome.tabs.get(tabId));
+  documentTabId ??= bindPanelTab(location.href, async () => {
+    const window = await chrome.windows.getCurrent();
+    const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
+    return tab;
+  });
+  const bound = await documentTabId;
+  if (bound === null) {
+    // Nothing to bind yet: try again on the next call.
+    documentTabId = null;
+  }
+  return resolveDocumentTab(bound, (tabId) => chrome.tabs.get(tabId));
 }
 
 let lastParsed: { docId: string; parsed: ParsedDocument; raw: ApiDocument } | null = null;

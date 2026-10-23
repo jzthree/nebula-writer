@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { googleDocId, panelPath, panelTabId, resolveDocumentTab } from "../src/chrome/documentTab";
+import { bindPanelTab, googleDocId, panelPath, panelTabId, resolveDocumentTab } from "../src/chrome/documentTab";
 
 const PAPER = "example-document_123";
 
@@ -71,5 +71,26 @@ describe("tab-bound Writer panels", () => {
     const getTab = vi.fn();
     await expect(resolveDocumentTab(null, getTab)).rejects.toThrow("reopen Writer");
     expect(getTab).not.toHaveBeenCalled();
+  });
+});
+
+describe("binding a panel opened without a tab id", () => {
+  const origin = "chrome-extension://test-extension/";
+  const doc = `https://docs.google.com/document/d/${PAPER}/edit`;
+
+  it("keeps the tab named in the panel URL", async () => {
+    const active = vi.fn();
+    expect(await bindPanelTab(origin + panelPath(27), active)).toBe(27);
+    expect(active).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the Google Doc showing in the panel's window", async () => {
+    expect(await bindPanelTab(origin + "sidepanel.html", async () => ({ id: 41, url: doc }))).toBe(41);
+  });
+
+  it("binds nothing when the window shows something else or the lookup fails", async () => {
+    expect(await bindPanelTab(origin + "sidepanel.html", async () => ({ id: 41, url: "https://example.com/" }))).toBeNull();
+    expect(await bindPanelTab(origin + "sidepanel.html", async () => undefined)).toBeNull();
+    expect(await bindPanelTab(origin + "sidepanel.html", async () => { throw new Error("gone"); })).toBeNull();
   });
 });
