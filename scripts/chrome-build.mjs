@@ -17,6 +17,8 @@ const port = process.env.WRITER_TLS_PORT?.trim() || "8443";
 const paneOrigin = `https://localhost:${port}`;
 
 mkdirSync(resolve(dir, "dist"), { recursive: true });
+const localPath = resolve(dir, "local.json");
+const local = existsSync(localPath) ? JSON.parse(readFileSync(localPath, "utf8")) : {};
 await build({
   entryPoints: {
     sidepanel: resolve(root, "src/chrome/sidepanel.ts"),
@@ -28,13 +30,15 @@ await build({
   format: "iife",
   target: "es2022",
   platform: "browser",
-  define: { __PANE_ORIGIN__: JSON.stringify(paneOrigin) },
+  define: {
+    __PANE_ORIGIN__: JSON.stringify(paneOrigin),
+    __PICKER_API_KEY__: JSON.stringify(local.pickerApiKey || ""),
+    __PICKER_APP_ID__: JSON.stringify(local.pickerAppId || "")
+  },
   legalComments: "none",
   logLevel: "warning"
 });
 
-const localPath = resolve(dir, "local.json");
-const local = existsSync(localPath) ? JSON.parse(readFileSync(localPath, "utf8")) : {};
 const template = JSON.parse(readFileSync(resolve(dir, "manifest.template.json"), "utf8"));
 template.host_permissions = template.host_permissions.map((entry) => entry.replace("__PANE_ORIGIN__", paneOrigin));
 template.oauth2.client_id = local.clientId || "CLIENT_ID_NOT_SET.apps.googleusercontent.com";

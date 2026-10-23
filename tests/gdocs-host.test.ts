@@ -45,6 +45,22 @@ afterEach(() => {
 });
 
 describe("google docs host", () => {
+  it("carries Google comment threads and their read status into the AI snapshot", async () => {
+    const comments = [{
+      id: "thread-1", author: "Reviewer", text: "Use held-out data.", anchorText: "central hypothesis", offset: 18,
+      resolved: true, replies: [{ author: "Author", text: "Agreed." }]
+    }];
+    setScriptTransport(async () => ({ ...documentPayload, comments, commentsStatus: { state: "complete", detail: "Read successfully" } }));
+    const snapshot = await googleDocsHost.readDocumentSnapshot(googleDocsHost.detectCapabilities(true));
+    expect(snapshot.comments).toEqual(comments);
+    expect(snapshot.commentsStatus).toEqual({ state: "complete", detail: "Read successfully" });
+  });
+  it("does not mistake missing comment support for a document with no comments", async () => {
+    installTransport();
+    const snapshot = await googleDocsHost.readDocumentSnapshot(googleDocsHost.detectCapabilities(true));
+    expect(snapshot.comments).toEqual([]);
+    expect(snapshot.commentsStatus?.state).toBe("unavailable");
+  });
   it("boots against the script and builds a snapshot with body offsets, emphasis and pictures", async () => {
     installTransport();
     const boot = await googleDocsHost.waitForHost();
@@ -78,7 +94,7 @@ describe("google docs host", () => {
     expect(found.matches).toHaveLength(1);
     expect(found.matches[0]).toMatchObject({ offset: 45, paragraphIndex: 1 });
     await googleDocsHost.locateSuggestion(snapshot, { original: "chromatin state" }, 0);
-    expect(calls.at(-1)).toEqual({ fn: "nebulaSelect", args: [{ paragraphIndex: 1, start: 31, endParagraphIndex: 1, end: 46 }] });
+    expect(calls.at(-1)).toEqual({ fn: "nebulaSelect", args: [{ paragraphIndex: 1, start: 31, endParagraphIndex: 1, end: 46, expected: "chromatin state" }] });
 
     const outcomes = await googleDocsHost.applySuggestions(snapshot, [
       { id: "s1", suggestion: { original: "chromatin state drives fate.", replacement: "chromatin state determines fate." }, matchIndex: 0 },

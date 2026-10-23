@@ -21,6 +21,7 @@
     }
   ],
   "permissions": ["sidePanel", "identity", "tabs"],
+  "optional_host_permissions": ["https://www.googleapis.com/*"],
   "host_permissions": [
     "https://docs.googleapis.com/*",
     "https://docs.google.com/*",

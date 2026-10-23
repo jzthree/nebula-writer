@@ -1,0 +1,7 @@
+:root { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202124; background: #f8f9fa; }
+body { margin: 0; padding: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #dadce0; padding-bottom: 12px; }
+h1 { margin: 0; font-size: 18px; font-weight: 600; }
+button { font: inherit; cursor: pointer; border: 1px solid #bdc1c6; border-radius: 4px; background: #fff; color: #202124; padding: 6px 12px; }
+button:hover { background: #eef0f2; }
+#status { color: #5f6368; }

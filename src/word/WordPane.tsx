@@ -1026,7 +1026,7 @@ function SuggestionCard(props: {
             <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
             <p className="wp-rationale">{tidy(suggestion.rationale)}</p>
             <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
-              <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title={state.outcome === "applied" && !deletion ? "Select the revised text in Word" : "Select this passage in Word"}><Crosshair size={13} aria-hidden="true" /> Locate</button>
+              <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title={state.outcome === "applied" && !deletion ? "Select the revised text in the document" : "Select this passage in the document"}><Crosshair size={13} aria-hidden="true" /> Locate</button>
               <button type="button" onClick={() => void copy("original")} title="Copy the original text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "original" ? "Copied" : "Copy original"}</button>
               {suggestion.commentOnly || deletion ? null : (
                 <button type="button" onClick={() => void copy("revised")} title="Copy the revised text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "revised" ? "Copied" : "Copy revised"}</button>
@@ -1068,13 +1068,13 @@ function SuggestionCard(props: {
             match {state.matchIndex + 1}/{state.matches}
             <button type="button" className="wp-icon-button tiny" onClick={(event) => { event.stopPropagation(); props.onCycleMatch(1); }} aria-label="Next occurrence"><ChevronRight size={12} aria-hidden="true" /></button>
           </span>
-        ) : state.matches === 0 ? <span className="tag warn">not found in Word</span> : null}
+        ) : state.matches === 0 ? <span className="tag warn">not found in document</span> : null}
       </p>
       <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
       <p className="wp-rationale">{tidy(suggestion.rationale)}</p>
       {state.error ? <p className="wp-card-error" role="alert"><AlertTriangle size={12} aria-hidden="true" /> {state.error}</p> : null}
       <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
-        <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title="Select this passage in Word"><Crosshair size={13} aria-hidden="true" /> Locate</button>
+        <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title="Select this passage in the document"><Crosshair size={13} aria-hidden="true" /> Locate</button>
         {suggestion.commentOnly ? null : (
           <button type="button" className="primary" onClick={props.onApply} disabled={props.busy || !props.hostReady} title={props.trackChanges === "always" ? "Replace the text as a Word tracked change" : "Replace the text (tracked if Word's Track Changes is on)"}>
             <Replace size={13} aria-hidden="true" /> Apply

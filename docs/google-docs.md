@@ -97,15 +97,15 @@ holds its code:
   document tabs.
 
 What differs from the add-in: no caret (Writer defaults to the whole
-document), Locate cannot scroll the document (the card shows the match),
-and picture replacement is not available (the Docs API needs a public image
+document), and picture replacement is not available (the Docs API needs a public image
 URL). Everything else —
 emphasis, placement anchors, agents, queueing, change highlighting — is the
 same code.
 
-Neither Google Docs integration currently reads reviewer comment threads.
-Their absence from AI context does not mean the document has no comments.
-This selection fix does not add Drive permissions or comment access.
+The Chrome extension can read reviewer comment threads after per-document
+authorization (see below). The Apps Script add-in does not read comments.
+Unavailable comments are explicitly marked as unavailable in AI context;
+their absence is not evidence that the document has no comments.
 
 For a passage in the normal canvas editor, highlight the text and copy it
 (`Cmd+C` on Mac, `Ctrl+C` elsewhere), then choose **Selection** in Writer.
@@ -153,3 +153,111 @@ intended text. Move the caret to clear it, then select and copy a different
 passage. Switch between two document tabs and another window to check that
 each panel remains attached to its own document. No AI request or document
 edit is needed for these checks.
+
+### Reviewer comment threads
+
+The Chrome extension's **Connect comments** command opens Google Picker.
+Choose the same Google Doc that is open beside Writer. This authorizes only
+selected files using `drive.file`; Writer never requests whole-Drive access.
+Google's per-file scope permits read/write access to selected files, but
+this comment integration makes only read requests: it does not create,
+resolve, reply to, or modify Google comments.
+
+One-time Google Cloud setup, in the same project as the Chrome OAuth client:
+
+1. Enable **Google Drive API** and **Google Picker API**.
+2. Add `https://www.googleapis.com/auth/drive.file` to the OAuth consent
+   screen's data-access scopes. Keep the existing Docs scope and test users.
+3. Create a browser API key restricted to the Picker and Drive APIs, with
+   website restrictions for `https://localhost:8443/*` (or the configured TLS
+   port) and `https://docs.google.com/*`. Google Picker's iframe needs the
+   latter origin. Never use an unrestricted key.
+4. Configure the ignored per-machine setup, using the numeric Cloud project
+   number as the Picker app ID:
+
+```bash
+npm run chrome:setup -- --picker-api-key=<restricted-key> --picker-app-id=<project-number>
+npm run build
+```
+
+Restart the sidecar if its server code changed, reload the extension, refresh
+the Google Doc, and reopen Writer. Click **Connect comments**, approve the
+optional Google API host permission and per-file Google consent, then pick
+the document. The status strip reports the number of accessible threads;
+**Refresh comments** refreshes them without an AI request. Full document
+reads (including every AI request) read comments afresh. Google grants can
+be revoked through your Google Account's third-party app access settings.
+
+The local sidecar must serve `gdocs/comment-picker.html` from the updated
+build. Google's Picker script runs only in that regular localhost popup,
+not in an extension-privileged page. The OAuth token is passed through an
+origin/window/nonce-checked message and dedicated message port, never a URL,
+log, local storage, or the AI prompt. Only parsed comment data goes to the
+sidecar and the selected AI provider.
+
+The reader includes open and resolved threads, authors, dates, replies, and
+Google's quoted text when present. It follows pagination, excludes deleted
+items, and marks bounded or failed reads as partial/unavailable rather than
+claiming no comments exist. Missing or ambiguous quotes have no invented
+document offset. The existing `writer_list_comments` tool exposes the
+threads and read status to Claude/Codex. Copied documents contain only the
+comments actually copied into them; connect the original to read its threads.
+
+Tests: `tests/chrome-drive-comments.test.ts` covers parsing/pagination/limits;
+`tests/chrome-comment-picker.test.ts` covers popup origin/nonce/file checks
+and cancellation; host, prompt, and API tests cover delivery and access state.
+
+### Selection-aware comment context
+
+When a request uses a highlighted passage, the sidecar locates comment quotes
+in the current document and puts matching threads first in the agent prompt.
+It decodes escaped entities, tolerates whitespace and typographic quotation
+marks, and revalidates saved offsets. Labels distinguish overlapping anchors,
+same-paragraph context, and nearby context (up to 400 characters in an adjacent
+paragraph). Nearby context is not a claim that a comment is attached to the
+selected words. Repeated quotes stay ambiguous unless a verified offset
+identifies their occurrence. Missing/image anchors and obsolete text are not
+assigned by guessing from the comment's content.
+
+`writer_list_comments({ scope: "selection" })` returns the relevant threads
+with `selectionContext` location evidence. `scope: "all"` (the default) keeps
+the complete list available. Request-scoped agents retain the highlight sent
+with the request; terminal agents follow the current live highlight. No
+comment-writing permission or additional extension permission is needed.
+
+Tests: `tests/comment-matching.test.ts` covers matching and prompt priority;
+`tests/api.test.ts` covers live and frozen highlights. For a read-only audit
+against the current document and actual prompt builder, run:
+
+```sh
+npx tsx scripts/check-comment-selection.ts "<document name>"
+```
+
+The audit reads the local sidecar only, sends no provider request, and does
+not edit the document or save manuscript text as test fixtures.
+
+### Locate in the Chrome extension
+
+Locate uses Google Docs' visible Edit > Find and replace controls to move to
+and select the passage; it never fills the replacement field or invokes a
+Replace action. It verifies the passage against a fresh Docs snapshot before
+searching, checks the native result count, and navigates to the requested
+occurrence. Short repeated phrases gain nearby text as search context;
+multiline or long suggestions use a bounded single-line excerpt. The verified
+located excerpt is available to Writer's selection reader until the next
+document interaction, without reading or overwriting the system clipboard.
+As with copied selections, identical repeated excerpts cannot be mapped to a
+unique focus offset, even though native Find can navigate to their occurrence.
+
+The English Google Docs interface is currently required. Existing Find
+preferences are preserved; if regular-expression mode is enabled, Locate asks
+you to disable it rather than treating manuscript text as a search pattern.
+An already-open Find and replace dialog is left untouched. Changed text,
+unexpected native search results, and missing controls produce an error on
+the suggestion instead of silently doing nothing. Direct image selection is
+not supported by the Chrome host; locate nearby text or a caption instead.
+
+After installing an extension build with Locate support, reload the extension
+and refresh the Google Doc so its new content script is injected. Tests in
+`tests/chrome-locate.test.ts` cover planning, message routing, Find-only UI
+interaction, repeated matches, and invalidation of located selection context.

@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { basename, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createWriterApp } from "../server/app";
+import { createAgentRun, deleteAgentRun } from "../server/agent-run";
 
 const app = createWriterApp();
 
@@ -3103,6 +3104,69 @@ describe("Word add-in window state", () => {
     expect(push.sessionId).toBe(suggest.session.id);
     expect(push.pendingSuggestions).toBe(1);
     expect(JSON.parse((await requestBuffer("GET", "/api/agent-run/live/document")).body.toString("utf8")).text).toBe(edited);
+  });
+
+  it("passes Google Docs comment threads and read status to live agents without confusing unavailable with empty", async () => {
+    const comment = {
+      id: "google-thread-1", author: "Reviewer", text: "Call this held-out data.",
+      anchorText: "Chromatin", offset: documentText.indexOf("Chromatin"), resolved: true,
+      replies: [{ author: "Author", text: "Agreed." }]
+    };
+    const post = (extra: Record<string, unknown>) => requestBuffer("POST", "/api/word/context", { "content-type": "application/json" }, JSON.stringify({
+      documentName: "Google paper", documentText, hostContext: { ...hostContext, source: "google-docs", documentName: "Google paper" }, adopt: true, ...extra
+    }));
+    expect((await post({ documentComments: [comment], documentCommentsStatus: { state: "complete", detail: "Read successfully." } })).statusCode).toBe(200);
+    const read = async () => JSON.parse((await requestBuffer("GET", "/api/agent-run/live/comments")).body.toString("utf8"));
+    const complete = await read();
+    expect(complete.comments).toEqual([comment]);
+    expect(complete.status.state).toBe("complete");
+    expect(complete.note).not.toContain("no threads");
+    expect((await post({ documentComments: [], documentCommentsStatus: { state: "unavailable", detail: "Access revoked." } })).statusCode).toBe(200);
+    const unavailable = await read();
+    expect(unavailable.comments).toEqual([]);
+    expect(unavailable.note).toContain("Do not claim there are no comments");
+    expect((await post({ documentComments: [comment] })).statusCode).toBe(200);
+    const legacy = await read();
+    expect(legacy.comments).toEqual([comment]);
+    expect(legacy.status).toBeNull();
+    expect((await post({ documentCommentsStatus: { state: "invalid", detail: "Bad" } })).statusCode).toBe(400);
+    expect((await requestBuffer("POST", "/api/word/suggest", { "content-type": "application/json" }, JSON.stringify({
+      provider: "demo", instruction: "Check comments", mode: "global", documentText,
+      documentCommentsStatus: { state: "complete", detail: "x".repeat(1_001) }
+    }))).statusCode).toBe(400);
+  });
+
+  it("returns selection-aware comments for live highlights while preserving the selection sent with an agent request", async () => {
+    const first = { from: documentText.indexOf("Chromatin"), to: documentText.indexOf("accessibility") + "accessibility".length, text: "Chromatin accessibility" };
+    const comments = [
+      { id: "first", author: "Reviewer", text: "Revise the chromatin explanation", anchorText: "Chromatin accessibility", offset: first.from, resolved: false, replies: [] },
+      { id: "last", author: "Reviewer", text: "Specify cell counts", anchorText: "50,000 cells", offset: documentText.indexOf("50,000"), resolved: false, replies: [] },
+      { id: "image", author: "Reviewer", text: "Revise the plot", anchorText: "", offset: null, resolved: false, replies: [] }
+    ];
+    const initialContext = { ...hostContext, source: "google-docs" as const, documentName: "Selection comments", selection: first };
+    const push = (selection: typeof first | null, includeComments = false) => requestBuffer("POST", "/api/word/context", { "content-type": "application/json" }, JSON.stringify({
+      documentName: "Selection comments", documentText, hostContext: { ...initialContext, selection }, adopt: true,
+      ...(includeComments ? { documentComments: comments, documentCommentsStatus: { state: "complete", detail: "Read successfully" } } : {})
+    }));
+    expect((await push(first, true)).statusCode).toBe(200);
+    const read = async (runId = "live", query = "scope=selection") => JSON.parse((await requestBuffer("GET", `/api/agent-run/${runId}/comments?${query}`)).body.toString("utf8"));
+    const initial = await read();
+    expect(initial.comments.map((comment: { id: string }) => comment.id)).toEqual(["first"]);
+    expect(initial.selectionContext.matches[0]).toMatchObject({ commentId: "first", relationship: "overlap", certainty: "located" });
+    expect(initial.selectionContext.unlocated).toEqual([{ commentId: "image", reason: "missing-anchor" }]);
+    const run = createAgentRun({ provider: "claude", instruction: "Address comments", mode: "selection", documentText, selection: first, documentComments: comments, hostContext: initialContext });
+    try {
+      expect((await push(hostContext.selection)).statusCode).toBe(200);
+      expect((await read()).comments.map((comment: { id: string }) => comment.id)).toEqual(["last"]);
+      expect((await read(run.id)).comments.map((comment: { id: string }) => comment.id)).toEqual(["first"]);
+      expect((await read("live", "scope=all")).comments).toHaveLength(3);
+      expect((await push(null)).statusCode).toBe(200);
+      const cleared = await read();
+      expect(cleared.comments).toEqual([]);
+      expect(cleared.selectionContext.state).toBe("no-selection");
+      expect(cleared.note).toContain("not evidence");
+      expect((await requestBuffer("GET", "/api/agent-run/live/comments?scope=invalid")).statusCode).toBe(400);
+    } finally { deleteAgentRun(run.id); }
   });
 
   it("rejects malformed window state", async () => {

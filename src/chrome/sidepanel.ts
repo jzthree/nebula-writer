@@ -10,9 +10,15 @@ import { buildBatchPlan, imageContentUri, parseDocument, type ApiDocument, type 
 import { panelTabId, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
-import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction } from "../gdocs/protocol";
+import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
+import { openCommentPicker } from "./commentPicker";
+import { planDocsLocate } from "./locate";
+import { locateInDocumentTab } from "./locateBridge";
+import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction } from "../gdocs/protocol";
 
 declare const __PANE_ORIGIN__: string;
+declare const __PICKER_API_KEY__: string;
+declare const __PICKER_APP_ID__: string;
 
 const PANE_ORIGIN = __PANE_ORIGIN__;
 const DOCS_API = "https://docs.googleapis.com/v1/documents";
@@ -20,6 +26,94 @@ const documentTabId = panelTabId(location.href);
 
 const frame = document.getElementById("pane") as HTMLIFrameElement;
 const notice = document.getElementById("notice") as HTMLDivElement;
+const commentsStatus = document.getElementById("comments-status") as HTMLSpanElement;
+const commentsConnect = document.getElementById("comments-connect") as HTMLButtonElement;
+let commentsVersion = 0;
+let commentsReady = false;
+let connectingComments = false;
+
+function fingerprint(revision: string): string {
+  return `${revision}|comments:${commentsVersion}`;
+}
+
+function displayComments(result: DriveCommentsResult): void {
+  commentsReady = result.commentsStatus.state !== "unavailable";
+  const count = result.comments.length;
+  commentsStatus.textContent = commentsReady
+    ? `${count} comment thread${count === 1 ? "" : "s"}${result.commentsStatus.state === "partial" ? " (partial)" : ""}`
+    : "Comments unavailable";
+  commentsStatus.title = result.commentsStatus.detail;
+  commentsConnect.textContent = commentsReady ? "Refresh comments" : "Connect comments";
+  commentsConnect.disabled = connectingComments || !lastParsed;
+}
+
+async function commentsToken(interactive: boolean): Promise<string> {
+  const result = await chrome.identity.getAuthToken({ interactive, scopes: [DRIVE_FILE_SCOPE], enableGranularPermissions: true });
+  if (!result.token || (result.grantedScopes && !result.grantedScopes.includes(DRIVE_FILE_SCOPE))) {
+    throw new Error("Per-document Google Drive access was not granted.");
+  }
+  return result.token;
+}
+
+async function readComments(docId: string, text: string): Promise<DriveCommentsResult> {
+  let permitted = false;
+  try { permitted = await chrome.permissions.contains({ origins: [DRIVE_API_ORIGIN] }); } catch { /* Unavailable optional permission. */ }
+  if (!permitted) {
+    return unavailableComments("Connect comments to authorize access to this Google Doc's reviewer threads.");
+  }
+  let bearer: string;
+  try { bearer = await commentsToken(false); }
+  catch { return unavailableComments("Per-document comment access is not connected. Choose Connect comments and select this Google Doc."); }
+  return readDriveComments(docId, text, async (path) => {
+    const request = () => fetch(`https://www.googleapis.com/drive/v3${path}`, {
+      headers: { Authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(15_000)
+    });
+    let response = await request();
+    if (response.status === 401) {
+      await chrome.identity.removeCachedAuthToken({ token: bearer });
+      bearer = await commentsToken(false);
+      response = await request();
+    }
+    if (!response.ok) throw new Error(`Google Drive comment read failed (${response.status}).`);
+    return response.json() as Promise<DriveCommentsPage>;
+  });
+}
+
+commentsConnect.addEventListener("click", () => {
+  const current = lastParsed;
+  if (!current || connectingComments) return;
+  connectingComments = true;
+  commentsConnect.disabled = true;
+  const connect = commentsReady
+    ? Promise.resolve()
+    : (() => {
+      // Both popup creation and optional permission requests start directly
+      // from this click. No auth prompts are triggered by background reads.
+      if (!__PICKER_API_KEY__ || !__PICKER_APP_ID__) return Promise.reject(new Error("Google Picker needs setup: enable the Drive and Picker APIs, then configure --picker-api-key and --picker-app-id with chrome:setup."));
+      const permission = chrome.permissions.request({ origins: [DRIVE_API_ORIGIN] }).catch(() => false);
+      return openCommentPicker({
+        paneOrigin: PANE_ORIGIN, extensionOrigin: location.origin,
+        apiKey: __PICKER_API_KEY__, appId: __PICKER_APP_ID__,
+        docId: current.docId, documentName: current.parsed.payload.documentName
+      }, async () => {
+        if (!await permission) throw new Error("Google Drive API access was not approved.");
+        if ((await activeDoc()).docId !== current.docId) throw new Error("The document changed.");
+        return commentsToken(true);
+      });
+    })();
+  void connect.then(async () => {
+    if ((await activeDoc()).docId !== current.docId) throw new Error("The document changed. Reconnect beside the intended Google Doc.");
+    const result = await readComments(current.docId, current.parsed.payload.paragraphs.map((paragraph) => paragraph.text).join("\n"));
+    displayComments(result);
+    commentsVersion += 1;
+  }).catch((error: unknown) => {
+    displayComments(unavailableComments(error instanceof Error ? error.message : "Comment connection failed."));
+    commentsStatus.textContent = commentsStatus.title;
+  }).finally(() => {
+    connectingComments = false;
+    commentsConnect.disabled = !lastParsed;
+  });
+});
 
 function showNotice(html: string): void {
   notice.innerHTML = html;
@@ -105,13 +199,16 @@ async function selectionText(tabId: number, docId: string): Promise<string> {
 const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unknown>> = {
   async nebulaReadDocument() {
     const { docId } = await activeDoc();
-    return (await fetchParsed(docId)).payload;
+    const parsed = await fetchParsed(docId);
+    const result = await readComments(docId, parsed.payload.paragraphs.map((paragraph) => paragraph.text).join("\n"));
+    displayComments(result);
+    return { ...parsed.payload, ...result, fingerprint: fingerprint(parsed.payload.fingerprint) };
   },
 
   async nebulaFingerprint() {
     const { docId } = await activeDoc();
     const doc = await api<{ revisionId?: string }>(`/${encodeURIComponent(docId)}?fields=revisionId`);
-    return doc.revisionId ?? "";
+    return fingerprint(doc.revisionId ?? "");
   },
 
   async nebulaReadFocus() {
@@ -123,7 +220,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
       paragraphText: selection ? parsed.payload.paragraphs[selection.startParagraph]?.text ?? null : null,
       offset: selection?.startOffset ?? 0,
       selection,
-      fingerprint: parsed.index.revisionId
+      fingerprint: fingerprint(parsed.index.revisionId)
     };
     return payload;
   },
@@ -134,8 +231,11 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     return `${docId}|${text.length}|${text.slice(0, 80)}`;
   },
 
-  async nebulaSelect() {
-    // The Docs API cannot move the reader's cursor; the card's preview shows the match instead.
+  async nebulaSelect(range) {
+    const { tabId, docId } = await activeDoc();
+    const parsed = await fetchParsed(docId);
+    const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
+    await locateInDocumentTab(tabId, docId, plan, (id, message) => chrome.tabs.sendMessage(id, message));
     return null;
   },
 
@@ -188,7 +288,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
   },
 
   async nebulaSelectImage() {
-    return null;
+    throw new Error("Chrome's Google Docs integration cannot select an image directly. Locate a nearby caption or text passage instead.");
   }
 };
 

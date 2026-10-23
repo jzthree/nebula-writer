@@ -9,7 +9,7 @@
  */
 
 import type { EmphasisSpan } from "../emphasis";
-import type { DocumentComment } from "../shared";
+import type { DocumentComment, DocumentCommentsStatus } from "../shared";
 import {
   WORD_HOST_CONTEXT_LIMITS,
   type SelectionContext,
@@ -60,6 +60,7 @@ export interface WordDocumentSnapshot {
   emphasis?: EmphasisSpan[];
   /** Reviewer comments (read on full snapshots; absent on cheap background re-reads). */
   comments?: DocumentComment[];
+  commentsStatus?: DocumentCommentsStatus;
   changeTrackingMode: string | null;
   capturedAt: string;
 }

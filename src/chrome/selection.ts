@@ -1,5 +1,6 @@
 export interface DocsSelectionReader {
   read(): string;
+  rememberLocatedText(text: string): void;
   dispose(): void;
 }
 
@@ -117,6 +118,13 @@ export function createDocsSelectionReader(doc: Document): DocsSelectionReader {
   observer.observe(doc.documentElement, { childList: true, subtree: true });
 
   return {
+    rememberLocatedText(text) {
+      if (disposed) return;
+      connectFrame();
+      generation += 1;
+      copiedText = meaningfulText(text);
+      exportBeforeAction = null;
+    },
     read() {
       if (disposed) {
         return "";

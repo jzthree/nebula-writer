@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildAgentTaskPrompt, buildCliPrompt } from "../server/ai";
 import { createAgentRun, deleteAgentRun } from "../server/agent-run";
 import { exportDocx, extractDocxComments } from "../server/docx";
-import { describeDocumentComments, isDocumentCommentList, locateCommentAnchor, type AiRequest, type DocumentComment } from "../src/shared";
+import { describeDocumentComments, isDocumentCommentList, isDocumentCommentsStatus, locateCommentAnchor, type AiRequest, type DocumentComment } from "../src/shared";
 import { MockWordHost } from "../src/word/mockOffice";
 import { readDocumentSnapshot, waitForWordHost } from "../src/word/wordHost";
 
@@ -13,6 +13,23 @@ const comment = (overrides: Partial<DocumentComment> = {}): DocumentComment => (
 });
 
 describe("comments: what the model sees", () => {
+  it("never equates unavailable or partial Google Docs comments with no comments", () => {
+    const request: AiRequest = {
+      provider: "claude", instruction: "Check comments", mode: "global", documentText: DOC,
+      documentComments: [], documentCommentsStatus: { state: "unavailable", detail: "Not connected to Google Drive." }
+    };
+    const run = createAgentRun(request);
+    try {
+      expect(buildAgentTaskPrompt(request, run)).toContain("Do not claim there are no comments");
+      expect(buildCliPrompt(request)).toContain("UNAVAILABLE");
+      expect(run.commentsStatus?.state).toBe("unavailable");
+    } finally { deleteAgentRun(run.id); }
+    expect(describeDocumentComments([], { status: { state: "complete", detail: "Read successfully" } }).join(" ")).toContain("successfully read");
+    expect(describeDocumentComments([comment()], { status: { state: "partial", detail: "A later page failed" } }).join(" ")).toContain("Do not claim all threads were checked");
+    expect(isDocumentCommentsStatus({ state: "unavailable", detail: "Not connected" })).toBe(true);
+    expect(isDocumentCommentsStatus({ state: "complete", detail: "x".repeat(1_001) })).toBe(false);
+    expect(isDocumentCommentsStatus({ state: "unknown", detail: "" })).toBe(false);
+  });
   it("lists open threads first with anchors and replies, and is referenced in one-shot and agentic prompts", () => {
     const comments = [
       comment({ id: "c2", text: "Done, thanks.", anchorText: "profile cells", offset: 72, resolved: true }),

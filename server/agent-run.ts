@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasis";
-import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment } from "../src/shared";
+import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment, DocumentCommentsStatus } from "../src/shared";
 import { isImageCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, type SuggestionCandidate } from "./suggestion-validation";
 
 /**
@@ -32,6 +32,7 @@ export interface AgentRunContext {
   images: AiDocumentImage[];
   /** Reviewer comments in the document (writer_list_comments). */
   comments: DocumentComment[];
+  commentsStatus?: DocumentCommentsStatus | null;
   maxSuggestions: number | null;
   staged: AiSuggestion[];
   rejectedCount: number;
@@ -71,6 +72,7 @@ export function createAgentRun(request: AiRequest): AgentRunContext {
     attachments: request.attachments ?? [],
     images: request.documentImages ?? [],
     comments: request.documentComments ?? [],
+    commentsStatus: request.documentCommentsStatus,
     maxSuggestions: typeof request.maxSuggestions === "number" && Number.isSafeInteger(request.maxSuggestions) && request.maxSuggestions > 0
       ? request.maxSuggestions
       : null,

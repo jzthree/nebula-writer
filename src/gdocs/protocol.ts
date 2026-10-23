@@ -6,6 +6,7 @@
  */
 
 import type { EmphasisSpan } from "../emphasis";
+import type { DocumentComment, DocumentCommentsStatus } from "../shared";
 
 export interface DocsParagraphPayload {
   text: string;
@@ -26,6 +27,8 @@ export interface DocsImagePayload {
 }
 
 export interface DocsDocumentPayload {
+  comments?: DocumentComment[];
+  commentsStatus?: DocumentCommentsStatus;
   documentName: string;
   documentId: string;
   paragraphs: DocsParagraphPayload[];
@@ -58,6 +61,10 @@ export interface DocsTextRange {
   start: number;
   endParagraphIndex: number;
   end: number;
+}
+
+export interface DocsLocateRequest extends DocsTextRange {
+  expected: string;
 }
 
 /**

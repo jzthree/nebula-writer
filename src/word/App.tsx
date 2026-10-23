@@ -621,6 +621,7 @@ export function App() {
         documentText: textChanged ? snapshot.bodyText : null,
         documentEmphasis: textChanged ? snapshot.emphasis ?? [] : null,
         ...(snapshot.comments ? { documentComments: snapshot.comments } : {}),
+        ...(snapshot.commentsStatus ? { documentCommentsStatus: snapshot.commentsStatus } : {}),
         adopt: true
       }).then((response) => {
         if (textChanged) {
@@ -722,6 +723,7 @@ export function App() {
         documentText: snap.bodyText,
         documentEmphasis: snap.emphasis ?? [],
         ...(snap.comments ? { documentComments: snap.comments } : {}),
+        ...(snap.commentsStatus ? { documentCommentsStatus: snap.commentsStatus } : {}),
         selection: resolved.selection ?? currentFocus?.selection ?? null,
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),
@@ -994,7 +996,7 @@ export function App() {
     }
     if (suggestion.kind === "image" && suggestion.image) {
       const image = suggestion.image;
-      void runBusy("Locating in Word…", async () => {
+      void runBusy("Locating in the document…", async () => {
         try {
           await selectInlinePicture(image.index);
           patchCard(suggestion.id, { error: null });
@@ -1006,7 +1008,7 @@ export function App() {
     }
     if (cardsRef.current[suggestion.id]?.outcome === "applied" && !suggestion.commentOnly && suggestion.replacement.trim()) {
       // Once applied, the original is gone from Word: jump to the revised text.
-      void runBusy("Locating in Word…", async () => {
+      void runBusy("Locating in the document…", async () => {
         try {
           await locateSuggestion(snap, { original: suggestion.replacement }, 0);
           patchCard(suggestion.id, { error: null });
@@ -1016,7 +1018,7 @@ export function App() {
       });
       return;
     }
-    void runBusy("Locating in Word…", async () => {
+    void runBusy("Locating in the document…", async () => {
       try {
         const state = await ensureMatches(suggestion, snap);
         if (!state.matches) {
@@ -1038,7 +1040,7 @@ export function App() {
     }
     const matchIndex = (state.matchIndex + direction + state.matches) % state.matches;
     patchCard(suggestion.id, { matchIndex });
-    void runBusy("Locating in Word…", async () => {
+    void runBusy("Locating in the document…", async () => {
       try {
         await locateSuggestion(snap, suggestion, matchIndex);
       } catch (error) {

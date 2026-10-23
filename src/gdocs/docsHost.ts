@@ -67,6 +67,11 @@ async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?:
       paragraphIndex: image.paragraphIndex
     })),
     emphasis,
+    comments: payload.comments ?? [],
+    commentsStatus: payload.commentsStatus ?? {
+      state: "unavailable",
+      detail: "This Google Docs host did not read reviewer comment threads. Use the Chrome extension's Connect comments command."
+    },
     changeTrackingMode: null,
     capturedAt: new Date().toISOString()
   };
@@ -168,9 +173,8 @@ async function locateSuggestion(snapshot: WordDocumentSnapshot, suggestion: Pick
   }
   const index = Math.max(0, Math.min(matchIndex, matches.length - 1));
   const range = rangeToParagraphs(snapshot.paragraphs, matches[index].from, matches[index].to);
-  if (range) {
-    await callScript("nebulaSelect", range);
-  }
+  if (!range) throw new Error("This passage could not be mapped to the document. Refresh Writer and try Locate again.");
+  await callScript("nebulaSelect", { ...range, expected: snapshot.bodyText.slice(matches[index].from, matches[index].to) });
   return { matches: matches.length, matchIndex: index };
 }
 

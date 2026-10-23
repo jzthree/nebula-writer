@@ -21,9 +21,13 @@ KEY="$DIR/key.pem"
 LOCAL="$DIR/local.json"
 PORT="${WRITER_TLS_PORT:-8443}"
 CLIENT_ID=""
+PICKER_API_KEY=""
+PICKER_APP_ID=""
 for arg in "$@"; do
   case "$arg" in
     --client-id=*) CLIENT_ID="${arg#--client-id=}" ;;
+    --picker-api-key=*) PICKER_API_KEY="${arg#--picker-api-key=}" ;;
+    --picker-app-id=*) PICKER_APP_ID="${arg#--picker-app-id=}" ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -37,12 +41,17 @@ fi
 PUBKEY_B64="$(openssl rsa -in "$KEY" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
 EXT_ID="$(openssl rsa -in "$KEY" -pubout -outform DER 2>/dev/null | shasum -a 256 | head -c 32 | tr '0-9a-f' 'a-p')"
 
-node - "$LOCAL" "$PUBKEY_B64" "$CLIENT_ID" <<'EOF'
+node - "$LOCAL" "$PUBKEY_B64" "$CLIENT_ID" "$PICKER_API_KEY" "$PICKER_APP_ID" <<'EOF'
 const fs = require("node:fs");
-const [path, key, clientId] = process.argv.slice(2);
+const [path, key, clientId, pickerApiKey, pickerAppId] = process.argv.slice(2);
 const local = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, "utf8")) : {};
 local.key = key;
 if (clientId) local.clientId = clientId;
+if (pickerApiKey) local.pickerApiKey = pickerApiKey;
+if (pickerAppId) {
+  if (!/^\d+$/.test(pickerAppId)) throw new Error("picker-app-id must be the numeric Google Cloud project number");
+  local.pickerAppId = pickerAppId;
+}
 fs.writeFileSync(path, JSON.stringify(local, null, 2) + "\n");
 EOF
 
