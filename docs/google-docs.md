@@ -89,17 +89,39 @@ holds its code:
   `updateTextStyle` for emphasis and the change highlight), later text
   first, every operation verified against the freshly fetched document.
 - `sidepanel.ts`: embeds the sidecar-served pane and answers its `nebula*`
-  calls with the Docs REST API, authorised through `chrome.identity`.
+  calls with the Docs REST API, authorised through `chrome.identity`. Each
+  panel is bound to its own document tab, including account-specific
+  `/document/u/0/d/...` URLs; focusing another window cannot retarget it.
 - `content.ts`: best-effort selection text from the Docs page (the API has
   no cursor); `background.ts`: opens the panel from the toolbar button on
   document tabs.
 
 What differs from the add-in: no caret (Writer defaults to the whole
-document; a selection is honoured when the page exposes it), Locate cannot
-scroll the document (the card shows the match), and picture replacement is
-not available (the Docs API needs a public image URL). Everything else —
+document), Locate cannot scroll the document (the card shows the match),
+and picture replacement is not available (the Docs API needs a public image
+URL). Everything else —
 emphasis, placement anchors, agents, queueing, change highlighting — is the
 same code.
+
+Neither Google Docs integration currently reads reviewer comment threads.
+Their absence from AI context does not mean the document has no comments.
+This selection fix does not add Drive permissions or comment access.
+
+For a passage in the normal canvas editor, highlight the text and copy it
+(`Cmd+C` on Mac, `Ctrl+C` elsewhere), then choose **Selection** in Writer.
+Docs exposes the selected text when it handles Copy; simply highlighting
+does not expose a readable DOM range. The extension observes that copy but
+does not read the system clipboard or initiate a copy itself. Moving or
+editing in the document clears the captured passage, so select and copy
+again after changing it. A passage that occurs more than once in the
+document is rejected as ambiguous; include more surrounding text. Matching
+tolerates differences in spaces and paragraph breaks introduced by copying
+formatted text, while keeping the document's original text and offsets.
+
+With Docs' screen reader and braille support enabled under
+**Tools > Accessibility**, Writer can instead read the live native text
+selection directly. This is optional; the copy workflow needs no change to
+accessibility settings.
 
 Setup: `npm run chrome:setup` generates a stable extension id and builds;
 load the folder unpacked in `chrome://extensions`; create an OAuth client of
@@ -107,3 +129,27 @@ type "Chrome Extension" for that id in Google Cloud Console (the script
 prints the exact steps) and rerun `npm run chrome:setup -- --client-id=…`;
 reload the extension. The key and client id stay in gitignored files.
 
+After reloading or updating the unpacked extension, refresh each open Google
+Doc and reopen Writer from that document's Chrome toolbar button. Existing
+tabs can retain a disconnected content script until refreshed. Writer shows
+a reconnect notice if the selection reader is missing, instead of silently
+treating a failed connection as an empty selection. It also checks that the
+selection reply belongs to the same document as the panel.
+
+### Selection regression checks
+
+The Chrome tests cover panel install/startup/navigation, document identity,
+copy capture and invalidation, iframe replacement, and whitespace-preserving
+selection matching:
+
+```bash
+npm test -- tests/chrome-background.test.ts tests/chrome-document-tab.test.ts tests/chrome-selection.test.ts tests/chrome-selection-bridge.test.ts tests/chrome-selection-match.test.ts
+```
+
+For a browser smoke test, reload the extension, refresh the document, and
+reopen Writer. Highlight and copy both a plain passage and a multi-paragraph
+passage with formatted citations; confirm Selection is enabled and shows the
+intended text. Move the caret to clear it, then select and copy a different
+passage. Switch between two document tabs and another window to check that
+each panel remains attached to its own document. No AI request or document
+edit is needed for these checks.

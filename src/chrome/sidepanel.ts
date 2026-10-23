@@ -7,13 +7,16 @@
  */
 
 import { buildBatchPlan, imageContentUri, parseDocument, type ApiDocument, type ParsedDocument } from "./docsApi";
+import { panelTabId, resolveDocumentTab } from "./documentTab";
+import { locateDocsSelection } from "./selectionMatch";
+import { readDocumentSelection } from "./selectionBridge";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction } from "../gdocs/protocol";
 
 declare const __PANE_ORIGIN__: string;
 
 const PANE_ORIGIN = __PANE_ORIGIN__;
 const DOCS_API = "https://docs.googleapis.com/v1/documents";
-const DOC_URL = /^https:\/\/docs\.google\.com\/document\/d\/([^/?#]+)/;
+const documentTabId = panelTabId(location.href);
 
 const frame = document.getElementById("pane") as HTMLIFrameElement;
 const notice = document.getElementById("notice") as HTMLDivElement;
@@ -60,16 +63,11 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
 }
 
 /* ------------------------------------------------------------------------- */
-/* The document behind the active tab                                       */
+/* The document this panel was opened beside                                */
 /* ------------------------------------------------------------------------- */
 
 async function activeDoc(): Promise<{ tabId: number; docId: string }> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const match = tab?.url?.match(DOC_URL);
-  if (tab?.id === undefined || !match) {
-    throw new Error("Open a Google Doc in this window — Writer works on the document in the active tab.");
-  }
-  return { tabId: tab.id, docId: match[1] };
+  return resolveDocumentTab(documentTabId, (tabId) => chrome.tabs.get(tabId));
 }
 
 let lastParsed: { docId: string; parsed: ParsedDocument; raw: ApiDocument } | null = null;
@@ -81,46 +79,23 @@ async function fetchParsed(docId: string): Promise<ParsedDocument> {
   return parsed;
 }
 
-async function selectionText(tabId: number): Promise<string> {
+let selectionNotice = false;
+
+async function selectionText(tabId: number, docId: string): Promise<string> {
   try {
-    const reply = await chrome.tabs.sendMessage(tabId, { type: "nebula-selection" }) as { text?: string } | undefined;
-    return (reply?.text ?? "").replace(/\r\n?/g, "\n");
-  } catch {
+    const text = await readDocumentSelection(tabId, docId, (id, message) => chrome.tabs.sendMessage(id, message));
+    if (selectionNotice) {
+      notice.textContent = "";
+      notice.className = "";
+      selectionNotice = false;
+    }
+    return text;
+  } catch (error) {
+    notice.textContent = error instanceof Error ? error.message : "Could not capture the Google Docs selection. Refresh the document and reopen Writer.";
+    notice.className = "show";
+    selectionNotice = true;
     return "";
   }
-}
-
-/** Locate the selected text in the cached document: paragraph coordinates, or null. */
-function locateSelection(parsed: ParsedDocument, text: string): DocsFocusPayload["selection"] {
-  const needle = text.trim();
-  if (!needle) {
-    return null;
-  }
-  const texts = parsed.payload.paragraphs.map((paragraph) => paragraph.text);
-  const body = texts.join("\n");
-  const at = body.indexOf(needle);
-  if (at < 0 || body.indexOf(needle, at + 1) >= 0) {
-    return null; // Missing or ambiguous: better no selection than the wrong one.
-  }
-  const end = at + needle.length;
-  let offset = 0;
-  let startParagraph = 0;
-  let startOffset = 0;
-  let endParagraph = 0;
-  let endOffset = 0;
-  texts.forEach((paragraphText, index) => {
-    const paragraphEnd = offset + paragraphText.length;
-    if (at >= offset && at <= paragraphEnd) {
-      startParagraph = index;
-      startOffset = at - offset;
-    }
-    if (end > offset && end <= paragraphEnd + 1) {
-      endParagraph = index;
-      endOffset = Math.min(end - offset, paragraphText.length);
-    }
-    offset = paragraphEnd + 1;
-  });
-  return { startParagraph, startOffset, endParagraph, endOffset, text: needle };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -142,7 +117,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
   async nebulaReadFocus() {
     const { tabId, docId } = await activeDoc();
     const parsed = lastParsed?.docId === docId ? lastParsed.parsed : await fetchParsed(docId);
-    const selection = locateSelection(parsed, await selectionText(tabId));
+    const selection = locateDocsSelection(parsed.payload.paragraphs, await selectionText(tabId, docId));
     const payload: DocsFocusPayload = {
       paragraphIndex: selection?.startParagraph ?? null,
       paragraphText: selection ? parsed.payload.paragraphs[selection.startParagraph]?.text ?? null : null,
@@ -155,7 +130,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaFocusKey() {
     const { tabId, docId } = await activeDoc();
-    const text = await selectionText(tabId);
+    const text = await selectionText(tabId, docId);
     return `${docId}|${text.length}|${text.slice(0, 80)}`;
   },
 

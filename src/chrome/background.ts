@@ -4,10 +4,15 @@
  * panel, and the panel is offered only on Google Docs document tabs.
  */
 
-const DOC_URL = /^https:\/\/docs\.google\.com\/document\//;
+import { googleDocId, panelPath } from "./documentTab";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+  void configureOpenDocuments();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void configureOpenDocuments();
 });
 
 async function updatePanel(tabId: number, url: string | undefined): Promise<void> {
@@ -15,9 +20,19 @@ async function updatePanel(tabId: number, url: string | undefined): Promise<void
     return;
   }
   try {
-    await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: DOC_URL.test(url) });
+    const enabled = googleDocId(url) !== null;
+    await chrome.sidePanel.setOptions({ tabId, ...(enabled ? { path: panelPath(tabId) } : {}), enabled });
   } catch {
     // The tab may be gone.
+  }
+}
+
+async function configureOpenDocuments(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ url: "https://docs.google.com/document/*" });
+    await Promise.all(tabs.filter((tab) => tab.id !== undefined).map((tab) => updatePanel(tab.id!, tab.url)));
+  } catch {
+    // Tab activation/update will configure any document that was not ready yet.
   }
 }
 

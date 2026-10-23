@@ -65,7 +65,7 @@ function occurrences(haystack: string, needle: string): Array<{ from: number; to
   return found;
 }
 
-function collapseWithPositions(value: string): { text: string; positions: number[] } {
+export function collapseWithPositions(value: string): { text: string; positions: number[] } {
   let text = "";
   const positions: number[] = [];
   for (let index = 0; index < value.length; index += 1) {

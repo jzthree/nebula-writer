@@ -329,7 +329,7 @@ export function App() {
         return next;
       } catch (error) {
         setHostDetail(errorMessage(error));
-        showNotice("error", `Could not read the document from Word: ${errorMessage(error)}`);
+        showNotice("error", `Could not read the document from ${capabilitiesRef.current.hostName ?? "Word"}: ${errorMessage(error)}`);
         return snapshotRef.current;
       } finally {
         snapshotInFlightRef.current = null;
