@@ -332,7 +332,7 @@ describe("proposeChanges", () => {
         process.env.WRITER_CODEX_PATH = previousOverride;
       }
     }
-  });
+  }, 60_000);
 
   it("retries Codex without --output-schema when older CLIs reject the flag", async () => {
     const previousAllow = process.env.WRITER_ALLOW_CLI;

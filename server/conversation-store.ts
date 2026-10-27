@@ -19,7 +19,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
-export const CONVERSATION_KEY_PATTERN = /^[A-Za-z0-9:_.\-/%@+=~ ]{1,512}$/;
+/** Any printable text: keys are document paths and URLs (spaces, parentheses, accents…). */
+export const CONVERSATION_KEY_PATTERN = /^[^\u0000-\u001f\u007f]{1,512}$/u;
 export const DEFAULT_PAGE_TURNS = 40;
 const MAX_PAGE_TURNS = 200;
 /** Pending suggestions restored at most (the most recent ones). */

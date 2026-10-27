@@ -158,6 +158,15 @@ export async function waitForWordHost(timeoutMs = 6_000): Promise<WordHostBoot> 
   return { ready: true, detail: "Connected to Microsoft Word.", capabilities: detectCapabilities(true) };
 }
 
+/** Where the document is saved (path or URL, without query), as its identity across sessions; null until it is saved. */
+export function readDocumentKey(): string | null {
+  const url = officeGlobal()?.context?.document?.url;
+  if (typeof url !== "string" || !url.trim()) {
+    return null;
+  }
+  return `word:${url.split(/[?#]/)[0]}`.slice(0, 512);
+}
+
 export function readDocumentName(): string | null {
   const url = officeGlobal()?.context?.document?.url;
   if (typeof url !== "string" || !url.trim()) {
@@ -271,6 +280,7 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
     }
     return {
       documentName: readDocumentName(),
+      documentKey: readDocumentKey(),
       bodyText,
       paragraphs: paragraphInfos,
       pictures,

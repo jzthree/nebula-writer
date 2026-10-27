@@ -51,6 +51,8 @@ export interface WordPictureInfo {
 
 export interface WordDocumentSnapshot {
   documentName: string | null;
+  /** Stable identity of the document across sessions (its saved location / Docs id); null for an unsaved document. */
+  documentKey?: string | null;
   /** Normalized body text (LF line endings) — the `documentText` sent to the sidecar. */
   bodyText: string;
   paragraphs: WordParagraphInfo[];

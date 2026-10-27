@@ -631,3 +631,56 @@ export function newAiRunId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `run-${random}`.slice(0, 64);
 }
+
+/* ------------------------------------------------------------------------- */
+/* Conversations per document (server/conversation-store.ts)                */
+/* ------------------------------------------------------------------------- */
+
+export interface StoredConversationPage<Turn = unknown, Suggestion = unknown, Card = unknown> {
+  key: string;
+  epoch: number;
+  turns: Array<{ id: string; turn: Turn }>;
+  suggestions: Array<{ id: string; turnId: string | null; suggestion: Suggestion }>;
+  cards: Record<string, Card>;
+  sessions: Record<string, string>;
+  /** Cursor for the page before this one; null at the start of the conversation. */
+  before: number | null;
+}
+
+export interface StoredConversationWrite<Turn = unknown, Suggestion = unknown, Card = unknown> {
+  turns?: Array<{ id: string; turn: Turn }>;
+  suggestions?: Array<{ id: string; turnId: string | null; suggestion: Suggestion }>;
+  cards?: Record<string, { state: Card; pending: boolean }>;
+  sessions?: Record<string, string>;
+}
+
+export async function fetchConversationFromSidecar<Turn, Suggestion, Card>(apiBase: string, key: string, options: { before?: number | null; limit?: number } = {}): Promise<StoredConversationPage<Turn, Suggestion, Card>> {
+  const query = new URLSearchParams({ key, ...(options.limit ? { limit: String(options.limit) } : {}), ...(options.before ? { before: String(options.before) } : {}) });
+  const response = await sidecarFetch(sidecarUrl(apiBase, `/api/conversations?${query}`));
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return readJson<StoredConversationPage<Turn, Suggestion, Card>>(response);
+}
+
+export async function writeConversationToSidecar<Turn, Suggestion, Card>(apiBase: string, key: string, change: StoredConversationWrite<Turn, Suggestion, Card>): Promise<void> {
+  const response = await sidecarFetch(sidecarUrl(apiBase, "/api/conversations/write"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, ...change })
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+}
+
+export async function resetConversationOnSidecar(apiBase: string, key: string, mode: "new" | "clear"): Promise<void> {
+  const response = await sidecarFetch(sidecarUrl(apiBase, "/api/conversations/reset"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, mode })
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+}

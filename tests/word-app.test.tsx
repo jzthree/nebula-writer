@@ -26,6 +26,18 @@ const captured: {
 const ORIGINAL = "Chromatin accessibility is actually a very important determinant of gene regulation, and it is the case that many studies have looked at it.";
 const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
 
+// The saved conversation: the real store, in memory, behind the client calls.
+const conversations = vi.hoisted(() => ({ store: null as null | import("../server/conversation-store").ConversationStore, writes: 0 }));
+vi.mock("../src/sidecarClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/sidecarClient")>()),
+  fetchConversationFromSidecar: async (_base: string, key: string, options: { before?: number | null; limit?: number } = {}) => conversations.store!.read(key, options),
+  writeConversationToSidecar: async (_base: string, key: string, change: import("../server/conversation-store").ConversationWrite) => {
+    conversations.writes += 1;
+    conversations.store!.write(key, change);
+  },
+  resetConversationOnSidecar: async (_base: string, key: string, mode: "new" | "clear") => conversations.store!.reset(key, mode)
+}));
+
 vi.mock("../src/word/writerClient", () => ({
   fetchHealth: async () => ({
     ok: true,
@@ -182,7 +194,11 @@ vi.setConfig({ testTimeout: 20_000 });
 
 let mock: MockWordHost;
 
-beforeEach(() => {
+beforeEach(async () => {
+  const { ConversationStore } = await import("../server/conversation-store");
+  conversations.store?.close();
+  conversations.store = new ConversationStore(":memory:");
+  conversations.writes = 0;
   captured.requests = [];
   captured.steers = [];
   captured.steerOk = true;
@@ -718,4 +734,44 @@ describe("Word task pane", () => {
     fireEvent.pointerDown(document.body);
     await waitFor(() => expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument(), { timeout: 1_000 });
   });
+
+  it("restores the conversation when the document is opened again, and follow-ups resume it", async () => {
+    const first = await renderPane();
+    send("Tighten the first sentence.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    await waitFor(() => expect(conversations.store!.read("word:file:///Users/mock/Documents/Aims.docx").turns).toHaveLength(2));
+    first.unmount();
+
+    // Reopened: the transcript, the pending card and the provider session come back.
+    const { App } = await import("../src/word/App");
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/Conversation restored — 2 turns/)).toBeInTheDocument());
+    expect(screen.getByText("Tighten the first sentence.")).toBeInTheDocument();
+    expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument();
+    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    send("Now keep the citation.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].agentSessionId).toBe("sess-claude-1");
+    expect(captured.requests[1].conversation?.[0].content).toBe("Tighten the first sentence.");
+  });
+
+  it("renders a window of a long conversation and loads earlier turns on demand", async () => {
+    const key = "word:file:///Users/mock/Documents/Aims.docx";
+    for (let index = 1; index <= 150; index += 1) {
+      const at = new Date(Date.UTC(2026, 9, 1, 0, index)).toISOString();
+      conversations.store!.write(key, { turns: [{ id: `old-${index}`, turn: { id: `old-${index}`, role: "user", at, text: `Earlier request number ${index}` } }] });
+    }
+    await renderPane();
+    await waitFor(() => expect(screen.getByText("Earlier request number 150")).toBeInTheDocument());
+    // 40 restored; only the latest window is in the DOM.
+    expect(screen.queryByText("Earlier request number 110")).toBeNull();
+    expect(screen.getByText("Earlier request number 112")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show earlier turns"));
+    await waitFor(() => expect(screen.getByText("Earlier request number 80")).toBeInTheDocument());
+    expect(screen.queryByText("Earlier request number 70")).toBeNull();
+    // A new conversation stops restoring the old turns.
+    fireEvent.click(screen.getByLabelText("Start a new conversation"));
+    await waitFor(() => expect(conversations.store!.read(key).turns.map((entry) => entry.id).some((id) => id.startsWith("old-"))).toBe(false));
+  });
 });
+

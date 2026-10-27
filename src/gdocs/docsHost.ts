@@ -56,6 +56,7 @@ async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?:
   const emphasis: EmphasisSpan[] = normalizeEmphasis(payload.paragraphs.flatMap((paragraph, index) => shiftEmphasis(paragraph.emphasis ?? [], paragraphs[index]?.offset ?? 0)));
   return {
     documentName: payload.documentName || null,
+    documentKey: payload.documentId ? `gdocs:${payload.documentId}` : null,
     bodyText,
     paragraphs,
     pictures: payload.images.map((image) => ({

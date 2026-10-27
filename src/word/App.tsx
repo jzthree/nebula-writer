@@ -69,6 +69,8 @@ import {
   type SidecarStatus
 } from "./WordPane";
 import type { MockWordHost } from "./mockOffice";
+import { ConversationSync, type ConversationState } from "../conversationSync";
+import { fetchConversationFromSidecar, resetConversationOnSidecar, writeConversationToSidecar } from "../sidecarClient";
 
 interface ModelPreference {
   model: string | null;
@@ -127,6 +129,10 @@ const HEALTH_POLL_MS = 30_000;
 const MAX_TURNS = 200;
 
 const DEFAULT_CARD_STATE: CardState = { matchIndex: 0, matches: null, heading: null, paragraphIndex: null, outcome: null, detail: null, error: null };
+/** Turns restored from (or fetched back into) the transcript at a time. */
+const CONVERSATION_PAGE_TURNS = 40;
+/** Turns the pane makes up when restoring (never saved): their ids start with this. */
+const RESTORED_TURN_PREFIX = "restored-";
 
 const WORD_PRESETS: WordPreset[] = [
   { group: "Word", id: "word-paragraph", label: "Tighten this paragraph", scope: "paragraph", instruction: "Tighten the paragraph at my caret: remove hedging and filler, keep every claim, citation, and number exactly, and make each sentence carry one idea." },
@@ -256,6 +262,19 @@ export function App() {
   // resume the CLI's own session ("make it shorter" keeps its referent).
   const agentSessionsRef = useRef<Record<string, string>>({});
   const turnsRef = useRef<ChatTurn[]>([]);
+  // The conversation is saved per document in the sidecar and restored when
+  // the document is opened again (server/conversation-store.ts).
+  const conversationKeyRef = useRef<string | null>(null);
+  const [conversationReady, setConversationReady] = useState(false);
+  const [earlierCursor, setEarlierCursor] = useState<number | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const conversationSyncRef = useRef<ConversationSync<ChatTurn, AiSuggestion, CardState> | null>(null);
+  if (!conversationSyncRef.current) {
+    conversationSyncRef.current = new ConversationSync((change) => {
+      const key = conversationKeyRef.current;
+      return key ? writeConversationToSidecar("", key, change) : Promise.resolve();
+    });
+  }
 
   capabilitiesRef.current = capabilities;
   settingsRef.current = settings;
@@ -280,6 +299,109 @@ export function App() {
   const patchTurn = useCallback((id: string, patch: Partial<Extract<ChatTurn, { role: "assistant" }>>) => {
     setTurns((current) => current.map((turn) => (turn.id === id && turn.role === "assistant" ? { ...turn, ...patch } : turn)));
   }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* Saved conversation                                                 */
+  /* ------------------------------------------------------------------ */
+
+  const conversationState = useCallback((): ConversationState<ChatTurn, AiSuggestion, CardState> => {
+    const turnOf = new Map<string, string>();
+    for (const turn of turnsRef.current) {
+      if (turn.role === "assistant") {
+        for (const id of turn.suggestionIds) {
+          turnOf.set(id, turn.id);
+        }
+      }
+    }
+    return {
+      turns: turnsRef.current.map((turn) => ({
+        id: turn.id,
+        turn,
+        persist: !turn.id.startsWith(RESTORED_TURN_PREFIX) && !(turn.role === "assistant" && turn.status === "running")
+      })),
+      suggestions: suggestionsRef.current.map((suggestion) => ({ id: suggestion.id, turnId: turnOf.get(suggestion.id) ?? null, suggestion })),
+      cards: suggestionsRef.current.map((suggestion) => {
+        const state = cardsRef.current[suggestion.id] ?? DEFAULT_CARD_STATE;
+        return { id: suggestion.id, state, pending: !state.outcome };
+      })
+    };
+  }, []);
+
+  useEffect(() => {
+    if (conversationReady && conversationKeyRef.current) {
+      conversationSyncRef.current?.schedule(conversationState);
+    }
+  }, [cards, conversationReady, conversationState, suggestions, turns]);
+
+  /** Restored cards keep their decision; where they match is worked out again against today's text. */
+  const restoredCard = (state: CardState | undefined): CardState => ({ ...DEFAULT_CARD_STATE, outcome: state?.outcome ?? null, detail: state?.detail ?? null });
+
+  /** Bring a saved page into the pane: its turns before the ones shown, its suggestions and cards where not already here. */
+  const mergeConversationPage = useCallback((page: Awaited<ReturnType<typeof fetchConversationFromSidecar<ChatTurn, AiSuggestion, CardState>>>, placement: "restore" | "earlier") => {
+    const sync = conversationSyncRef.current!;
+    const known = new Set(turnsRef.current.map((turn) => turn.id));
+    const restoredTurns = page.turns
+      .map((entry) => entry.turn)
+      .filter((turn) => !known.has(turn.id))
+      .map((turn): ChatTurn => (turn.role === "assistant" && turn.status === "running" ? { ...turn, status: "error", progress: null, text: turn.text || "Interrupted — the pane was closed while this ran." } : turn));
+    const haveSuggestion = new Set(suggestionsRef.current.map((suggestion) => suggestion.id));
+    const restoredSuggestions = page.suggestions.map((entry) => entry.suggestion).filter((suggestion) => !haveSuggestion.has(suggestion.id));
+    const restoredCards: Record<string, CardState> = {};
+    for (const suggestion of restoredSuggestions) {
+      restoredCards[suggestion.id] = restoredCard(page.cards[suggestion.id]);
+    }
+    // Pending suggestions staged on turns that are not shown yet still need their cards.
+    const shownIds = new Set([...turnsRef.current, ...restoredTurns].flatMap((turn) => (turn.role === "assistant" ? turn.suggestionIds : [])));
+    const orphans = placement === "restore" ? restoredSuggestions.filter((suggestion) => !restoredCards[suggestion.id].outcome && !shownIds.has(suggestion.id)) : [];
+    const now = new Date().toISOString();
+    const lead: ChatTurn[] = orphans.length
+      ? [{ id: `${RESTORED_TURN_PREFIX}pending`, role: "assistant", at: now, text: `Still pending from earlier in this conversation (${orphans.length}).`, status: "done", engine: describeProposers(orphans), suggestionIds: orphans.map((suggestion) => suggestion.id), progress: null, origin: "session", activity: [] }]
+      : [];
+    const note: ChatTurn[] = placement === "restore" && restoredTurns.length
+      ? [{ id: `${RESTORED_TURN_PREFIX}note`, role: "system", at: now, text: `Conversation restored — ${restoredTurns.length} turn${restoredTurns.length === 1 ? "" : "s"}${page.before ? " shown; earlier ones load as you scroll up" : ""}. Follow-ups continue it.`, tone: "info" }]
+      : [];
+    if (restoredTurns.length || lead.length) {
+      // A card shown up front as "still pending" moves back to its own turn once that turn is loaded.
+      const nowShown = new Set(restoredTurns.flatMap((turn) => (turn.role === "assistant" ? turn.suggestionIds : [])));
+      setTurns((current) => [
+        ...lead,
+        ...restoredTurns,
+        ...note,
+        ...current.flatMap((turn): ChatTurn[] => {
+          if (turn.id !== `${RESTORED_TURN_PREFIX}pending` || turn.role !== "assistant") {
+            return [turn];
+          }
+          const remaining = turn.suggestionIds.filter((id) => !nowShown.has(id));
+          return remaining.length ? [{ ...turn, suggestionIds: remaining, text: `Still pending from earlier in this conversation (${remaining.length}).` }] : [];
+        })
+      ]);
+    }
+    if (restoredSuggestions.length) {
+      setSuggestions((current) => [...restoredSuggestions, ...current]);
+      setCards((current) => ({ ...restoredCards, ...current }));
+    }
+    sync.markSaved({
+      turns: page.turns.map((entry) => ({ id: entry.id, turn: entry.turn, persist: true })).concat(restoredTurns.map((turn) => ({ id: turn.id, turn, persist: true }))),
+      suggestions: restoredSuggestions.map((suggestion) => ({ id: suggestion.id, turnId: null, suggestion })),
+      cards: Object.entries(restoredCards).map(([id, state]) => ({ id, state, pending: !state.outcome }))
+    });
+    setEarlierCursor(page.before);
+  }, []);
+
+  const loadEarlierTurns = useCallback(async () => {
+    const key = conversationKeyRef.current;
+    if (!key || earlierCursor === null || loadingEarlier) {
+      return;
+    }
+    setLoadingEarlier(true);
+    try {
+      mergeConversationPage(await fetchConversationFromSidecar<ChatTurn, AiSuggestion, CardState>("", key, { before: earlierCursor, limit: CONVERSATION_PAGE_TURNS }), "earlier");
+    } catch (error) {
+      setNotice({ tone: "error", text: `Could not load earlier turns: ${errorMessage(error)}` });
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [earlierCursor, loadingEarlier, mergeConversationPage]);
 
   /** Mirror turns into the shared session chat; returns false when there is no session yet. */
   const mirrorChat = useCallback((messages: WriterChatMessage[]): boolean => {
@@ -645,12 +767,59 @@ export function App() {
     });
   }, [patchTurn, syncSessionSuggestions]);
 
+  // Restore this document's conversation once: when the document and the
+  // sidecar are both ready. An unsaved document has no key yet; once it is
+  // saved, what is in the pane is saved under its new key.
+  const documentKey = snapshot?.documentKey ?? null;
+  useEffect(() => {
+    if (hostStatus !== "ready" || sidecarStatus !== "ok" || !snapshot) {
+      return;
+    }
+    if (!documentKey) {
+      setConversationReady(true);
+      return;
+    }
+    if (conversationKeyRef.current === documentKey) {
+      return;
+    }
+    const firstKey = conversationKeyRef.current === null;
+    conversationKeyRef.current = documentKey;
+    if (!firstKey || turnsRef.current.length) {
+      // Saved under a new name (or first saved) mid-conversation: keep what is here, under the new key.
+      conversationSyncRef.current?.forget();
+      setConversationReady(true);
+      conversationSyncRef.current?.schedule(conversationState);
+      return;
+    }
+    let cancelled = false;
+    fetchConversationFromSidecar<ChatTurn, AiSuggestion, CardState>("", documentKey, { limit: CONVERSATION_PAGE_TURNS })
+      .then((page) => {
+        if (cancelled) {
+          return;
+        }
+        const documentLabel = snapshot.documentName ?? "untitled";
+        for (const [provider, sessionId] of Object.entries(page.sessions)) {
+          agentSessionsRef.current[`${provider}:${documentLabel}`] = sessionId;
+        }
+        mergeConversationPage(page, "restore");
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setConversationReady(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationState, documentKey, hostStatus, mergeConversationPage, sidecarStatus, snapshot]);
+
   /* ------------------------------------------------------------------ */
   /* Share window state with the sidecar                                */
   /* ------------------------------------------------------------------ */
 
   useEffect(() => {
-    if (hostStatus !== "ready" || !snapshot || sidecarStatus !== "ok") {
+    if (hostStatus !== "ready" || !snapshot || sidecarStatus !== "ok" || !conversationReady) {
       return;
     }
     if (!settings.shareWithAgents) {
@@ -685,7 +854,7 @@ export function App() {
       });
     }, CONTEXT_PUSH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [focus, hostStatus, settings.shareWithAgents, sidecarStatus, snapshot, syncSessionSuggestions]);
+  }, [conversationReady, focus, hostStatus, settings.shareWithAgents, sidecarStatus, snapshot, syncSessionSuggestions]);
 
   /* ------------------------------------------------------------------ */
   /* Ask Writer                                                         */
@@ -799,6 +968,9 @@ export function App() {
       sessionIdRef.current = response.session?.id ?? sessionIdRef.current;
       if (response.ai.agentSessionId) {
         agentSessionsRef.current[sessionKey] = response.ai.agentSessionId;
+        if (conversationKeyRef.current) {
+          void conversationSyncRef.current?.saveSessions({ [provider]: response.ai.agentSessionId });
+        }
       }
       lastPushedTextRef.current = snap.bodyText;
       setSharedWithAgents(true);
@@ -1254,9 +1426,23 @@ export function App() {
   }, [patchCard, recordDecision]);
 
   /** Forget the provider sessions and the transcript, but keep pending cards (carried into the new conversation) and attachments. */
+  /** Save what is outstanding, then start over (or forget) the document's saved conversation. */
+  const resetSavedConversation = useCallback((mode: "new" | "clear") => {
+    const key = conversationKeyRef.current;
+    const sync = conversationSyncRef.current;
+    if (!key || !sync) {
+      return;
+    }
+    void sync.flush();
+    void sync.after(() => resetConversationOnSidecar("", key, mode));
+    sync.forget();
+    setEarlierCursor(null);
+  }, []);
+
   const startNewConversation = useCallback(() => {
     const pending = suggestionsRef.current.filter((suggestion) => !cardsRef.current[suggestion.id]?.outcome);
     agentSessionsRef.current = {};
+    resetSavedConversation("new");
     const now = new Date().toISOString();
     const carried: ChatTurn[] = pending.length
       ? [{
@@ -1278,7 +1464,7 @@ export function App() {
     ]);
     setRequestState("idle");
     setActiveId(pending[0]?.id ?? null);
-  }, []);
+  }, [resetSavedConversation]);
 
   /** A note typed on a card: sent as a request about that one suggestion; the reply revises it. */
   const discuss = useCallback((suggestion: AiSuggestion, note: string) => {
@@ -1306,7 +1492,8 @@ export function App() {
     setActiveId(null);
     setRequestState("idle");
     agentSessionsRef.current = {};
-  }, [recordDecision]);
+    resetSavedConversation("clear");
+  }, [recordDecision, resetSavedConversation]);
 
   /* ------------------------------------------------------------------ */
   /* Attachments (reference files sent with every request)             */
@@ -1503,6 +1690,9 @@ export function App() {
       onAsk={() => void ask()}
       onClearConversation={clearConversation}
       onNewConversation={startNewConversation}
+      hasEarlierTurns={earlierCursor !== null}
+      loadingEarlierTurns={loadingEarlier}
+      onLoadEarlierTurns={() => void loadEarlierTurns()}
       onDiscuss={discuss}
       queued={queued ? { text: queued.text } : null}
       onSendQueuedNow={() => void sendQueuedNow()}

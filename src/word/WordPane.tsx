@@ -37,7 +37,7 @@ import {
   Trash2,
   User,
   X, ListPlus } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
@@ -160,6 +160,10 @@ export interface WordPaneProps {
   onAsk: () => void;
   onClearConversation: () => void;
   onNewConversation: () => void;
+  /** Earlier turns of the saved conversation exist beyond those in the pane. */
+  hasEarlierTurns: boolean;
+  loadingEarlierTurns: boolean;
+  onLoadEarlierTurns: () => void;
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
@@ -257,6 +261,9 @@ export function WordPane(props: WordPaneProps) {
         onApplyGroup={props.onApplyGroup}
         onClear={props.onClearConversation}
         onNew={props.onNewConversation}
+        hasEarlier={props.hasEarlierTurns}
+        loadingEarlier={props.loadingEarlierTurns}
+        onLoadEarlier={props.onLoadEarlierTurns}
         onComment={props.onComment}
         onCycleMatch={props.onCycleMatch}
         onDismiss={props.onDismiss}
@@ -460,6 +467,8 @@ function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostS
 /* -------------------------------------------------------------------------- */
 
 const CUSTOM_MODEL = "__custom__";
+/** Turns rendered at a time in the transcript. */
+const TRANSCRIPT_WINDOW = 40;
 
 function ModelPicker(props: { controls: ModelControls; disabled: boolean }) {
   const { controls } = props;
@@ -596,6 +605,9 @@ function Transcript(props: {
   onApplyGroup: (suggestions: AiSuggestion[]) => void;
   onClear: () => void;
   onNew: () => void;
+  hasEarlier: boolean;
+  loadingEarlier: boolean;
+  onLoadEarlier: () => void;
   onComment: (suggestion: AiSuggestion) => void;
   onCycleMatch: (suggestion: AiSuggestion, direction: -1 | 1) => void;
   onDismiss: (suggestion: AiSuggestion) => void;
@@ -610,12 +622,36 @@ function Transcript(props: {
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastTurnId = props.turns[props.turns.length - 1]?.id ?? null;
+  // Only the latest turns are rendered, however long the conversation: the
+  // pane stays as quick on turn 1,000 as on turn 10. Earlier ones are shown
+  // (or fetched from the saved conversation) a window at a time.
+  const [windowSize, setWindowSize] = useState(TRANSCRIPT_WINDOW);
+  const visible = props.turns.length > windowSize ? props.turns.slice(-windowSize) : props.turns;
+  const hiddenInPane = props.turns.length - visible.length;
+  const firstVisibleId = visible[0]?.id ?? null;
+  const anchorRef = useRef<{ firstId: string | null; height: number }>({ firstId: null, height: 0 });
   useEffect(() => {
     const element = scrollRef.current;
     if (element) {
       element.scrollTop = element.scrollHeight;
     }
   }, [lastTurnId]);
+  // Turns revealed above keep the reader where they were.
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    const anchor = anchorRef.current;
+    if (element && anchor.firstId && anchor.firstId !== firstVisibleId) {
+      element.scrollTop += element.scrollHeight - anchor.height;
+    }
+    anchorRef.current = { firstId: null, height: 0 };
+  }, [firstVisibleId]);
+  const showEarlier = () => {
+    anchorRef.current = { firstId: firstVisibleId, height: scrollRef.current?.scrollHeight ?? 0 };
+    if (hiddenInPane < TRANSCRIPT_WINDOW && props.hasEarlier) {
+      props.onLoadEarlier();
+    }
+    setWindowSize((size) => size + TRANSCRIPT_WINDOW);
+  };
 
   return (
     <section className="wp-transcript" aria-label="Conversation">
@@ -637,7 +673,12 @@ function Transcript(props: {
         </div>
       </div>
       <div className="wp-turns" ref={scrollRef}>
-        {props.turns.length ? props.turns.map((turn) => (
+        {hiddenInPane || props.hasEarlier ? (
+          <button type="button" className="wp-show-earlier" onClick={showEarlier} disabled={props.loadingEarlier}>
+            {props.loadingEarlier ? "Loading earlier turns…" : props.hasEarlier ? "Show earlier turns" : `Show ${Math.min(hiddenInPane, TRANSCRIPT_WINDOW)} earlier turn${Math.min(hiddenInPane, TRANSCRIPT_WINDOW) === 1 ? "" : "s"}`}
+          </button>
+        ) : null}
+        {visible.length ? visible.map((turn) => (
           <TurnView
             key={turn.id}
             activeSuggestionId={props.activeSuggestionId}
