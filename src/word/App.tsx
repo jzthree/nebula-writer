@@ -112,7 +112,14 @@ const FOCUS_DEBOUNCE_MS = 250;
 const TYPING_IDLE_MS = 1_500;
 /** Pages on screen (a layout query): refreshed only on this idle poll. */
 const VIEWPORT_POLL_MS = 4_000;
-const SNAPSHOT_DEBOUNCE_MS = TYPING_IDLE_MS;
+/**
+ * Whole-document re-reads (every paragraph's text, style and font) are heavy
+ * on a long document and run on Word's thread: they wait until the author
+ * has neither typed nor moved the caret for this long — a pause to think
+ * mid-sentence is not a break — or run at once when the author turns to the
+ * pane. Requests and Re-sync read afresh regardless.
+ */
+const BACKGROUND_IDLE_MS = 5_000;
 const SNAPSHOT_POLL_MS = 20_000;
 const SNAPSHOT_STALE_THROTTLE_MS = 3_000;
 const CONTEXT_PUSH_DEBOUNCE_MS = 700;
@@ -232,6 +239,11 @@ export function App() {
   const runningRef = useRef(false);
   /** When Word last reported an edit (paragraph change): reads wait for a pause after it. */
   const lastEditAtRef = useRef(0);
+  /** Last edit or caret move in the document. */
+  const lastActivityAtRef = useRef(0);
+  /** The document changed since the last snapshot; re-read at the next break (or when the author turns to the pane). */
+  const snapshotDirtyRef = useRef(false);
+  const requestBackgroundSnapshotRef = useRef<() => void>(() => undefined);
   /** Run id of the request in flight (mid-turn steering addresses it). */
   const runIdRef = useRef<string | null>(null);
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
@@ -344,14 +356,15 @@ export function App() {
       return;
     }
     const now = Date.now();
-    // Mid-typing the caret's paragraph never matches the snapshot; the
-    // paragraph-change handler re-reads once the author pauses.
-    if (now - lastStaleRefreshRef.current < SNAPSHOT_STALE_THROTTLE_MS || now - lastEditAtRef.current < TYPING_IDLE_MS) {
+    // Mid-typing the caret's paragraph never matches the snapshot: re-read
+    // at the next break, not now.
+    if (now - lastStaleRefreshRef.current < SNAPSHOT_STALE_THROTTLE_MS) {
       return;
     }
     lastStaleRefreshRef.current = now;
-    void refreshSnapshot();
-  }, [focus, refreshSnapshot]);
+    snapshotDirtyRef.current = true;
+    requestBackgroundSnapshotRef.current();
+  }, [focus]);
 
   /* ------------------------------------------------------------------ */
   /* Boot                                                               */
@@ -367,6 +380,7 @@ export function App() {
     let snapshotInterval: ReturnType<typeof setInterval> | null = null;
 
     const scheduleFocus = () => {
+      lastActivityAtRef.current = Date.now();
       if (focusTimer) {
         clearTimeout(focusTimer);
       }
@@ -380,18 +394,44 @@ export function App() {
         }
       }, delay);
     };
-    const scheduleSnapshot = () => {
-      lastEditAtRef.current = Date.now();
-      if (snapshotTimer) {
-        clearTimeout(snapshotTimer);
+    // Re-read once the author takes a break; every edit or caret move pushes it back.
+    const scheduleBackgroundSnapshot = () => {
+      if (snapshotTimer || cancelled) {
+        return;
       }
+      const wait = Math.max(0, BACKGROUND_IDLE_MS - (Date.now() - lastActivityAtRef.current));
       snapshotTimer = setTimeout(() => {
         snapshotTimer = null;
-        if (!cancelled && !busyRef.current) {
-          void refreshSnapshot();
+        if (cancelled || !snapshotDirtyRef.current) {
+          return;
         }
-      }, SNAPSHOT_DEBOUNCE_MS);
+        if (Date.now() - lastActivityAtRef.current < BACKGROUND_IDLE_MS || busyRef.current) {
+          scheduleBackgroundSnapshot();
+          return;
+        }
+        snapshotDirtyRef.current = false;
+        void refreshSnapshot();
+      }, wait);
     };
+    requestBackgroundSnapshotRef.current = scheduleBackgroundSnapshot;
+    const scheduleSnapshot = () => {
+      const now = Date.now();
+      lastEditAtRef.current = now;
+      lastActivityAtRef.current = now;
+      snapshotDirtyRef.current = true;
+      scheduleBackgroundSnapshot();
+    };
+    // Turning to the pane is a break: catch up at once.
+    const catchUp = () => {
+      if (snapshotDirtyRef.current && !busyRef.current && !cancelled) {
+        snapshotDirtyRef.current = false;
+        void refreshSnapshot();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", catchUp);
+      window.addEventListener("pointerdown", catchUp, true);
+    }
 
     (async () => {
       const boot = await waitForWordHost();
@@ -418,14 +458,14 @@ export function App() {
         return;
       }
       viewportInterval = setInterval(() => {
-        const typing = Date.now() - lastEditAtRef.current < TYPING_IDLE_MS * 2;
+        const typing = Date.now() - lastActivityAtRef.current < BACKGROUND_IDLE_MS;
         if (!typing && !busyRef.current && (typeof document === "undefined" || document.visibilityState === "visible")) {
           void refreshFocus(snapshotRef.current, { viewport: true });
         }
       }, VIEWPORT_POLL_MS);
       if (!unsubscribeParagraphs) {
         snapshotInterval = setInterval(() => {
-          if (!busyRef.current && (typeof document === "undefined" || document.visibilityState === "visible")) {
+          if (!busyRef.current && Date.now() - lastActivityAtRef.current >= BACKGROUND_IDLE_MS && (typeof document === "undefined" || document.visibilityState === "visible")) {
             void refreshSnapshot();
           }
         }, SNAPSHOT_POLL_MS);
@@ -439,6 +479,11 @@ export function App() {
 
     return () => {
       cancelled = true;
+      requestBackgroundSnapshotRef.current = () => undefined;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", catchUp);
+        window.removeEventListener("pointerdown", catchUp, true);
+      }
       unsubscribeSelection?.();
       void unsubscribeParagraphs?.();
       if (focusTimer) {

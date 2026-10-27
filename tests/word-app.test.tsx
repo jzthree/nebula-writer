@@ -679,6 +679,43 @@ describe("Word task pane", () => {
       const index = mock.text.indexOf("Innovation");
       mock.replaceRange(index, index + "Innovation".length, "Innovation and impact and reach");
     });
-    await waitFor(() => expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument(), { timeout: 4_000 });
+    await waitFor(() => expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument(), { timeout: 7_000 });
+  });
+
+  it("does not re-read the whole document during pauses to think, only at a break", async () => {
+    await renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const readsBefore = mock.bodyReads;
+    // Writing with 2-3 s pauses between phrases: each pause is long enough for
+    // a caret read, never for a whole-document read.
+    for (const pause of [2_000, 3_000, 2_500]) {
+      for (let key = 0; key < 4; key += 1) {
+        act(() => {
+          const at = mock.text.indexOf("Innovation");
+          mock.replaceRange(at, at, "x");
+          mock.setSelection(at + 1);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+      await new Promise((resolve) => setTimeout(resolve, pause));
+    }
+    expect(mock.bodyReads - readsBefore).toBe(0);
+    // The break: one whole-document read.
+    await waitFor(() => expect(mock.bodyReads - readsBefore).toBe(1), { timeout: 6_000 });
+    expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument();
+  }, 20_000);
+
+  it("catches up at once when the author turns to the pane", async () => {
+    await renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const readsBefore = mock.bodyReads;
+    act(() => {
+      const at = mock.text.indexOf("Innovation");
+      mock.replaceRange(at, at, "New words here ");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(mock.bodyReads - readsBefore).toBe(0);
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.getByText(`${mock.text.trim().split(/\s+/).length} words`)).toBeInTheDocument(), { timeout: 1_000 });
   });
 });

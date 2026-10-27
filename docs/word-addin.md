@@ -301,6 +301,13 @@ for paragraphs whose text is unchanged; a request and Re-sync read
 everything afresh. Measured against the mock host: a realistic 3 s typing
 burst caused 9 Word round trips before, none now.
 
+The whole-document re-read (every paragraph's text, style and font, and the
+pictures) is the heavy one on a long document, so it waits for a break, not
+a pause: 5 s with neither an edit nor a caret move. A pause to think
+mid-sentence only gets the light caret read. Turning to the pane (clicking
+or focusing it) catches up at once. Writing with 2–3 s pauses: one
+whole-document read per pause before, one at the break now.
+
 ### Applying suggestions
 
 - **Locate** selects the passage in Word (also on card click / ↩).

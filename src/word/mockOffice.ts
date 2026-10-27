@@ -98,6 +98,8 @@ export class MockWordHost {
   selectionHandlers = new Set<Handler>();
   paragraphHandlers = new Set<Handler>();
   runCount = 0;
+  /** Whole-body text loads: one per document snapshot. */
+  bodyReads = 0;
   private previousOffice: unknown;
   private previousWord: unknown;
 
@@ -495,7 +497,10 @@ class MockBody {
     };
   }
 
-  load(): this {
+  load(properties?: string): this {
+    if (properties === "text") {
+      this.host.bodyReads += 1;
+    }
     return this;
   }
 
