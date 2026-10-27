@@ -14,7 +14,7 @@
  * disk but are no longer restored, and the provider sessions are forgotten.
  */
 
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -117,6 +117,18 @@ export class ConversationStore {
         updated_at TEXT NOT NULL
       );
     `);
+    if (path !== ":memory:") {
+      // Conversations are private: owner-only, like the CLIs' own session stores.
+      for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+        try {
+          if (existsSync(file)) {
+            chmodSync(file, 0o600);
+          }
+        } catch {
+          // Best effort.
+        }
+      }
+    }
   }
 
   private statement(sql: string): StatementSync {
