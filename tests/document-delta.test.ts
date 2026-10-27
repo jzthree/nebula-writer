@@ -105,6 +105,7 @@ describe("resumed Codex turns send only what changed", () => {
     expect(full).toContain("Paragraph 29 explains one part of the aims");
     expect(delta).toContain("now: Paragraph 7 states one part of the aims in plain words.");
     expect(delta).not.toContain("Paragraph 29 explains one part of the aims");
+    expect(delta).not.toContain("blocks below are the CURRENT document");
     expect(unchanged).toMatch(/Document: unchanged since your previous turn/);
     expect(unchanged.length).toBeLessThan(full.length - DOC.length / 2);
   });

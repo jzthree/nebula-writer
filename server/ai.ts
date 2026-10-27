@@ -900,7 +900,9 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     `Instruction: ${request.instruction}`,
     `Scope: ${request.mode}`,
     request.agentSessionId && !options.coveragePass
-      ? "This continues the earlier conversation in this thread. The Text and Document context blocks below are the CURRENT document, which may have changed since your earlier turns; rely on them, not on earlier copies."
+      ? options.documentDelta
+        ? "This continues the earlier conversation in this thread. The document is given below relative to the full text you were given in an earlier turn (unchanged, or the paragraphs that changed); the current document is that text with those changes."
+        : "This continues the earlier conversation in this thread. The Text and Document context blocks below are the CURRENT document, which may have changed since your earlier turns; rely on them, not on earlier copies."
       : null,
     ...buildSelectionContextLines(request, options),
     options.coveragePass
