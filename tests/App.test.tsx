@@ -6,7 +6,17 @@ import { selectSuggestionTarget } from "../src/editorOps";
 import { addReviewTrace, setReviewHighlight, setReviewTraces } from "../src/reviewHighlight";
 import { AI_CONTEXT_CHAR_LIMIT, type AiResponse, type AiSuggestion, type DocxFeatureSummary, type WriterSessionSummary } from "../src/shared";
 
+const savedConversations = vi.hoisted(() => ({ store: null as null | import("../server/conversation-store").ConversationStore }));
+
 vi.mock("../src/api", async () => ({
+  fetchConversation: vi.fn(async (_base: string, key: string, options: { before?: number | null; limit?: number } = {}) => {
+    if (!savedConversations.store) {
+      throw new Error("no local sidecar");
+    }
+    return savedConversations.store.read(key, options);
+  }),
+  writeConversation: vi.fn(async (_base: string, key: string, change: import("../server/conversation-store").ConversationWrite) => savedConversations.store?.write(key, change)),
+  resetConversation: vi.fn(async (_base: string, key: string, mode: "new" | "clear") => savedConversations.store?.reset(key, mode)),
   // Re-export the real error class so `instanceof SidecarHttpError` checks in
   // App.tsx work against errors thrown by mocked functions.
   SidecarHttpError: (await vi.importActual<typeof import("../src/sidecarClient")>("../src/sidecarClient")).SidecarHttpError,
@@ -149,6 +159,8 @@ const emptyFeatures: DocxFeatureSummary = {
 };
 
 afterEach(() => {
+  savedConversations.store?.close();
+  savedConversations.store = null;
   cleanup();
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -3254,6 +3266,38 @@ describe("App suggestion review", () => {
     expect(await screen.findByText("Pasted shared document text.")).toBeInTheDocument();
     expect(screen.getByLabelText("Document title")).toHaveValue("Pasted Document");
     expect(vi.mocked(getWriterSessionDocument)).toHaveBeenCalledWith("pasted-doc");
+  });
+
+  it("restores a document's saved conversation, a window at a time, and resumes its CLI session", async () => {
+    const { ConversationStore } = await import("../server/conversation-store");
+    savedConversations.store = new ConversationStore(":memory:");
+    for (let index = 1; index <= 60; index += 1) {
+      const id = `saved-${index}`;
+      savedConversations.store.write("web:saved-doc", { turns: [{ id, turn: { id, role: index % 2 ? "user" : "assistant", content: `Saved message ${index}`, createdAt: new Date(Date.UTC(2026, 9, 1, 0, index)).toISOString() } }] });
+    }
+    savedConversations.store.write("web:saved-doc", { sessions: { codex: "thread-9" } });
+    const session = {
+      bodySafeAnchors: [], bodySafeAnchorDetails: [], id: "saved-doc", name: "saved.docx", title: "Saved Document", sourceDocumentId: "saved-doc",
+      documentText: "This is a local-first writing workspace for revising DOCX documents with AI.",
+      documentHtml: "<p>This is a local-first writing workspace for revising DOCX documents with AI.</p>",
+      documentHtmlLength: 0, features: emptyFeatures, importMessages: [], routineProgress: [], routineRuns: [], suggestions: [], pendingSuggestions: 0, updatedAt: "2026-10-01T00:00:00.000Z"
+    };
+    vi.mocked(getWriterSessionDocument).mockResolvedValue({ session });
+    window.history.replaceState(null, "", "/#doc=saved-doc");
+
+    render(<App />);
+    expect(await screen.findByText("Saved message 60")).toBeInTheDocument();
+    expect(screen.getByText("Saved message 21")).toBeInTheDocument();
+    expect(screen.queryByText("Saved message 20")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier messages" }));
+    expect(await screen.findByText("Saved message 1")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("AI instruction"), { target: { value: "Continue from where we left off." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send revision request" }));
+    await waitFor(() => expect(requestAiSuggestion).toHaveBeenCalled());
+    expect(vi.mocked(requestAiSuggestion).mock.calls[0][0]).toMatchObject({ agentSessionId: "thread-9" });
+    // The new turn is saved with the rest.
+    await waitFor(() => expect(savedConversations.store!.read("web:saved-doc", { limit: 1 }).turns[0].turn).toMatchObject({ role: "assistant" }), { timeout: 3_000 });
   });
 
   it("joins an active R01 shared session via the explicit pill", async () => {

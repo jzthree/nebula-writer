@@ -54,7 +54,7 @@ import {
   type WriterAutosavedSessionsResult,
   type WriterSessionReviewExportRequest,
   type WriterSessionReviewExportResult,
-  type WriterSessionStateResult, steerAiRunOnSidecar } from "./sidecarClient";
+  type WriterSessionStateResult, steerAiRunOnSidecar, fetchConversationFromSidecar, writeConversationToSidecar, resetConversationOnSidecar, type StoredConversationWrite } from "./sidecarClient";
 
 export { SidecarHttpError } from "./sidecarClient";
 export type {
@@ -216,4 +216,17 @@ export async function syncWriterRoutineSuggestions(id: string): Promise<WriterRo
 /** Deliver a message into the running turn of request `runId` on the sidecar running it (mid-turn steering). */
 export function steerAiRun(runId: string, text: string, target: "sidecar" | "local" = "sidecar") {
   return steerAiRunOnSidecar(target === "local" ? LOCAL_AI_BASE : "", runId, text);
+}
+
+/* Conversations per document, kept by the sidecar that runs the user's AI (server/conversation-store.ts). */
+export function fetchConversation<Turn>(base: string, key: string, options: { before?: number | null; limit?: number } = {}) {
+  return fetchConversationFromSidecar<Turn, never, never>(base, key, options);
+}
+
+export function writeConversation<Turn>(base: string, key: string, change: StoredConversationWrite<Turn, never, never>) {
+  return writeConversationToSidecar(base, key, change);
+}
+
+export function resetConversation(base: string, key: string, mode: "new" | "clear") {
+  return resetConversationOnSidecar(base, key, mode);
 }

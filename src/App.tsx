@@ -60,7 +60,8 @@ import {
   Eye,
   EyeOff, ListPlus } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
-import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun } from "./api";
+import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
+import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
 import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
@@ -313,6 +314,24 @@ function chatMessagesForSession(messages: ChatMessage[]): WriterChatMessage[] {
       author: message.author ?? null,
       createdAt: message.createdAt ?? null
     }));
+}
+
+/** Messages rendered at a time in the chat; earlier ones are shown (or fetched from the saved conversation) a window at a time. */
+const CHAT_WINDOW = 40;
+
+/** Merge saved messages with those already shown: one per id, in time order. */
+function mergeChatMessages(current: ChatMessage[], saved: ChatMessage[]): ChatMessage[] {
+  if (!saved.length) {
+    return current;
+  }
+  const known = new Set(current.map((message) => message.id));
+  const additions = saved.filter((message) => !known.has(message.id));
+  if (!additions.length) {
+    return current;
+  }
+  // A greeting with nothing after it gives way to the restored conversation.
+  const base = current.length === 1 && current[0].role === "system" ? [] : current;
+  return [...additions, ...base].sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
 }
 
 function chatMessagesFromSession(sessionMessages: WriterChatMessage[] | undefined, fallbackSystemMessage: string): ChatMessage[] {
@@ -671,11 +690,38 @@ export function App() {
   // follow-up chat messages share context. Keyed client-side; the sidecar
   // just resumes whatever id we hand it.
   const agentSessionsRef = useRef<Record<string, string>>({});
+  // The document's conversation is saved by the local sidecar (all of it,
+  // paged) and restored on open, with the CLI sessions to resume — parity
+  // with the Word pane. The shared session keeps only the recent messages.
+  const conversationKeyRef = useRef<string | null>(null);
+  /** The sidecar that keeps it: this one, or — on the hosted app — the user's own (where their AI runs); none without one. */
+  const conversationBaseRef = useRef<string>("");
+  const savedMessagesRef = useRef<{ key: string; messages: ChatMessage[] } | null>(null);
+  const [conversationReadyKey, setConversationReadyKey] = useState<string | null>(null);
+  const [earlierChatCursor, setEarlierChatCursor] = useState<number | null>(null);
+  const [loadingEarlierChat, setLoadingEarlierChat] = useState(false);
+  const [chatWindow, setChatWindow] = useState(CHAT_WINDOW);
+  const chatSyncRef = useRef<ConversationSync<ChatMessage, never, never> | null>(null);
+  if (!chatSyncRef.current) {
+    chatSyncRef.current = new ConversationSync((change) => {
+      const key = conversationKeyRef.current;
+      return key ? writeConversation(conversationBaseRef.current, key, change) : Promise.resolve();
+    });
+  }
   // Start over with the AI: forget every provider session for this document and
   // reset the transcript. Pending suggestions and attachments stay (parity with
   // the Word pane's "Start a new conversation").
   const startNewConversation = useCallback(() => {
     agentSessionsRef.current = {};
+    const key = conversationKeyRef.current;
+    const sync = chatSyncRef.current;
+    if (key && sync) {
+      void sync.flush();
+      void sync.after(() => resetConversation(conversationBaseRef.current, key, "new"));
+      sync.forget();
+      savedMessagesRef.current = null;
+      setEarlierChatCursor(null);
+    }
     setMessages([createSystemMessage("New conversation — earlier turns are no longer sent to the AI. Pending suggestions and attachments stay.")]);
   }, []);
   const [selection, setSelection] = useState<SelectionContext | null>(null);
@@ -1031,6 +1077,78 @@ export function App() {
       // Storage full/unavailable; chat just won't survive a refresh.
     }
   }, [docId, messages]);
+
+  // Restore the document's saved conversation (local sidecar only).
+  const conversationBase = cloudMode ? (localAiActive ? LOCAL_AI_BASE : null) : "";
+  useEffect(() => {
+    const key = docId && conversationBase !== null ? `web:${docId}` : null;
+    conversationKeyRef.current = key;
+    conversationBaseRef.current = conversationBase ?? "";
+    chatSyncRef.current?.forget();
+    savedMessagesRef.current = null;
+    setConversationReadyKey(null);
+    setEarlierChatCursor(null);
+    setChatWindow(CHAT_WINDOW);
+    if (!key) {
+      return;
+    }
+    let cancelled = false;
+    fetchConversation<ChatMessage>(conversationBaseRef.current, key, { limit: CHAT_WINDOW })
+      .then((page) => {
+        if (cancelled) {
+          return;
+        }
+        const saved = page.turns.map((entry) => entry.turn);
+        savedMessagesRef.current = { key, messages: saved };
+        chatSyncRef.current?.markSaved({ turns: page.turns.map((entry) => ({ ...entry, persist: true })) });
+        for (const [provider, sessionId] of Object.entries(page.sessions)) {
+          agentSessionsRef.current[`${provider}:${docId}`] = sessionId;
+        }
+        setEarlierChatCursor(page.before);
+        setMessages((current) => mergeChatMessages(current, saved));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setConversationReadyKey(key);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationBase, docId]);
+
+  // Save what changed (system notes are transient and stay out of the record).
+  useEffect(() => {
+    if (!conversationReadyKey || conversationReadyKey !== conversationKeyRef.current) {
+      return;
+    }
+    chatSyncRef.current?.schedule((): ConversationState<ChatMessage, never, never> => ({
+      turns: messages.map((message) => ({ id: message.id, turn: message, persist: message.role !== "system" })),
+      suggestions: [],
+      cards: []
+    }));
+  }, [conversationReadyKey, messages]);
+
+  const showEarlierChat = useCallback(async () => {
+    const hidden = Math.max(0, messages.length - chatWindow);
+    setChatWindow((size) => size + CHAT_WINDOW);
+    const key = conversationKeyRef.current;
+    if (hidden >= CHAT_WINDOW || !key || earlierChatCursor === null || loadingEarlierChat) {
+      return;
+    }
+    setLoadingEarlierChat(true);
+    try {
+      const page = await fetchConversation<ChatMessage>(conversationBaseRef.current, key, { before: earlierChatCursor, limit: CHAT_WINDOW });
+      chatSyncRef.current?.markSaved({ turns: page.turns.map((entry) => ({ ...entry, persist: true })) });
+      setEarlierChatCursor(page.before);
+      setMessages((current) => mergeChatMessages(current, page.turns.map((entry) => entry.turn)));
+    } catch {
+      // Stay with what is shown.
+    } finally {
+      setLoadingEarlierChat(false);
+    }
+  }, [chatWindow, earlierChatCursor, loadingEarlierChat, messages.length]);
 
   useEffect(() => {
     try {
@@ -1777,6 +1895,7 @@ export function App() {
     };
   }, [editor]);
 
+  const lastMessageId = messages[messages.length - 1]?.id ?? null;
   useEffect(() => {
     const messageList = messageListRef.current;
     if (!messageList) {
@@ -1790,7 +1909,8 @@ export function App() {
       return;
     }
     messageList.scrollTop = messageList.scrollHeight;
-  }, [busy, messages]);
+    // Follows new messages only: revealing earlier ones keeps the reader where they are.
+  }, [busy, lastMessageId]);
 
   // Outbound chat sync: append-only. Each locally created message is sent once
   // by id; the sidecar dedupes, so concurrent writers never erase each other.
@@ -2816,7 +2936,8 @@ export function App() {
     const restoredMessages = chatMessagesFromSession(session.chatMessages, options.systemMessage);
     // Messages restored from the session are already on the sidecar.
     restoredMessages.forEach((message) => syncedChatMessageIdsRef.current.add(message.id));
-    setMessages(restoredMessages);
+    const saved = savedMessagesRef.current;
+    setMessages(saved && saved.key === `web:${session.sourceDocumentId}` ? mergeChatMessages(restoredMessages, saved.messages) : restoredMessages);
     setSharedSession(session);
   }
 
@@ -4210,6 +4331,9 @@ export function App() {
         : await requestAiSuggestion(aiRequest, { signal: controller.signal });
       if (response.agentSessionId) {
         agentSessionsRef.current[`${provider}:${docId ?? "scratch"}`] = response.agentSessionId;
+        if (conversationKeyRef.current) {
+          void chatSyncRef.current?.saveSessions({ [provider]: response.agentSessionId });
+        }
       }
       if (response.undeliveredSteers?.length) {
         // Sent during the run but no session could take them: they become the next turn.
@@ -6658,7 +6782,12 @@ export function App() {
 
             {!promptLibraryOpen ? (
             <div ref={messageListRef} className="message-list" aria-label="Chat history" aria-live="polite" aria-busy={busy === "Asking AI"}>
-              {messages.map((message) => {
+              {messages.length > chatWindow || earlierChatCursor !== null ? (
+                <button type="button" className="message-show-earlier" onClick={() => void showEarlierChat()} disabled={loadingEarlierChat}>
+                  {loadingEarlierChat ? "Loading earlier messages…" : "Show earlier messages"}
+                </button>
+              ) : null}
+              {(messages.length > chatWindow ? messages.slice(-chatWindow) : messages).map((message) => {
                 const fromPeer = message.role === "user" && Boolean(message.author) && message.author !== collabSession.user.name;
                 return (
                   <article key={message.id} className={`message ${message.role}${fromPeer ? " peer" : ""}`}>

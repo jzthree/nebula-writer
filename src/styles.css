@@ -4749,3 +4749,18 @@ button:disabled {
 
 /* Mid-turn steering: queue for the next turn */
 .send-button.is-queueing { background: var(--surface-soft, #f1f3f5); color: var(--ink, #1f2933); border: 1px solid var(--line-strong, #c9ced6); }
+
+.message-show-earlier {
+  align-self: center;
+  margin: 4px 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.message-show-earlier:hover:not(:disabled) { border-color: var(--line-strong); }
+.message-show-earlier:disabled { cursor: progress; opacity: 0.7; }
