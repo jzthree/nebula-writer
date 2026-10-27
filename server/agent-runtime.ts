@@ -62,7 +62,9 @@ export type AgentEvent =
   | { kind: "thinking" }
   | { kind: "tool"; tool: string; summary: string }
   | { kind: "result"; ok: boolean; text: string; cost: number | null; sessionId: string | null }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** The CLI compacted the thread's context: earlier turns are summarized, their full text no longer held. */
+  | { kind: "compacted" };
 
 export interface AgentTurnOptions {
   provider: CliProviderName;
@@ -617,6 +619,10 @@ export class CodexStreamParser {
       return [{ kind: "status", stage: "working", detail: "Working…" }];
     }
 
+    if (type === "thread.compacted") {
+      return [{ kind: "compacted" }];
+    }
+
     if (type === "item.started" || type === "item.completed") {
       return this.consumeItem(event, type === "item.completed");
     }
@@ -642,6 +648,9 @@ export class CodexStreamParser {
     const item = event.item as Record<string, unknown> | undefined;
     if (!item || typeof item.type !== "string") {
       return [];
+    }
+    if (item.type === "context_compaction") {
+      return completed ? [{ kind: "compacted" }] : [];
     }
     if (item.type === "agent_message") {
       if (completed && typeof item.text === "string" && item.text.trim()) {

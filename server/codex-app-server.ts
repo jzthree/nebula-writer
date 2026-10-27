@@ -57,6 +57,9 @@ export function translateAppServerNotification(method: string, params: Json): Js
   if (method === "turn/started") {
     return { type: "turn.started" };
   }
+  if (method === "thread/compacted") {
+    return { type: "thread.compacted" };
+  }
   if (method === "item/started" || method === "item/completed") {
     const item = translateItem(params.item as Json | undefined);
     return item ? { type: method === "item/started" ? "item.started" : "item.completed", item } : null;
@@ -101,6 +104,8 @@ function translateItem(item: Json | undefined): Json | null {
       return { id, type: "command_execution", command: item.command, aggregated_output: item.aggregatedOutput ?? "", exit_code: item.exitCode ?? null, status: item.status };
     case "mcpToolCall":
       return { id, type: "mcp_tool_call", server: item.server, tool: item.tool, arguments: item.arguments, result: item.result ?? null, error: item.error ?? null, status: item.status };
+    case "contextCompaction":
+      return { id, type: "context_compaction" };
     case "webSearch":
       return { id, type: "web_search", query: typeof item.query === "string" ? item.query : "" };
     case "userMessage": {

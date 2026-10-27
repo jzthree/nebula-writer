@@ -224,6 +224,34 @@ both engines read as feedback: dismissed edits are avoided, pending ones are
 not re-staged. The *Sent …* record shows "N earlier turns with your decisions"
 and whether the session was resumed. *Clear* starts over.
 
+The conversation is saved per document by the sidecar
+(`~/.nebula-writer/conversations.sqlite`, `server/conversation-store.ts`),
+keyed by where the document is saved (Word) or its Docs id; the web app saves
+its chat the same way, on the sidecar that runs its AI. Reopening the
+document restores the latest 40 turns, every card still pending (wherever in
+the history it was staged) and the CLI sessions, so the next follow-up
+resumes the same Codex thread or Claude session. *New conversation* starts a
+new saved conversation (the old turns stay on disk, unrestored); *Clear*
+forgets it. An unsaved Word document is saved under its location once it has
+one.
+
+Long conversations stay fast at every layer:
+
+- **Storage**: indexed SQLite; saving sends only the turns, suggestions and
+  cards that changed; opening reads one page. 10,000 turns: a page read and
+  an append take milliseconds.
+- **Pane**: only the latest 40 turns are rendered; *Show earlier* reveals
+  more, fetching earlier pages, without moving the reader.
+- **Prompt**: the digest is the last 16 turns, clipped. A resumed Codex
+  thread is not sent the whole document again each turn
+  (`server/document-delta.ts`): when the thread still holds the copy it was
+  last given, the prompt says the document is unchanged or lists the changed
+  paragraphs ("was"/"now"); the full text goes again when much changed or
+  Codex compacted the thread (the app-server reports compaction; with `codex
+  exec` the full text is always sent). Claude's agentic engine reads the
+  document through tools, so its turns never carried it. Both CLIs compact
+  their own context when a session grows long.
+
 ### Sectioned replies and Apply all
 
 Every staged suggestion gets a short ref (`S1`, `S2`, …) from the staging

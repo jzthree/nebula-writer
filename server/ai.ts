@@ -23,6 +23,8 @@ import { containsAnchoredText, documentImageLabel, isImageCandidate, normalizeCo
 import { imageMimeForName } from "./image-files";
 import { describeFocus, linkRevision } from "./revisions";
 import { nearestDocumentExcerpt, repairAnchor } from "./anchor-repair";
+import { conversationStore } from "./conversation-store";
+import { describeDocumentDelta } from "./document-delta";
 
 const SMOKE_TEST_TEXT = "This is actually very wordy [@smith2020] while $E=mc^2$ stays.";
 const CLI_TIMEOUT_KILL_GRACE_MS = 500;
@@ -49,6 +51,8 @@ export interface DocumentCoverageChunk {
 
 interface CliPromptOptions {
   coveragePass?: DocumentCoverageChunk;
+  /** Stands in for the full document in a resumed thread that already holds it (document-delta.ts). */
+  documentDelta?: string[] | null;
 }
 
 /** Live events from a one-shot CLI run: the agent stream events plus how much of the reply has streamed so far. */
@@ -77,6 +81,8 @@ interface AiRunOptions {
   onTranscript?: (transcript: CliTranscript) => void;
   /** Client run id: the running process registers under it so POST /api/ai/steer reaches it. */
   runId?: string | null;
+  /** How a Codex run went: through the app-server (compaction is reported) or `codex exec`. */
+  onCodexTransport?: (transport: "app-server" | "exec") => void;
 }
 
 export interface AiProgressSnapshot {
@@ -702,9 +708,28 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     const resumeId = provider === "codex" ? request.agentSessionId ?? null : null;
     const toolAccess = resolveToolAccess(request);
     const imagePaths = provider === "codex" ? oneShotImagePaths(request) : [];
+    // A resumed thread that still holds the document it was last given gets
+    // only what changed, so turns stay small however long the thread runs.
+    const fullDocument = provider === "codex" ? fullDocumentInPrompt(request) : null;
+    const ledger = conversationStore();
+    const previousDocument = resumeId && fullDocument !== null ? ledger.threadDocument(resumeId) : null;
+    const documentDelta = previousDocument !== null && fullDocument !== null ? describeDocumentDelta(previousDocument, fullDocument) : null;
+    let compacted = false;
+    let transport: "app-server" | "exec" | null = null;
+    const watch = {
+      onStreamEvent: (event: CliStreamEvent) => {
+        if (event.kind === "compacted") {
+          compacted = true;
+        }
+        onStreamEvent(event);
+      },
+      onCodexTransport: (kind: "app-server" | "exec") => {
+        transport = kind;
+      }
+    };
     let result: string;
     try {
-      result = await runCli(provider, buildCliPrompt(request), { ...options, onStreamEvent, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
+      result = await runCli(provider, buildCliPrompt(request, documentDelta ? { documentDelta } : {}), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
@@ -713,11 +738,22 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
       // The recorded thread is gone (Codex home cleaned, different machine): start over without it.
       setAiProgress(provider, "Earlier conversation is gone — starting a fresh one", undefined, request.requestedBy ?? null);
       threadId = null;
-      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, onStreamEvent, toolAccess, imagePaths }, request.modelOptions ?? null, null);
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: null }), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, null);
     }
     setAiProgress(provider, "Checking the suggestions against the document", undefined, request.requestedBy ?? null);
     const parsed = parseCliResponseDetailed(provider, result, request);
-    const response = await completeReply(provider, request, parsed.response, parsed.unplaced, { ...options, onStreamEvent, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
+    const response = await completeReply(provider, request, parsed.response, parsed.unplaced, { ...options, ...watch, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
+    // Remember what the thread now holds — only when it is known to hold it:
+    // the full text (or a diff on top of it) went in, and Codex reported no
+    // compaction (only the app-server reports one).
+    const heldBy = threadId ?? resumeId;
+    if (provider === "codex" && heldBy) {
+      if (fullDocument !== null && transport === "app-server" && !compacted) {
+        ledger.recordThreadDocument(heldBy, fullDocument);
+      } else {
+        ledger.forgetThreadDocument(heldBy);
+      }
+    }
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -877,9 +913,31 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
     ...(options.coveragePass ? [] : describeConversation(request)),
     ...(options.coveragePass ? [] : describeFocus(request.focus, "oneshot")),
-    "Text:",
-    promptText.text
+    ...(options.documentDelta && request.mode !== "selection" && !options.coveragePass
+      ? options.documentDelta
+      : ["Text:", promptText.text])
   ].filter((line): line is string => line !== null).join("\n");
+}
+
+/**
+ * The full document text a one-shot prompt carries (the Text block of a
+ * whole-document request, or the document context of a selection request
+ * when it fits), or null when it carries only part of it.
+ */
+export function fullDocumentInPrompt(request: AiRequest): string | null {
+  const document = request.documentText ?? "";
+  if (!document.trim()) {
+    return null;
+  }
+  if (request.mode !== "selection") {
+    return shouldUseCoveragePasses(request) ? null : renderEmphasis(document, request.documentEmphasis);
+  }
+  const selectionText = (request.selection?.text ?? "").slice(0, AI_CONTEXT_CHAR_LIMIT);
+  if (!selectionText.trim() || document.trim() === selectionText.trim()) {
+    return null;
+  }
+  const budget = AI_CONTEXT_CHAR_LIMIT - Math.min(selectionText.length, AI_CONTEXT_CHAR_LIMIT);
+  return budget >= 1_000 && document.length <= budget ? renderEmphasis(document, request.documentEmphasis) : null;
 }
 
 export function buildSelectionContextLines(request: AiRequest, options: CliPromptOptions = {}): string[] {
@@ -896,12 +954,10 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
     return [];
   }
   if (document.length <= budget) {
-    return [
-      "Document context (the entire document; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the whole document, and edit wherever needed):",
-      "<<<document",
-      renderEmphasis(document, request.documentEmphasis),
-      ">>>"
-    ];
+    const intro = "Document context (the entire document; the Text block below is the user's selection — judge from the instruction whether the request concerns it or the whole document, and edit wherever needed):";
+    return options.documentDelta
+      ? [intro, ...options.documentDelta]
+      : [intro, "<<<document", renderEmphasis(document, request.documentEmphasis), ">>>"];
   }
   const found = document.indexOf(selectionText);
   const anchor = found >= 0
@@ -1187,6 +1243,7 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
         onLine: (line) => runOptions.onStdoutLine?.(line)
       });
       runOptions.onTranscript?.({ stdout: result.output, stderr: result.stderr, code: 0, signal: null, ended: null });
+      options.onCodexTransport?.("app-server");
       if (schemaFile) {
         rmSync(schemaFile.dir, { recursive: true, force: true });
       }
@@ -1203,6 +1260,9 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
     }
   }
 
+  if (provider === "codex") {
+    options.onCodexTransport?.("exec");
+  }
   try {
     return preferLastMessage(await runCliCommand(provider, command, primaryArgs, prompt, runOptions));
   } catch (error) {

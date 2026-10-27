@@ -111,6 +111,11 @@ export class ConversationStore {
         PRIMARY KEY (key, suggestion_id)
       );
       CREATE INDEX IF NOT EXISTS cards_pending ON cards (key, pending, updated);
+      CREATE TABLE IF NOT EXISTS thread_documents (
+        thread_id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
   }
 
@@ -241,6 +246,25 @@ export class ConversationStore {
     }
     const meta = this.conversation(key);
     this.saveConversation(key, { epoch: meta.epoch + 1, sessions: {}, nextSeq: meta.nextSeq });
+  }
+
+  /**
+   * The thread ledger: the full document text a resumed CLI thread was last
+   * given, so the next turn can send only what changed (document-delta.ts).
+   * Recorded only when the thread is known to still hold that copy.
+   */
+  threadDocument(threadId: string): string | null {
+    const row = this.statement("SELECT text FROM thread_documents WHERE thread_id = ?").get(threadId) as { text: string } | undefined;
+    return row?.text ?? null;
+  }
+
+  recordThreadDocument(threadId: string, text: string): void {
+    this.statement(`INSERT INTO thread_documents (thread_id, text, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`).run(threadId, text, new Date().toISOString());
+  }
+
+  forgetThreadDocument(threadId: string): void {
+    this.statement("DELETE FROM thread_documents WHERE thread_id = ?").run(threadId);
   }
 
   close(): void {
