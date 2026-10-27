@@ -30,6 +30,7 @@ import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSugges
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
 import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
 import { supersedeRevisedSuggestions } from "./revisions";
+import { CONVERSATION_KEY_PATTERN, conversationStore, type ConversationWrite } from "./conversation-store";
 import { liveCollabDocumentEmphasis, liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
 import { r01RoutineSequence } from "../src/writingRoutines";
@@ -344,6 +345,60 @@ export function createWriterApp() {
       }
       const result: AiSteerResponse = await steerRun(body.runId, body.text);
       response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Conversations per document (server/conversation-store.ts): the pane and
+  // the web app restore the transcript, cards and CLI sessions on reopen,
+  // reading the latest page and fetching earlier pages on demand.
+  app.get("/api/conversations", (request, response, next) => {
+    try {
+      const key = typeof request.query.key === "string" ? request.query.key : "";
+      if (!CONVERSATION_KEY_PATTERN.test(key)) {
+        response.status(400).json({ error: "A conversation key is required." });
+        return;
+      }
+      const limit = Number(request.query.limit);
+      const before = Number(request.query.before);
+      response.json(conversationStore().read(key, {
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        ...(Number.isFinite(before) && before > 0 ? { before } : {})
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/conversations/write", (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as ConversationWrite & { key?: unknown };
+      if (typeof body.key !== "string" || !CONVERSATION_KEY_PATTERN.test(body.key)) {
+        response.status(400).json({ error: "A conversation key is required." });
+        return;
+      }
+      const ids = [...(body.turns ?? []), ...(body.suggestions ?? [])].map((item) => item?.id);
+      if (ids.some((id) => typeof id !== "string" || !id || id.length > 200)) {
+        response.status(400).json({ error: "Every turn and suggestion needs an id." });
+        return;
+      }
+      conversationStore().write(body.key, { turns: body.turns, suggestions: body.suggestions, cards: body.cards, sessions: body.sessions });
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/conversations/reset", (request, response, next) => {
+    try {
+      const body = (request.body ?? {}) as { key?: unknown; mode?: unknown };
+      if (typeof body.key !== "string" || !CONVERSATION_KEY_PATTERN.test(body.key) || (body.mode !== "new" && body.mode !== "clear")) {
+        response.status(400).json({ error: "Reset requires { key, mode: \"new\" | \"clear\" }." });
+        return;
+      }
+      conversationStore().reset(body.key, body.mode);
+      response.json({ ok: true });
     } catch (error) {
       next(error);
     }

@@ -25,3 +25,6 @@ process.env.WRITER_CLI_TRANSCRIPTS ??= "off";
 
 // Fake Codex CLIs in the suite speak `codex exec`; the app-server transport has its own tests.
 process.env.WRITER_CODEX_TRANSPORT ??= "exec";
+
+// Conversations persist to SQLite; tests use an in-memory store.
+process.env.WRITER_CONVERSATIONS_DB ??= ":memory:";
