@@ -538,6 +538,23 @@ describe("Word task pane", () => {
     expect(captured.requests).toHaveLength(1);
   });
 
+  it("sends the passage selected since asking along with a message typed mid-turn, and remembers it", async () => {
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    mock.selectText(ORIGINAL);
+    send("is this accurate?");
+    await waitFor(() => expect(captured.steers).toHaveLength(1));
+    expect(captured.steers[0].text).toMatch(/^is this accurate\?\n\nSince asking, the user has selected a different passage/);
+    expect(captured.steers[0].text).toContain(`<<<selection\n${ORIGINAL}\n>>>`);
+    await waitFor(() => expect(screen.getByText(/Sent into the running turn, about the selection “Chromatin accessibility/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Tighten the opening claim").length).toBeGreaterThan(0), { timeout: 3_000 });
+    send("and the next one?");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    const digest = captured.requests[1].conversation ?? [];
+    expect(digest.find((turn) => turn.role === "user" && turn.content.endsWith("is this accurate?"))?.content).toMatch(/^\[On the passage "Chromatin accessibility is actually/);
+  });
+
   it("queues the message when the running turn cannot take it, and sends it when the turn ends", async () => {
     captured.steerOk = false;
     await renderPane();

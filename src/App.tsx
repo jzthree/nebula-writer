@@ -64,6 +64,7 @@ import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArt
 import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
 import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, readEditorTables, replacementToContent, revertImageSuggestion, revertTableSuggestion, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
+import { selectionExcerpt, steerMessageBody } from "./steerMessage";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
 import { setSourceRevisionHighlight, SourceRevisionHighlight, type SourceRevisionMark } from "./sourceRevisionHighlight";
 import { HeadingEnter } from "./headingEnter";
@@ -1008,7 +1009,7 @@ export function App() {
   const routineNameInputRef = useRef<HTMLInputElement | null>(null);
   const aiRequestInFlightRef = useRef(false);
   /** The in-flight request's run id and which sidecar runs it (mid-turn steering addresses it). */
-  const aiRunRef = useRef<{ runId: string; local: boolean } | null>(null);
+  const aiRunRef = useRef<{ runId: string; local: boolean; selection: SelectionContext | null } | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
   const aiRequestSeqRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -4367,7 +4368,7 @@ export function App() {
     aiAbortControllerRef.current = controller;
     aiRequestInFlightRef.current = true;
     const runId = newAiRunId();
-    aiRunRef.current = { runId, local: localAiActiveRef.current };
+    aiRunRef.current = { runId, local: localAiActiveRef.current, selection: activeScope === "selection" ? selection : null };
     setBusy("Asking AI");
     setError(null);
     setEmptyAiResult(null);
@@ -4463,12 +4464,13 @@ export function App() {
     if (!run) {
       return false;
     }
-    const body = focus ? `About ${focus.ref ? `${focus.ref} ` : ""}"${focus.title}": ${text}` : text;
-    const result = await steerAiRun(run.runId, body, run.local ? "local" : "sidecar");
+    const selectionNow = scope === "selection" ? selection : null;
+    const result = await steerAiRun(run.runId, steerMessageBody(text, focus, selectionNow, run.selection), run.local ? "local" : "sidecar");
     if (!result.ok || aiRunRef.current?.runId !== run.runId) {
       return false;
     }
-    appendMessage("user", `${text}\n(sent into the running turn — the AI takes it into account in this reply)`);
+    const excerpt = selectionExcerpt(selectionNow);
+    appendMessage("user", `${text}\n(sent into the running turn${excerpt ? `, about the selection “${excerpt}”` : ""} — the AI takes it into account in this reply)`);
     return true;
   }
 

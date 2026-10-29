@@ -116,7 +116,7 @@ export interface SentSummary {
 }
 
 export type ChatTurn =
-  | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean }
+  | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean; selectionExcerpt?: string }
   | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[] }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
@@ -803,7 +803,7 @@ function TurnView(props: {
         <div className="wp-turn-head"><User size={12} aria-hidden="true" /> You <time dateTime={turn.at}>{clock(turn.at)}</time></div>
         {turn.focus ? <p className="wp-turn-focus"><Sparkles size={11} aria-hidden="true" /> About {turn.focus.ref ? `${turn.focus.ref} ` : ""}"{turn.focus.title}"</p> : null}
         <p className="wp-turn-text">{turn.text}</p>
-        {turn.steered ? <p className="wp-turn-steered">Sent into the running turn — the AI takes it into account in this reply</p> : null}
+        {turn.steered ? <p className="wp-turn-steered">Sent into the running turn{turn.selectionExcerpt ? <>, about the selection “{turn.selectionExcerpt}”</> : null} — the AI takes it into account in this reply</p> : null}
         {turn.sent ? <SentDetails sent={turn.sent} /> : null}
       </article>
     );

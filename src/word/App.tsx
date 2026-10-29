@@ -15,7 +15,7 @@ import { newAiRunId } from "../sidecarClient";
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiRequestFocus } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiRequestFocus, type SelectionContext } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -46,6 +46,7 @@ import {
   waitForWordHost,
   type WordCapabilities, applyTableEdit, commentInlinePicture, deletePicture, insertPicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
 import { findEditTarget } from "../tables";
+import { selectionExcerpt, steerMessageBody } from "../steerMessage";
 import {
   appendSessionChat,
   fetchHealth,
@@ -253,6 +254,8 @@ export function App() {
   const requestBackgroundSnapshotRef = useRef<() => void>(() => undefined);
   /** Run id of the request in flight (mid-turn steering addresses it). */
   const runIdRef = useRef<string | null>(null);
+  /** The selection the running request went out with (a steered message names a newer one). */
+  const sentSelectionRef = useRef<SelectionContext | null>(null);
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
   const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
@@ -908,6 +911,7 @@ export function App() {
     runningRef.current = true;
     const runId = newAiRunId();
     runIdRef.current = runId;
+    sentSelectionRef.current = focusRef.current?.selection ?? null;
     setNotice(null);
     setRequestState("running");
     const controller = new AbortController();
@@ -1038,14 +1042,16 @@ export function App() {
     if (!runId) {
       return false;
     }
-    const body = focus ? `About ${focus.ref ? `${focus.ref} ` : ""}"${focus.title}": ${text}` : text;
-    const result = await steerRun(runId, body);
+    // Read it now: the selection-changed event may not have landed yet.
+    const selectionNow = (await refreshFocus())?.selection ?? null;
+    const result = await steerRun(runId, steerMessageBody(text, focus, selectionNow, sentSelectionRef.current));
     if (!result.ok || runIdRef.current !== runId) {
       return false;
     }
-    appendTurn({ id: turnId(), role: "user", at: new Date().toISOString(), text, steered: true, focus: focus ? { ref: focus.ref ?? null, title: focus.title } : null });
+    const excerpt = selectionExcerpt(selectionNow);
+    appendTurn({ id: turnId(), role: "user", at: new Date().toISOString(), text, steered: true, focus: focus ? { ref: focus.ref ?? null, title: focus.title } : null, ...(excerpt ? { selectionExcerpt: excerpt } : {}) });
     return true;
-  }, [appendTurn]);
+  }, [appendTurn, refreshFocus]);
 
   const steerOrQueue = useCallback(async (text: string, focus: AiRequestFocus | null) => {
     if (await steerRunning(text, focus)) {
@@ -1886,7 +1892,10 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
   const digest: AiConversationTurn[] = [];
   for (const turn of turns) {
     if (turn.role === "user") {
-      digest.push({ role: "user", content: turn.focus ? `[About ${turn.focus.ref ? `${turn.focus.ref} ` : ""}"${turn.focus.title}"] ${turn.text}` : turn.text });
+      // What was selected when the user wrote it: "is this accurate?" means nothing later without it.
+      const passage = turn.sent?.mode === "selection" ? turn.sent.excerptStart : turn.selectionExcerpt ?? null;
+      const about = turn.focus ? `[About ${turn.focus.ref ? `${turn.focus.ref} ` : ""}"${turn.focus.title}"] ` : "";
+      digest.push({ role: "user", content: `${about}${passage ? `[On the passage "${passage}"] ` : ""}${turn.text}` });
     } else if (turn.role === "assistant" && turn.status !== "running" && turn.origin !== "session") {
       const decisions = turn.suggestionIds
         .map((id) => byId.get(id))
