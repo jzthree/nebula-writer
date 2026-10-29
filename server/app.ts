@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, open, readFile, readdir, writeFile, mkdir, stat } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -402,6 +402,20 @@ export function createWriterApp() {
     } catch (error) {
       next(error);
     }
+  });
+
+  // The Chrome extension's current build (scripts/chrome-build.mjs): the
+  // installed extension reloads itself when this differs from its own.
+  app.get("/api/chrome-extension/build", (_request, response) => {
+    let build: string | null = null;
+    try {
+      const path = resolve(fileURLToPath(new URL("../chrome-extension/dist/build.json", import.meta.url)));
+      build = (JSON.parse(readFileSync(path, "utf8")) as { build?: string }).build ?? null;
+    } catch {
+      build = null;
+    }
+    response.setHeader("Cache-Control", "no-store");
+    response.json({ build });
   });
 
   app.get("/api/ai/progress", (_request, response) => {

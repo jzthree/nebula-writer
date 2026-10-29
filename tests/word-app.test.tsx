@@ -592,6 +592,22 @@ describe("Word task pane", () => {
     expect(captured.requests[3].conversation).toBeUndefined();
   });
 
+  it("attaches files dropped anywhere on the pane", async () => {
+    await renderPane();
+    const shell = document.querySelector(".wp-shell")!;
+    const file = new File(["notes"], "dropped-notes.pdf", { type: "application/pdf" });
+    const dataTransfer = { types: ["Files"], files: [file], dropEffect: "none" };
+    fireEvent.dragEnter(shell, { dataTransfer });
+    expect(screen.getByText("Drop to attach as reference files")).toBeInTheDocument();
+    fireEvent.dragOver(shell, { dataTransfer });
+    fireEvent.drop(shell, { dataTransfer });
+    await waitFor(() => expect(screen.getByText("dropped-notes.pdf")).toBeInTheDocument());
+    expect(screen.queryByText("Drop to attach as reference files")).toBeNull();
+    // Text dragged from the document is not a file drop.
+    fireEvent.dragEnter(shell, { dataTransfer: { types: ["text/plain"], files: [] } });
+    expect(screen.queryByText("Drop to attach as reference files")).toBeNull();
+  });
+
   it("attaches reference files and sends them with every request", async () => {
     await renderPane();
     const input = screen.getByLabelText("Attach reference files", { selector: "input" });

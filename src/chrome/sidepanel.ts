@@ -349,3 +349,13 @@ setTimeout(() => {
     showNotice(`<p><strong>Writer is not reachable.</strong></p><p>Start the Nebula Writer sidecar on this computer (it serves the pane at <code>${PANE_ORIGIN}/gdocs/pane.html</code>), then reopen this panel.</p>`);
   }
 }, 6000);
+
+// Files are dropped onto the pane (which attaches them); one dropped on the
+// panel's own edge must not replace the panel with the file.
+for (const type of ["dragover", "drop"] as const) {
+  window.addEventListener(type, (event) => {
+    if (event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) {
+      event.preventDefault();
+    }
+  });
+}

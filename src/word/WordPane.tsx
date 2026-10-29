@@ -204,11 +204,76 @@ export interface WordPaneProps {
   turns: ChatTurn[];
 }
 
+/** True when a drag carries files (not text or a link dragged from the page). */
+function draggingFiles(event: { dataTransfer: DataTransfer | null }): boolean {
+  return Boolean(event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files"));
+}
+
 export function WordPane(props: WordPaneProps) {
   const running = props.requestState === "running";
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Files dropped anywhere on the pane are attached. Nested elements fire
+  // enter/leave in pairs, so a depth counter tells when the drag really left.
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const onAddFiles = props.onAddFiles;
+  useEffect(() => {
+    // A file dropped outside the drop zone must never replace the pane with the file.
+    const guard = (event: DragEvent) => {
+      if (draggingFiles(event)) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => {
+      window.removeEventListener("dragover", guard);
+      window.removeEventListener("drop", guard);
+    };
+  }, []);
   return (
-    <div className="wp-shell">
+    <div
+      className={`wp-shell${dropping ? " dropping" : ""}`}
+      onDragEnter={(event) => {
+        if (draggingFiles(event)) {
+          event.preventDefault();
+          dragDepth.current += 1;
+          setDropping(true);
+        }
+      }}
+      onDragOver={(event) => {
+        if (draggingFiles(event)) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDragLeave={(event) => {
+        if (draggingFiles(event)) {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (!dragDepth.current) {
+            setDropping(false);
+          }
+        }
+      }}
+      onDrop={(event) => {
+        if (!draggingFiles(event)) {
+          return;
+        }
+        event.preventDefault();
+        dragDepth.current = 0;
+        setDropping(false);
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length) {
+          onAddFiles(files);
+        }
+      }}
+    >
+      {dropping ? (
+        <div className="wp-drop-overlay" aria-hidden="true">
+          <Paperclip size={20} />
+          <span>Drop to attach as reference files</span>
+        </div>
+      ) : null}
       <header className="wp-header">
         <div className="wp-brand">
           <span className="wp-brand-mark" aria-hidden="true">N</span>

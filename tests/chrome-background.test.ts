@@ -23,6 +23,8 @@ beforeEach(async () => {
       onStartup: { addListener: (listener: typeof startup) => { startup = listener; } }
     },
     sidePanel: { setPanelBehavior, setOptions },
+    alarms: { create: vi.fn(), onAlarm: { addListener: vi.fn() } },
+    scripting: { executeScript: vi.fn(async () => []) },
     tabs: {
       query,
       get,
