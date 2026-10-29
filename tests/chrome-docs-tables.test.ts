@@ -186,3 +186,20 @@ describe("chrome extension: applying table ops in phases", () => {
     expect(run.batches).toEqual([]);
   });
 });
+
+describe("Chrome figure deletion", () => {
+  it("deletes the inline image's single index unit", async () => {
+    const { parseDocument, deleteImageRequest } = await import("../src/chrome/docsApi");
+    const parsed = parseDocument({
+      documentId: "d", revisionId: "r",
+      body: { content: [{ startIndex: 1, endIndex: 9, paragraph: { elements: [
+        { startIndex: 1, endIndex: 5, textRun: { content: "Fig " } },
+        { startIndex: 5, endIndex: 6, inlineObjectElement: { inlineObjectId: "kix.1" } },
+        { startIndex: 6, endIndex: 9, textRun: { content: "ok\n" } }
+      ] } }] },
+      inlineObjects: { "kix.1": { inlineObjectProperties: { embeddedObject: { imageProperties: {} } } } }
+    });
+    expect(deleteImageRequest(parsed.index, 0)).toEqual({ deleteContentRange: { range: { startIndex: 5, endIndex: 6 } } });
+    expect(deleteImageRequest(parsed.index, 1)).toBeNull();
+  });
+});

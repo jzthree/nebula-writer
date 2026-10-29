@@ -518,6 +518,44 @@ describe("App suggestion review", () => {
     expect(document.querySelector(".tiptap")?.textContent ?? "").toContain("This is a local-first writing workspace for revising DOCX documents with AI.");
   });
 
+  it("shows a new figure on its card and inserts it after the anchor paragraph on Accept", async () => {
+    vi.mocked(requestAiSuggestion).mockResolvedValueOnce({
+      provider: "codex",
+      message: "Added a figure",
+      suggestions: [{
+        id: "figure-1",
+        kind: "image",
+        image: { action: "insert", index: null, path: "/tmp/plot.png", url: "/api/ai/images/plot.png", mime: "image/png", caption: "Figure 1. Enrollment by site." },
+        title: "Add enrollment figure",
+        original: "This is a local-first writing workspace for revising DOCX documents with AI.",
+        replacement: "",
+        rationale: "A chart shows the trend.",
+        confidence: 0.8,
+        target: "global",
+        status: "pending"
+      }]
+    });
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("AI instruction"), { target: { value: "Add a figure" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send revision request" }));
+
+    const card = await screen.findByRole("button", { name: "Jump to proposed change: Add enrollment figure" });
+    expect(within(card).getByText("Figure 1. Enrollment by site.")).toBeInTheDocument();
+    expect(within(card).getByRole("img", { name: "Figure 1. Enrollment by site." })).toHaveAttribute("src", "/api/ai/images/plot.png");
+    expect(within(card).queryByRole("button", { name: /Mark inline/ })).not.toBeInTheDocument();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.tiptap img[src="/api/ai/images/plot.png"]')).not.toBeNull();
+    });
+    const text = document.querySelector(".tiptap")?.textContent ?? "";
+    // The anchor paragraph stays: a figure insert is never a deletion.
+    expect(text).toContain("This is a local-first writing workspace for revising DOCX documents with AI.");
+    expect(text).toContain("Figure 1. Enrollment by site.");
+  });
+
   it("links and highlights a proposed change card in the editor", async () => {
     render(<App />);
 

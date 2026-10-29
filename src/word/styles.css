@@ -633,6 +633,11 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-image-change .wp-image-arrow { color: var(--muted); font-size: 16px; }
 .wp-image-change .wp-image-missing { font-size: 11px; color: var(--muted); text-align: center; }
 .wp-image-change figcaption { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+.wp-image-change.insert, .wp-image-change.delete { grid-template-columns: 1fr; }
+.wp-image-change.insert img { border-color: var(--green); }
+.wp-image-change.delete img { opacity: 0.45; border-color: var(--red); outline: 2px solid var(--red-soft); }
+.wp-image-change.delete figcaption { color: var(--red); }
+.wp-image-change .wp-image-caption { margin: 0; font-size: 11.5px; font-style: italic; text-align: center; color: var(--green); }
 
 /* Table change cards: the grid with changed cells marked */
 .wp-table-change { margin: 0; display: grid; gap: 4px; }

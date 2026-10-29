@@ -30,6 +30,8 @@ const EXPORTED = [
   "nebulaReadImage",
   "nebulaReplaceImage",
   "nebulaSelectImage",
+  "nebulaInsertImage",
+  "nebulaDeleteImage",
   "nebulaApplyTable",
   "nebulaSelectTable"
 ];

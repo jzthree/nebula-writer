@@ -63,7 +63,7 @@ import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
 import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
-import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, readEditorTables, replacementToContent, revertTableSuggestion, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
+import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, readEditorTables, replacementToContent, revertImageSuggestion, revertTableSuggestion, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
 import { setSourceRevisionHighlight, SourceRevisionHighlight, type SourceRevisionMark } from "./sourceRevisionHighlight";
 import { HeadingEnter } from "./headingEnter";
@@ -247,11 +247,32 @@ function sharedSuggestionsAreAdditionsOnly(sharedSuggestions: AiSuggestion[], lo
   return localSuggestions.every((suggestion) => sharedStatuses.get(suggestion.id) === suggestion.status);
 }
 
-/** Before/after previews of a picture replacement (the sidecar serves both files). */
+/** Before/after previews of a picture replacement (the sidecar serves both files); a new figure; a removed picture. */
 function ImageChange({ suggestion }: { suggestion: AiSuggestion }) {
   const image = suggestion.image;
   if (!image) {
     return null;
+  }
+  const action = image.action ?? "replace";
+  if (action === "insert") {
+    const anchor = suggestion.original.replace(/\s+/g, " ").trim();
+    return (
+      <figure className="image-change image-change-insert">
+        <img src={image.url} alt={image.caption || "Proposed figure"} />
+        <figcaption>
+          {image.caption ? <span className="image-change-caption">{image.caption}</span> : null}
+          <span className="image-change-anchor">New figure after “{anchor.length > 80 ? `…${anchor.slice(-77)}` : anchor}”</span>
+        </figcaption>
+      </figure>
+    );
+  }
+  if (action === "delete") {
+    return (
+      <figure className="image-change image-change-delete">
+        {image.originalUrl ? <img src={image.originalUrl} alt="Picture to remove" /> : <span className="image-change-missing">current picture</span>}
+        <figcaption>Remove {suggestion.original}</figcaption>
+      </figure>
+    );
   }
   return (
     <figure className="image-change">
@@ -4722,8 +4743,8 @@ export function App() {
   // replacements, but as a strike it covers neighboring prose and reads as if
   // the agent proposed rewriting text it never touched.
   function inlineMaterializeRange(suggestion: AiSuggestion): { from: number; to: number } | null {
-    // A table change is not a text replacement: it stays a card and is applied as a whole.
-    if (!editor || suggestion.kind === "table") {
+    // Table and figure changes are not text replacements: they stay cards and are applied as a whole.
+    if (!editor || suggestion.kind === "table" || suggestion.kind === "image") {
       return null;
     }
     const match = findSuggestionMatch(editor, suggestion);
@@ -4897,6 +4918,11 @@ export function App() {
     sourceRange: { from: number; to: number }
   ): { from: number; to: number } | null {
     const docSize = editorInstance.state.doc.content.size;
+    if (suggestion.kind === "image") {
+      // applySuggestion found the picture (or the anchor) itself; the range is the changed or new figure.
+      const from = Math.max(0, Math.min(sourceRange.from, docSize));
+      return { from, to: Math.min(docSize, Math.max(from, sourceRange.to)) };
+    }
     if (suggestion.kind === "table") {
       // applySuggestion verified the table it changed; the range is the new table (or where a deleted one stood).
       const from = Math.max(0, Math.min(sourceRange.from, docSize));
@@ -5063,9 +5089,11 @@ export function App() {
     const traceId = `${suggestion.id}-accepted`;
     const trace = acceptedReviewTracesRef.current.find((candidate) => candidate.id === traceId) ?? null;
     const docSize = editor.state.doc.content.size;
-    if (suggestion.kind === "table") {
+    if (suggestion.kind === "table" || suggestion.kind === "image") {
       suppressUserTrackingRef.current = true;
-      const reverted = revertTableSuggestion(editor, suggestion, trace ? trace.from : null);
+      const reverted = suggestion.kind === "table"
+        ? revertTableSuggestion(editor, suggestion, trace ? trace.from : null)
+        : revertImageSuggestion(editor, suggestion, trace ? trace.from : null);
       lastEditorTextSnapshotRef.current = editorTextSnapshot(editor).text;
       suppressUserTrackingRef.current = false;
       if (reverted) {
@@ -7977,6 +8005,7 @@ export function App() {
 	                        >
 	                          <X size={16} aria-hidden="true" /> Reject
 	                        </button>
+	                        {suggestion.kind === "table" || suggestion.kind === "image" ? null : (
 	                        <button
 	                          type="button"
 	                          title="Put this proposal into the document as an inline suggestion (strikethrough + insertion) that anyone can accept or reject"
@@ -7987,6 +8016,7 @@ export function App() {
 	                        >
 	                          <FilePenLine size={16} aria-hidden="true" /> Mark inline
 	                        </button>
+	                        )}
 	                      </>
 	                    ) : suggestion.status === "accepted" ? (
 	                      <button

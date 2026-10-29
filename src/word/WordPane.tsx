@@ -43,6 +43,7 @@ import { wordDiffSegments } from "../wordDiff";
 import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
+import { excerpt } from "./wordContext";
 
 export type HostStatus = "booting" | "ready" | "unavailable";
 export type SidecarStatus = "checking" | "ok" | "offline";
@@ -1138,7 +1139,7 @@ function SuggestionCard(props: {
             <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
               <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title={state.outcome === "applied" && !deletion ? "Select the revised text in the document" : "Select this passage in the document"}><Crosshair size={13} aria-hidden="true" /> Locate</button>
               <button type="button" onClick={() => void copy("original")} title="Copy the original text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "original" ? "Copied" : "Copy original"}</button>
-              {suggestion.commentOnly || deletion || isTable ? null : (
+              {suggestion.commentOnly || deletion || isTable || suggestion.kind === "image" ? null : (
                 <button type="button" onClick={() => void copy("revised")} title="Copy the revised text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "revised" ? "Copied" : "Copy revised"}</button>
               )}
             </div>
@@ -1290,6 +1291,25 @@ const LONG_CHANGE_CHARS = 900;
 /** The proposed change itself: an inline word diff when one reads well, else the original and the revised text in full. */
 function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; onToggle: () => void }) {
   const { suggestion } = props;
+  if (suggestion.kind === "image" && suggestion.image?.action === "insert") {
+    const image = suggestion.image;
+    return (
+      <figure className="wp-image-change insert">
+        <img src={image.url} alt="New figure" />
+        {image.caption ? <p className="wp-image-caption">{tidy(image.caption)}</p> : null}
+        <figcaption>New figure after “{excerpt(suggestion.original, 80)}”</figcaption>
+      </figure>
+    );
+  }
+  if (suggestion.kind === "image" && suggestion.image?.action === "delete") {
+    const image = suggestion.image;
+    return (
+      <figure className="wp-image-change delete">
+        {image.originalUrl ? <img src={image.originalUrl} alt="Picture to remove" /> : <span className="wp-image-missing">picture</span>}
+        <figcaption>Remove {suggestion.original}</figcaption>
+      </figure>
+    );
+  }
   if (suggestion.kind === "image" && suggestion.image) {
     const image = suggestion.image;
     return (

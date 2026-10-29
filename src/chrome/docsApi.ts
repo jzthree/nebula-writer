@@ -112,6 +112,8 @@ export interface TableIndex {
 export interface DocsIndex {
   paragraphs: ParagraphIndex[];
   imageIds: string[];
+  /** API index of each inline image (same order as imageIds). */
+  imageStarts: number[];
   /** Top-level tables, parallel to payload.tables. */
   tables: TableIndex[];
   revisionId: string;
@@ -169,6 +171,7 @@ export function parseDocument(doc: ApiDocument): ParsedDocument {
   const indexes: ParagraphIndex[] = [];
   const images: DocsImagePayload[] = [];
   const imageIds: string[] = [];
+  const imageStarts: number[] = [];
   const tables: DocumentTable[] = [];
   const tableIndexes: TableIndex[] = [];
 
@@ -177,7 +180,7 @@ export function parseDocument(doc: ApiDocument): ParsedDocument {
     for (const element of elements ?? []) {
       if (element.paragraph) {
         const paragraphIndex = paragraphs.length;
-        const parsed = parseParagraph(element, paragraphIndex, doc, images, imageIds);
+        const parsed = parseParagraph(element, paragraphIndex, doc, images, imageIds, imageStarts);
         paragraphs.push(parsed.payload);
         indexes.push(parsed.index);
         previousText = parsed.payload.text;
@@ -251,11 +254,11 @@ export function parseDocument(doc: ApiDocument): ParsedDocument {
       tables,
       fingerprint: doc.revisionId ?? ""
     },
-    index: { paragraphs: indexes, imageIds, tables: tableIndexes, revisionId: doc.revisionId ?? "" }
+    index: { paragraphs: indexes, imageIds, imageStarts, tables: tableIndexes, revisionId: doc.revisionId ?? "" }
   };
 }
 
-function parseParagraph(element: ApiStructuralElement, paragraphIndex: number, doc: ApiDocument, images: DocsImagePayload[], imageIds: string[]): { payload: DocsParagraphPayload; index: ParagraphIndex } {
+function parseParagraph(element: ApiStructuralElement, paragraphIndex: number, doc: ApiDocument, images: DocsImagePayload[], imageIds: string[], imageStarts: number[]): { payload: DocsParagraphPayload; index: ParagraphIndex } {
   const paragraph = element.paragraph as ApiParagraph;
   const startIndex = element.startIndex ?? 0;
   const endIndex = element.endIndex ?? startIndex;
@@ -296,6 +299,7 @@ function parseParagraph(element: ApiStructuralElement, paragraphIndex: number, d
           altText: object.description || object.title || null
         });
         imageIds.push(id);
+        imageStarts.push(partStart);
       }
     }
     // Any non-text element (image, equation, footnote reference…) occupies index space only.
@@ -655,4 +659,10 @@ export function tableLocateParagraph(parsed: ParsedDocument, tableIndex: number)
     }
   }
   return null;
+}
+
+/** Request deleting inline image `imageIndex` (its one index unit). */
+export function deleteImageRequest(index: DocsIndex, imageIndex: number): Record<string, unknown> | null {
+  const start = index.imageStarts[imageIndex];
+  return start === undefined ? null : { deleteContentRange: { range: { startIndex: start, endIndex: start + 1 } } };
 }

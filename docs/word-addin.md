@@ -168,6 +168,22 @@ conversation* on, the turns are appended to the shared session's chat so the
 web app shows the same history.
 
 
+### New and removed figures
+
+Besides replacing a picture, the AI can **insert a new figure** — a chart
+or diagram it produced (written as a PNG in its workspace) or an image file
+you attached — after the paragraph holding exact document text, with an
+optional caption paragraph below it, and **delete a picture**. One-shot
+suggestions set `imageAction` ("insert" / "delete" / "replace"),
+`imageFile`, `imageCaption`; agents call `writer_stage_figure`. The card
+shows the new picture with its caption (or the picture to remove, dimmed).
+Word inserts it centred, scaled to the text width, with the caption in
+Word's Caption style, tracked when Track Changes is on; the web editor
+inserts an image node plus a caption paragraph; the Apps Script add-in
+inserts it scaled to the page. The Chrome extension can delete pictures,
+but cannot insert them yet: the Docs API only takes images from public
+URLs.
+
 ### Tables
 
 The pane reads the document's top-level tables as grids of cell text (the

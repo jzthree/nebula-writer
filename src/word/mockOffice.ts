@@ -19,6 +19,7 @@ export interface MockParagraphSeed {
   styleBuiltIn?: string;
   outlineLevel?: number;
   isListItem?: boolean;
+  alignment?: string;
 }
 
 export interface MockWordOptions {
@@ -68,6 +69,14 @@ export interface MockPictureSeed {
   altText?: string;
 }
 
+/** A picture added or removed through the API (not a seed), in order. */
+export interface MockPictureEdit {
+  action: "insert" | "delete";
+  paragraphIndex: number;
+  base64: string;
+  tracked: boolean;
+}
+
 export interface MockPictureReplacement {
   index: number;
   previousBase64: string;
@@ -113,6 +122,9 @@ export class MockWordHost {
   comments: MockComment[] = [];
   pictures: MockPictureSeed[] = [];
   pictureReplacements: MockPictureReplacement[] = [];
+  pictureEdits: MockPictureEdit[] = [];
+  /** Natural size (points) the mock gives a picture inserted from base64. */
+  insertedPictureSize = { width: 936, height: 624 };
   fields: Array<{ from: number; to: number }> = [];
   /** Inline emphasis (bold/italic/underline/highlight) as absolute spans over `text`. */
   emphasis: EmphasisSpan[] = [];
@@ -242,6 +254,12 @@ export class MockWordHost {
     const to = start + deleteCount < offsets.length ? offsets[start + deleteCount] : this.text.length + PARAGRAPH_SEPARATOR.length;
     const original = this.text.slice(from, to);
     this.paragraphs.splice(start, deleteCount, ...inserted);
+    // Pictures follow their paragraphs; those in removed paragraphs go with them.
+    this.pictures = this.pictures.flatMap((picture) => {
+      if (picture.paragraphIndex < start) return [picture];
+      if (picture.paragraphIndex < start + deleteCount) return [];
+      return [{ ...picture, paragraphIndex: picture.paragraphIndex + inserted.length - deleteCount }];
+    });
     const added = inserted.reduce((sum, paragraph) => sum + paragraph.text.length + PARAGRAPH_SEPARATOR.length, 0);
     const delta = added - (to - from);
     this.emphasis = normalizeEmphasis(this.emphasis.flatMap((span) => {
@@ -318,6 +336,24 @@ export class MockWordHost {
     }
     this.pictureReplacements.push({ index, previousBase64: picture.base64, base64, tracked: this.changeTrackingMode !== "Off" });
     picture.base64 = base64;
+  }
+
+  /** Add a picture at the start of paragraph `paragraphIndex`; returns its index in document order. */
+  insertPicture(paragraphIndex: number, base64: string): number {
+    const seed: MockPictureSeed = { paragraphIndex, base64, ...this.insertedPictureSize };
+    this.pictures.push(seed);
+    this.pictures.sort((a, b) => a.paragraphIndex - b.paragraphIndex);
+    this.pictureEdits.push({ action: "insert", paragraphIndex, base64, tracked: this.changeTrackingMode !== "Off" });
+    return this.pictures.indexOf(seed);
+  }
+
+  /** Remove picture `index` (its paragraph stays). */
+  deletePicture(index: number): void {
+    const [picture] = this.pictures.splice(index, 1);
+    if (!picture) {
+      throw new Error(`Mock Word: no inline picture ${index}`);
+    }
+    this.pictureEdits.push({ action: "delete", paragraphIndex: picture.paragraphIndex, base64: picture.base64, tracked: this.changeTrackingMode !== "Off" });
   }
 
   /* ----------------------------- document model ----------------------------- */
@@ -804,18 +840,36 @@ export class MockRange {
 }
 
 export class MockInlinePicture {
-  constructor(private host: MockWordHost, private index: number) {}
+  lockAspectRatio = true;
+  private readonly picked: MockPictureSeed;
 
+  constructor(private host: MockWordHost, index: number) {
+    this.picked = host.pictures[index];
+  }
+
+  /** Word picture proxies stay bound to their picture as others are added or removed. */
   private get seed(): MockPictureSeed {
-    return this.host.pictures[this.index];
+    return this.picked;
+  }
+
+  private get index(): number {
+    return this.host.pictures.indexOf(this.picked);
   }
 
   get width(): number {
     return this.seed.width;
   }
 
+  set width(value: number) {
+    this.seed.width = value;
+  }
+
   get height(): number {
     return this.seed.height;
+  }
+
+  set height(value: number) {
+    this.seed.height = value;
   }
 
   get altTextDescription(): string {
@@ -843,7 +897,11 @@ export class MockInlinePicture {
       throw new Error(`Mock Word: unsupported picture insert location ${location}`);
     }
     this.host.replacePicture(this.index, base64);
-    return new MockInlinePicture(this.host, this.index);
+    return this;
+  }
+
+  delete(): void {
+    this.host.deletePicture(this.index);
   }
 
   getRange(): MockRange {
@@ -961,6 +1019,49 @@ export class MockParagraph extends MockRange {
 
   get tableNestingLevel(): number {
     return this.host.paragraphs[this.index]?.cell ? 1 : 0;
+  }
+
+  set styleBuiltIn(value: string) {
+    const paragraph = this.host.paragraphs[this.index];
+    if (paragraph) paragraph.styleBuiltIn = value;
+  }
+
+  get alignment(): string {
+    return this.host.paragraphs[this.index]?.alignment ?? "Left";
+  }
+
+  set alignment(value: string) {
+    const paragraph = this.host.paragraphs[this.index];
+    if (paragraph) paragraph.alignment = value;
+  }
+
+  get inlinePictures(): { items: MockInlinePicture[]; load: () => void } {
+    const host = this.host;
+    const items = host.pictures.flatMap((picture, index) => (picture.paragraphIndex === this.index ? [new MockInlinePicture(host, index)] : []));
+    return { items, load: () => undefined };
+  }
+
+  insertParagraph(text: string, location: string): MockParagraph {
+    if (location !== "After" && location !== "Before") {
+      throw new Error(`Mock Word: unsupported paragraph insert location ${location}`);
+    }
+    const at = location === "After" ? this.index + 1 : this.index;
+    this.host.spliceParagraphs(at, 0, [{ text }]);
+    if (location === "Before") {
+      this.index += 1;
+    }
+    return new MockParagraph(this.host, at);
+  }
+
+  insertInlinePictureFromBase64(base64: string, location: string): MockInlinePicture {
+    if (location !== "Start" && location !== "End") {
+      throw new Error(`Mock Word: unsupported picture insert location ${location}`);
+    }
+    return new MockInlinePicture(this.host, this.host.insertPicture(this.index, base64));
+  }
+
+  override delete(): void {
+    this.host.spliceParagraphs(this.index, 1, []);
   }
 
   insertTable(_rowCount: number, _columnCount: number, location: string, values: string[][]): MockTable {

@@ -129,6 +129,26 @@ vi.mock("../src/word/writerClient", () => ({
         sessionReused: false
       };
     }
+    if (request.instruction.startsWith("NewFigure:")) {
+      const suggestion: AiSuggestion = {
+        id: `fig-${captured.requests.length}`,
+        kind: "image",
+        image: { action: "insert", index: null, path: "/tmp/images/chart.png", url: "/api/ai/images/chart.png", mime: "image/png", caption: "Figure 2. Accessibility by cell type." },
+        title: "Add an accessibility chart",
+        original: ORIGINAL,
+        replacement: "",
+        rationale: "Shows the claim.",
+        confidence: 0.8,
+        target: "global",
+        range: null,
+        status: "pending"
+      };
+      return {
+        ai: { message: "Added a chart.", provider: request.provider, suggestions: [suggestion], agentSessionId: null, activity: [] },
+        session: { id: "word-session", name: "Aims.docx", title: "Aims", sourceDocumentId: "word-live:aims.docx", documentText: request.documentText, documentHtmlLength: 0, revision: 1, suggestions: [suggestion], chatMessages: [], updatedAt: new Date().toISOString() },
+        sessionReused: false
+      } as unknown as Awaited<ReturnType<typeof import("../src/word/writerClient").requestWordSuggestions>>;
+    }
     if (request.instruction.startsWith("Table:")) {
       const table = request.documentTables?.[0];
       const rows = table ? [...table.rows.map((row) => [...row]), ["Travel", "$5,000"]] : [];
@@ -483,6 +503,23 @@ describe("Word task pane", () => {
     fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
     await waitFor(() => expect(mock.tableGrid(mock.tableIds()[0])).toEqual([["Item", "Cost"], ["Personnel", "$120,000"], ["Travel", "$5,000"]]));
     expect(mock.tableEdits.every((edit) => edit.tracked)).toBe(true);
+    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+  });
+
+  it("shows a new-figure card and inserts the figure with its caption after the anchor", async () => {
+    await renderPane();
+    send("NewFigure: chart it");
+    await waitFor(() => expect(screen.getByText("Add an accessibility chart")).toBeInTheDocument());
+    const card = screen.getByLabelText("Suggestion: Add an accessibility chart");
+    expect(card.querySelector("img[alt='New figure']")?.getAttribute("src")).toBe("/api/ai/images/chart.png");
+    expect(card.textContent).toContain("Figure 2. Accessibility by cell type.");
+    const pictures = mock.pictures.length;
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(mock.pictures).toHaveLength(pictures + 1));
+    const anchor = mock.paragraphs.findIndex((paragraph) => paragraph.text.includes(ORIGINAL));
+    expect(mock.pictureEdits).toEqual([expect.objectContaining({ action: "insert", paragraphIndex: anchor + 1, tracked: true })]);
+    expect(mock.paragraphs[anchor + 2]).toMatchObject({ text: "Figure 2. Accessibility by cell type.", styleBuiltIn: "Caption" });
+    expect(mock.paragraphs.some((paragraph) => paragraph.text.includes(ORIGINAL))).toBe(true);
     await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
   });
 

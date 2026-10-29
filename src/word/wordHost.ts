@@ -1900,3 +1900,106 @@ export async function selectTable(snapshot: WordDocumentSnapshot, index: number)
     await context.sync();
   });
 }
+
+/* ------------------------------------------------------------------------- */
+/* Figures                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/** Widest a new figure may be: the usable text width of a Letter page with 1" margins. */
+const FIGURE_MAX_WIDTH_PT = 468;
+
+/** Turn on tracking for `run` when asked ("always"), or report whether Word already tracks ("word"). */
+async function withChangeTracking<T>(context: Word.RequestContext, mode: "always" | "word", run: () => Promise<T>): Promise<{ result: T; trackedChange: boolean }> {
+  const document = context.document;
+  document.load("changeTrackingMode");
+  await context.sync();
+  let previousMode: string | null = null;
+  let trackedChange: boolean;
+  if (mode === "always") {
+    previousMode = String(document.changeTrackingMode ?? "Off");
+    if (previousMode === "Off") {
+      document.changeTrackingMode = "TrackAll";
+      await context.sync();
+    }
+    trackedChange = true;
+  } else {
+    trackedChange = String(document.changeTrackingMode ?? "Off") !== "Off";
+  }
+  try {
+    return { result: await run(), trackedChange };
+  } finally {
+    if (previousMode === "Off") {
+      document.changeTrackingMode = "Off";
+      await context.sync();
+    }
+  }
+}
+
+/**
+ * Insert a picture as a new figure: its own centered paragraph after the
+ * paragraph holding `suggestion.original`, scaled down to the text width,
+ * with the caption (style Caption) in a paragraph below it.
+ */
+export async function insertPicture(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, base64: string, options: { trackChanges: "always" | "word"; matchIndex: number | null; caption: string | null }): Promise<{ trackedChange: boolean }> {
+  if (!base64) {
+    throw new Error("The figure has no image data.");
+  }
+  const word = requireWord();
+  return word.run(async (context) => {
+    const found = await findRanges(context, suggestion.original);
+    if (!found.ranges.length) {
+      throw new Error("Word could not find the paragraph this figure should follow — the passage may have changed since the suggestion was made.");
+    }
+    let matchIndex = options.matchIndex;
+    if (matchIndex === null) {
+      matchIndex = found.ranges.length > 1 ? chooseMatchIndex(await describeMatches(context, snapshot, found.ranges), null, suggestion.anchor ?? null) : 0;
+    }
+    const anchor = found.ranges[clampIndex(matchIndex, found.ranges.length)].paragraphs.getLast();
+    const { trackedChange } = await withChangeTracking(context, options.trackChanges, async () => {
+      const holder = anchor.insertParagraph("", "After");
+      holder.styleBuiltIn = "Normal" as Word.BuiltInStyleName;
+      holder.alignment = "Centered";
+      const picture = holder.insertInlinePictureFromBase64(base64, "Start");
+      picture.load("width,height");
+      await context.sync();
+      const width = safeNumber(picture, "width");
+      const height = safeNumber(picture, "height");
+      if (width && height && width > FIGURE_MAX_WIDTH_PT) {
+        picture.lockAspectRatio = true;
+        picture.width = FIGURE_MAX_WIDTH_PT;
+        picture.height = height * (FIGURE_MAX_WIDTH_PT / width);
+      }
+      const caption = options.caption?.trim();
+      if (caption) {
+        const captionParagraph = holder.insertParagraph(caption, "After");
+        captionParagraph.styleBuiltIn = "Caption" as Word.BuiltInStyleName;
+        captionParagraph.alignment = "Centered";
+      }
+      picture.select();
+      await context.sync();
+    });
+    return { trackedChange };
+  });
+}
+
+/** Delete one inline picture, and its paragraph when the picture was all it held. */
+export async function deletePicture(index: number, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }> {
+  const word = requireWord();
+  return word.run(async (context) => {
+    const picture = await inlinePictureAt(context, index);
+    const paragraph = picture.paragraph;
+    paragraph.load("text");
+    paragraph.inlinePictures.load("items");
+    await context.sync();
+    const alone = !(paragraph.text ?? "").replace(/[\s\u200b\ufffc]/g, "") && paragraph.inlinePictures.items.length === 1;
+    const { trackedChange } = await withChangeTracking(context, options.trackChanges, async () => {
+      if (alone) {
+        paragraph.delete();
+      } else {
+        picture.delete();
+      }
+      await context.sync();
+    });
+    return { trackedChange };
+  });
+}

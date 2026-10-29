@@ -24,6 +24,10 @@ export type SuggestionCandidate = Partial<AiSuggestion> & {
   /** Image replacement: which document picture (0-based) and the file that replaces it. */
   imageIndex?: unknown;
   imageFile?: unknown;
+  /** "replace" (default when imageIndex is set), "insert" (after the paragraph holding `original`) or "delete". */
+  imageAction?: unknown;
+  /** insert: caption paragraph below the new figure. */
+  imageCaption?: unknown;
   /** Table change: "insert" (after the paragraph holding `original`), "replace" or "delete" (table `tableIndex`). */
   tableAction?: unknown;
   tableIndex?: unknown;
@@ -119,7 +123,82 @@ export function validateTableCandidate(item: SuggestionCandidate, request: Pick<
 
 
 export function isImageCandidate(item: SuggestionCandidate): boolean {
-  return item.imageIndex !== undefined && item.imageIndex !== null && item.imageIndex !== "";
+  return (item.imageIndex !== undefined && item.imageIndex !== null && item.imageIndex !== "")
+    || (typeof item.imageAction === "string" && item.imageAction !== "");
+}
+
+/**
+ * Route an image candidate by its action: replace (default), insert a new
+ * figure after the paragraph holding `original`, or delete a picture.
+ */
+export function validateImageCandidate(item: SuggestionCandidate, images: AiDocumentImage[], request: Pick<AiRequest, "documentText" | "mode" | "selection">): SuggestionValidation {
+  const action = typeof item.imageAction === "string" && item.imageAction ? item.imageAction : "replace";
+  if (action === "replace") {
+    return validateImageReplacementCandidate(item, images);
+  }
+  const base = {
+    kind: "image" as const,
+    id: randomUUID(),
+    replacement: "",
+    confidence: normalizeConfidence(item.confidence),
+    target: "global" as const,
+    range: null,
+    status: "pending" as const
+  };
+  const title = typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 160) : null;
+  const rationale = typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : null;
+  if (action === "delete") {
+    const index = typeof item.imageIndex === "number" ? item.imageIndex : Number(item.imageIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= images.length) {
+      return { ok: false, reason: images.length ? `imageIndex must be between 0 and ${images.length - 1}.` : "This document has no images to delete." };
+    }
+    const target = images[index];
+    return {
+      ok: true,
+      suggestion: {
+        ...base,
+        image: { action, index, path: "", url: "", mime: target.mime, originalUrl: target.url, width: target.width ?? null, height: target.height ?? null },
+        title: title ?? `Delete image ${index + 1}`,
+        original: documentImageLabel(target),
+        rationale: rationale ?? "Proposed removing this image."
+      }
+    };
+  }
+  if (action !== "insert") {
+    return { ok: false, reason: 'imageAction must be "replace", "insert" or "delete".' };
+  }
+  const quoted = typeof item.original === "string" ? item.original.trim() : "";
+  if (!quoted) {
+    return { ok: false, reason: "original is empty — for a figure insert, copy exact text from the paragraph the figure should follow." };
+  }
+  let original = quoted;
+  if (!containsAnchoredText(request.documentText, original)) {
+    const repaired = repairAnchor(request.documentText, original, original);
+    if (!repaired) {
+      return { ok: false, reason: "original is not an exact substring of the document. Copy text from the paragraph the new figure should follow, verbatim." };
+    }
+    original = repaired.original;
+  }
+  const file = typeof item.imageFile === "string" ? item.imageFile.trim() : "";
+  if (!file) {
+    return { ok: false, reason: "imageFile is missing — the absolute path of the PNG/JPEG/GIF/WebP file to insert." };
+  }
+  const stored = importImageFile(file, "figure-insert");
+  if ("error" in stored) {
+    return { ok: false, reason: `imageFile could not be used: ${stored.error}` };
+  }
+  const caption = typeof item.imageCaption === "string" && item.imageCaption.trim() ? item.imageCaption.trim().slice(0, 2_000) : null;
+  return {
+    ok: true,
+    suggestion: {
+      ...base,
+      image: { action, index: null, path: stored.path, url: stored.url, mime: stored.mime, caption, width: null, height: null },
+      title: title ?? "Insert a figure",
+      original,
+      rationale: rationale ?? "Proposed new figure.",
+      anchor: suggestionAnchorFor(request.documentText, original, request.mode === "selection" ? request.selection?.from ?? null : null)
+    }
+  };
 }
 
 /** Label a document picture the way prompts and cards refer to it. */

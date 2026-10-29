@@ -71,6 +71,8 @@ Port of slides-mcp's connector, adapted:
   `workspace-write` inside the Writer workspace for `full`, which also runs in
   the user's own `CODEX_HOME` so their `config.toml` MCP servers load. Gate
   retirement on validating this path e2e (see Rollout).
+- **Figures** — `writer_stage_figure` inserts an image file as a new figure
+  (with caption) after a paragraph, or deletes a picture.
 - **Tables** — `writer_list_tables` gives the document's tables as grids;
   `writer_stage_table_edit` proposes inserting, rewriting (complete new grid;
   only the difference is applied) or deleting one. See docs/word-addin.md.

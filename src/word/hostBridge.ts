@@ -47,8 +47,22 @@ export interface DocumentHost {
    * Fails without changing anything when that table is gone or changed.
    */
   applyTableEdit(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, options: TableApplyOptions): Promise<{ trackedChange: boolean }>;
+  /**
+   * Insert a picture (base64 PNG/JPEG/GIF/WebP) as a new figure after the
+   * paragraph holding `suggestion.original` (match `matchIndex`), scaled to
+   * fit the text width, with `caption` as a paragraph below it when given.
+   */
+  insertPicture(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, base64: string, options: PictureInsertOptions): Promise<{ trackedChange: boolean }>;
+  /** Delete picture `index` (document order). */
+  deletePicture(index: number, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }>;
   /** Select a table (by its index in the snapshot) so the author sees it. */
   selectTable(snapshot: WordDocumentSnapshot, index: number): Promise<void>;
+}
+
+export interface PictureInsertOptions {
+  trackChanges: "always" | "word";
+  matchIndex: number | null;
+  caption: string | null;
 }
 
 export interface TableApplyOptions {
@@ -75,6 +89,8 @@ export const wordDocumentHost: DocumentHost = {
   selectInlinePicture: word.selectInlinePicture,
   commentInlinePicture: word.commentInlinePicture,
   applyTableEdit: word.applyTableEdit,
+  insertPicture: word.insertPicture,
+  deletePicture: word.deletePicture,
   selectTable: word.selectTable
 };
 
@@ -106,3 +122,5 @@ export const selectInlinePicture: DocumentHost["selectInlinePicture"] = (index) 
 export const commentInlinePicture: DocumentHost["commentInlinePicture"] = (index, text) => active.commentInlinePicture(index, text);
 export const applyTableEdit: DocumentHost["applyTableEdit"] = (snapshot, suggestion, options) => active.applyTableEdit(snapshot, suggestion, options);
 export const selectTable: DocumentHost["selectTable"] = (snapshot, index) => active.selectTable(snapshot, index);
+export const insertPicture: DocumentHost["insertPicture"] = (snapshot, suggestion, base64, options) => active.insertPicture(snapshot, suggestion, base64, options);
+export const deletePicture: DocumentHost["deletePicture"] = (index, options) => active.deletePicture(index, options);

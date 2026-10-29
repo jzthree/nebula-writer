@@ -24,8 +24,10 @@ var NebulaDocs = (() => {
   __export(main_exports, {
     nebulaApply: () => nebulaApply,
     nebulaApplyTable: () => nebulaApplyTable,
+    nebulaDeleteImage: () => nebulaDeleteImage,
     nebulaFingerprint: () => nebulaFingerprint,
     nebulaFocusKey: () => nebulaFocusKey,
+    nebulaInsertImage: () => nebulaInsertImage,
     nebulaReadDocument: () => nebulaReadDocument,
     nebulaReadFocus: () => nebulaReadFocus,
     nebulaReadImage: () => nebulaReadImage,
@@ -786,6 +788,45 @@ var NebulaDocs = (() => {
     }
     image.removeFromParent();
   }
+  function usableWidth() {
+    const body = document().getBody();
+    const width = Number(body.getPageWidth()) - Number(body.getMarginLeft()) - Number(body.getMarginRight());
+    return Number.isFinite(width) && width > 50 ? width : 468;
+  }
+  function nebulaInsertImage(request) {
+    const blocks = walkBlocks(document().getBody());
+    const entry = blocks[request.paragraphIndex];
+    if (!entry || collapse(entry.block.getText()) !== collapse(request.expectedParagraphText)) {
+      throw new Error("The paragraph the figure should follow has changed \u2014 re-read the document.");
+    }
+    const parent = entry.block.getParent();
+    const at = parent.getChildIndex(entry.block) + 1;
+    const holder = parent.insertParagraph(at, "");
+    holder.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    const image = holder.appendInlineImage(Utilities.newBlob(Utilities.base64Decode(request.base64), request.mime || "image/png", "figure"));
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const max = usableWidth();
+    if (width > max && height) {
+      image.setWidth(max);
+      image.setHeight(Math.round(height * max / width));
+    }
+    if (request.caption) {
+      image.setAltDescription(request.caption);
+      const caption = parent.insertParagraph(at + 1, request.caption);
+      caption.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+      caption.setHeading(DocumentApp.ParagraphHeading.NORMAL);
+    }
+  }
+  function nebulaDeleteImage(index) {
+    const { image } = imageAt(index);
+    const paragraph = image.getParent();
+    image.removeFromParent();
+    const holder = paragraph;
+    if (holder.getText && !holder.getText().trim() && holder.getNumChildren?.() === 0 && holder.getNextSibling?.()) {
+      holder.removeFromParent?.();
+    }
+  }
   function nebulaSelectImage(index) {
     const { image } = imageAt(index);
     const doc = document();
@@ -959,5 +1000,7 @@ function nebulaApply() { return NebulaDocs.nebulaApply.apply(null, arguments); }
 function nebulaReadImage() { return NebulaDocs.nebulaReadImage.apply(null, arguments); }
 function nebulaReplaceImage() { return NebulaDocs.nebulaReplaceImage.apply(null, arguments); }
 function nebulaSelectImage() { return NebulaDocs.nebulaSelectImage.apply(null, arguments); }
+function nebulaInsertImage() { return NebulaDocs.nebulaInsertImage.apply(null, arguments); }
+function nebulaDeleteImage() { return NebulaDocs.nebulaDeleteImage.apply(null, arguments); }
 function nebulaApplyTable() { return NebulaDocs.nebulaApplyTable.apply(null, arguments); }
 function nebulaSelectTable() { return NebulaDocs.nebulaSelectTable.apply(null, arguments); }

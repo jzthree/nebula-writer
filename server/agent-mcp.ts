@@ -171,6 +171,41 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   },
   {
     definition: {
+      name: "writer_stage_figure",
+      description: "Propose adding a new figure or removing one: action insert places a PNG/JPEG/GIF/WebP file (a chart or diagram you produced in your workspace, or an image the user attached) as a new figure after the paragraph holding `after`, with an optional caption paragraph below it; action delete removes document image `index`. The reviewer sees a preview; Word tracks it when Track Changes is on. To swap an existing picture use writer_stage_image_replacement. Returns the same per-item verdicts as writer_stage_suggestions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["insert", "delete"], description: "insert a new figure, or delete an existing image." },
+          file: { type: "string", description: "insert: absolute path of the image file on this machine." },
+          after: { type: "string", description: "insert: exact text from the paragraph the figure should follow (copied verbatim from the document)." },
+          caption: { type: "string", description: "insert: caption paragraph below the figure, e.g. \"Figure 3. Enrollment by site.\"" },
+          index: { type: "number", description: "delete: 0-based image index from writer_list_images." },
+          title: { type: "string", description: "Short label for the change." },
+          rationale: { type: "string", description: "Why this helps." },
+          confidence: { type: "number", description: "0-1 confidence (default 0.65)." }
+        },
+        required: ["action", "title", "rationale"],
+        additionalProperties: false
+      }
+    },
+    handler: async (args) => forward("POST", "/stage", {
+      suggestions: [{
+        imageAction: args.action,
+        imageIndex: args.index ?? null,
+        imageFile: args.file ?? null,
+        imageCaption: args.caption ?? null,
+        original: typeof args.after === "string" ? args.after : "",
+        replacement: "",
+        title: args.title,
+        rationale: args.rationale,
+        confidence: args.confidence
+      }],
+      ...(AGENT_PROVIDER ? { agent: AGENT_PROVIDER } : {})
+    })
+  },
+  {
+    definition: {
       name: "writer_list_tables",
       description: "List the document's tables in document order: { tables: [{ index, label, rows, context, irregular }] }. `rows` is the grid of cell texts, row by row; `context` is the paragraph just before the table (often its caption). Cell text also appears as plain paragraphs in the document text. `irregular` tables have merged cells: only their cell text can change, not their shape.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false }

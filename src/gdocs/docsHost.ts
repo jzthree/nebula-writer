@@ -6,11 +6,11 @@
 
 import type { AiSuggestion } from "../shared";
 import { normalizeEmphasis, shiftEmphasis, type EmphasisSpan } from "../emphasis";
-import type { DocumentHost, TableApplyOptions } from "../word/hostBridge";
+import type { DocumentHost, PictureInsertOptions, TableApplyOptions } from "../word/hostBridge";
 import { chooseMatchIndex, type BatchApplyItem, type BatchApplyOptions, type BatchApplyOutcome, type SuggestionMatchSet, type WordCapabilities, type WordHostBoot } from "../word/wordHost";
 import { indexParagraphs, type WordDocumentSnapshot, type WordFocusState } from "../word/wordContext";
 import { findMatches, planReplace, rangesOverlap, rangeToParagraphs, type PlannedEdit } from "./docsPlan";
-import type { DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp, DocsTableOp } from "./protocol";
+import type { DocsImageInsert, DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp, DocsTableOp } from "./protocol";
 import { callScript, waitForScriptHost } from "./scriptBridge";
 
 const SELECTION_POLL_MS = 2_000;
@@ -233,8 +233,7 @@ async function readInlinePictureBase64(index: number): Promise<{ base64: string;
 }
 
 async function replaceInlinePicture(index: number, base64: string): Promise<{ trackedChange: boolean }> {
-  const mime = /^iVBOR/.test(base64) ? "image/png" : /^\/9j\//.test(base64) ? "image/jpeg" : /^R0lGOD/.test(base64) ? "image/gif" : /^UklGR/.test(base64) ? "image/webp" : "image/png";
-  await callScript("nebulaReplaceImage", index, base64, mime);
+  await callScript("nebulaReplaceImage", index, base64, sniffImageMime(base64));
   return { trackedChange: false };
 }
 
@@ -294,6 +293,39 @@ async function commentInlinePicture(): Promise<void> {
   throw new Error("Google Docs cannot take a comment from Writer.");
 }
 
+async function insertPicture(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, base64: string, options: PictureInsertOptions): Promise<{ trackedChange: boolean }> {
+  const matches = findMatches(snapshot, suggestion.original);
+  if (!matches.length) {
+    throw new Error("The document no longer contains the text this figure should follow — the passage may have changed.");
+  }
+  const matchIndex = options.matchIndex !== null && options.matchIndex >= 0 && options.matchIndex < matches.length
+    ? options.matchIndex
+    : chooseMatchIndex(matches, null, suggestion.anchor ?? null);
+  const range = rangeToParagraphs(snapshot.paragraphs, matches[matchIndex].from, matches[matchIndex].to);
+  if (!range) {
+    throw new Error("This passage could not be mapped to the document. Refresh Writer and try again.");
+  }
+  const paragraphIndex = range.endParagraphIndex;
+  const request: DocsImageInsert = {
+    paragraphIndex,
+    expectedParagraphText: snapshot.paragraphs[paragraphIndex]?.text ?? "",
+    base64,
+    mime: sniffImageMime(base64),
+    caption: options.caption
+  };
+  await callScript("nebulaInsertImage", request);
+  return { trackedChange: false };
+}
+
+async function deletePicture(index: number): Promise<{ trackedChange: boolean }> {
+  await callScript("nebulaDeleteImage", index);
+  return { trackedChange: false };
+}
+
+function sniffImageMime(base64: string): string {
+  return /^iVBOR/.test(base64) ? "image/png" : /^\/9j\//.test(base64) ? "image/jpeg" : /^R0lGOD/.test(base64) ? "image/gif" : /^UklGR/.test(base64) ? "image/webp" : "image/png";
+}
+
 export const googleDocsHost: DocumentHost = {
   waitForHost,
   detectCapabilities,
@@ -310,5 +342,7 @@ export const googleDocsHost: DocumentHost = {
   selectInlinePicture,
   commentInlinePicture,
   applyTableEdit,
-  selectTable
+  selectTable,
+  insertPicture,
+  deletePicture
 };

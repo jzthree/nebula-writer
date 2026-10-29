@@ -19,7 +19,7 @@ import { ensureWriterCliHome, ensureWriterCodexMirrorHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
-import { containsAnchoredText, documentImageLabel, isImageCandidate, isTableCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate, validateTableCandidate } from "./suggestion-validation";
+import { containsAnchoredText, documentImageLabel, isImageCandidate, isTableCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageCandidate, validateTableCandidate } from "./suggestion-validation";
 import { documentTableLabel, gridForPrompt } from "../src/tables";
 import { imageMimeForName } from "./image-files";
 import { describeFocus, linkRevision } from "./revisions";
@@ -210,7 +210,16 @@ export const AI_RESPONSE_SCHEMA = {
           },
           imageFile: {
             type: ["string", "null"],
-            description: "Only for an image replacement: absolute path of the PNG/JPEG/GIF/WebP file that replaces the image. null for text edits."
+            description: "Only for an image replacement or insert: absolute path of the PNG/JPEG/GIF/WebP file. null for text edits."
+          },
+          imageAction: {
+            type: ["string", "null"],
+            enum: ["replace", "insert", "delete", null],
+            description: "Only for an image change: replace image imageIndex with imageFile, insert imageFile as a new figure after the paragraph holding `original`, or delete image imageIndex. null otherwise."
+          },
+          imageCaption: {
+            type: ["string", "null"],
+            description: "Only for an image insert: the caption paragraph placed below the new figure (e.g. \"Figure 3. …\"), or null for none."
           },
           tableAction: {
             type: ["string", "null"],
@@ -231,7 +240,7 @@ export const AI_RESPONSE_SCHEMA = {
             description: "Only for insert: true when the first row is a header row. null otherwise."
           }
         },
-        required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile", "tableAction", "tableIndex", "tableRows", "tableHeader"]
+        required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile", "imageAction", "imageCaption", "tableAction", "tableIndex", "tableRows", "tableHeader"]
       }
     }
   },
@@ -699,6 +708,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
           `The document has ${images.length} image${images.length === 1 ? "" : "s"}: ${images.map((image) => documentImageLabel(image)).join("; ")}. writer_list_images gives their file paths — open one with your image reader to see it. To replace one, write a new PNG/JPEG/GIF/WebP file and call writer_stage_image_replacement; the reviewer sees before/after previews.`
         ]
       : []),
+    "To add a figure (a chart or diagram you produce — write the PNG to your workspace — or an image the user attached), call writer_stage_figure with action \"insert\", the file, the paragraph it should follow, and a caption; action \"delete\" removes an image.",
     (request.documentTables ?? []).length
       ? `The document has ${request.documentTables!.length} table${request.documentTables!.length === 1 ? "" : "s"}: ${request.documentTables!.map((table) => documentTableLabel(table)).join("; ")}. writer_list_tables gives their cells as grids; writer_stage_table_edit inserts a new table, rewrites one (pass the complete new grid — Writer applies only the difference: changed cells, added/removed rows and columns) or deletes one.`
       : "To add a table (budgets, timelines, comparisons), call writer_stage_table_edit with action \"insert\".",
@@ -1007,15 +1017,19 @@ export function buildSelectionContextLines(request: AiRequest, options: CliPromp
  * image inputs (-i) so it can see them; every provider gets the list with
  * paths and captions, and the contract for proposing a replacement.
  */
+const FIGURE_INSERT_CONTRACT = "To add a new figure (a chart or diagram you produced, or an image file the user attached), return a suggestion with imageAction \"insert\", imageFile (absolute path of a PNG/JPEG/GIF/WebP file), imageCaption (or null), original set to exact text from the paragraph the figure should follow, and replacement \"\".";
+
 function buildDocumentImagePromptLines(request: AiRequest): string[] {
   const images = request.documentImages ?? [];
   if (!images.length) {
-    return ["Text suggestions set imageIndex and imageFile to null."];
+    return [FIGURE_INSERT_CONTRACT, "Text suggestions set imageIndex, imageFile, imageAction and imageCaption to null."];
   }
   return [
     `Document images (${images.length}, in document order${request.provider === "codex" ? "; the same files are attached to this request as image inputs, in this order" : ""}):`,
     ...images.map((image) => `- ${documentImageLabel(image)} — ${image.width && image.height ? `${Math.round(image.width)}×${Math.round(image.height)} ` : ""}${image.mime}, file: ${image.path}`),
-    "To propose replacing an image with a file you produced (PNG/JPEG/GIF/WebP, written to your workspace), return a suggestion with imageIndex (0-based), imageFile (the absolute path), original set to the image's label as listed above, and replacement \"\". Text suggestions set imageIndex and imageFile to null."
+    "To propose replacing an image with a file you produced (PNG/JPEG/GIF/WebP, written to your workspace), return a suggestion with imageAction \"replace\", imageIndex (0-based), imageFile (the absolute path), original set to the image's label as listed above, and replacement \"\". To remove an image: imageAction \"delete\" with imageIndex and the label as original.",
+    FIGURE_INSERT_CONTRACT,
+    "Text suggestions set imageIndex, imageFile, imageAction and imageCaption to null."
   ];
 }
 
@@ -2465,7 +2479,7 @@ function isDisguisedDeletion(item: Partial<AiSuggestion>, original: string, repl
 
 function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): { suggestion: AiSuggestion; note?: string } | { skipped: SkipReason } {
   if (isImageCandidate(item)) {
-    const verdict = validateImageReplacementCandidate(item, request.documentImages ?? []);
+    const verdict = validateImageCandidate(item, request.documentImages ?? [], request);
     return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "image" };
   }
   if (isTableCandidate(item)) {

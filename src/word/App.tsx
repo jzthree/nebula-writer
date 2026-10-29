@@ -15,7 +15,7 @@ import { newAiRunId } from "../sidecarClient";
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiRequestFocus } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -44,7 +44,7 @@ import {
   subscribeParagraphChanges,
   subscribeSelectionChanges,
   waitForWordHost,
-  type WordCapabilities, applyTableEdit, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
+  type WordCapabilities, applyTableEdit, commentInlinePicture, deletePicture, insertPicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
 import { findEditTarget } from "../tables";
 import {
   appendSessionChat,
@@ -1184,7 +1184,7 @@ export function App() {
 
   const ensureMatches = useCallback(async (suggestion: AiSuggestion, snap: WordDocumentSnapshot, force = false): Promise<CardState> => {
     const existing = cardsRef.current[suggestion.id] ?? DEFAULT_CARD_STATE;
-    if (suggestion.kind === "image" || (suggestion.kind === "table" && suggestion.table?.action !== "insert")) {
+    if ((suggestion.kind === "image" && !isFigureInsert(suggestion)) || (suggestion.kind === "table" && suggestion.table?.action !== "insert")) {
       const next: CardState = { ...existing, matchIndex: 0, matches: 1, heading: null, paragraphIndex: null, error: null };
       patchCard(suggestion.id, next);
       return next;
@@ -1214,11 +1214,28 @@ export function App() {
     if (!snap || hostStatus !== "ready") {
       return;
     }
-    if (suggestion.kind === "image" && suggestion.image) {
-      const image = suggestion.image;
+    if (isFigureInsert(suggestion) && cardsRef.current[suggestion.id]?.outcome === "applied") {
+      // The new figure sits right after its anchor; its caption is the nearest findable text.
+      const caption = suggestion.image?.caption?.trim();
       void runBusy("Locating in the document…", async () => {
         try {
-          await selectInlinePicture(image.index);
+          const latest = (await refreshSnapshot()) ?? snap;
+          await locateSuggestion(latest, { original: caption || suggestion.original }, 0);
+          patchCard(suggestion.id, { error: null });
+        } catch (error) {
+          patchCard(suggestion.id, { error: errorMessage(error) });
+        }
+      });
+      return;
+    }
+    if (suggestion.kind === "image" && suggestion.image && !isFigureInsert(suggestion)) {
+      const index = suggestion.image.index;
+      if (index === null || (suggestion.image.action === "delete" && cardsRef.current[suggestion.id]?.outcome === "applied")) {
+        return;
+      }
+      void runBusy("Locating in the document…", async () => {
+        try {
+          await selectInlinePicture(index);
           patchCard(suggestion.id, { error: null });
         } catch (error) {
           patchCard(suggestion.id, { error: errorMessage(error) });
@@ -1350,16 +1367,38 @@ export function App() {
         applied.push(outcome);
       }
     }
-    // Picture replacements: one Word round trip each (bytes come from the sidecar).
-    for (const suggestion of imageGroup) {
+    // Figures: one Word round trip each (bytes come from the sidecar).
+    // Index-based changes run first — replacements, then deletions from the
+    // last picture back — so no change shifts the index of another; inserts
+    // find their place by anchor text.
+    const imageRank = (suggestion: AiSuggestion) => {
+      const image = suggestion.image as AiImageReplacement;
+      return image.action === "insert" ? Number.MAX_SAFE_INTEGER : image.action === "delete" ? 1_000_000 - (image.index ?? 0) : 0;
+    };
+    for (const suggestion of [...imageGroup].sort((a, b) => imageRank(a) - imageRank(b))) {
       const image = suggestion.image;
       if (!image) {
         continue;
       }
       try {
-        const base64 = await fetchImageAsBase64(image.url);
-        const result = await replaceInlinePicture(image.index, base64, { trackChanges: settingsRef.current.trackChanges });
-        patchCard(suggestion.id, { outcome: "applied", detail: result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)", error: null, matches: 1, matchIndex: 0 });
+        let result: { trackedChange: boolean };
+        if (image.action === "insert") {
+          const state = cardsRef.current[suggestion.id];
+          const base64 = await fetchImageAsBase64(image.url);
+          result = await insertPicture(snap, suggestion, base64, {
+            trackChanges: settingsRef.current.trackChanges,
+            matchIndex: state && state.matches !== null ? state.matchIndex : null,
+            caption: image.caption ?? null
+          });
+        } else if (image.index === null) {
+          throw new Error("This image suggestion does not say which picture it changes.");
+        } else if (image.action === "delete") {
+          result = await deletePicture(image.index, { trackChanges: settingsRef.current.trackChanges });
+        } else {
+          const base64 = await fetchImageAsBase64(image.url);
+          result = await replaceInlinePicture(image.index, base64, { trackChanges: settingsRef.current.trackChanges });
+        }
+        patchCard(suggestion.id, { outcome: "applied", detail: result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)", error: null, ...(image.action === "insert" ? {} : { matches: 1, matchIndex: 0 }) });
         applied.push({ suggestion, trackedChange: result.trackedChange });
       } catch (error) {
         patchCard(suggestion.id, { error: errorMessage(error) });
@@ -1448,7 +1487,7 @@ export function App() {
     setActiveId(suggestion.id);
     void runBusy("Adding a Word comment…", async () => {
       try {
-        if (suggestion.kind === "image" && suggestion.image) {
+        if (suggestion.kind === "image" && suggestion.image && suggestion.image.index !== null) {
           await commentInlinePicture(suggestion.image.index, buildCommentText(suggestion));
         } else {
           const state = await ensureMatches(suggestion, snap);
@@ -1930,4 +1969,9 @@ function base64ToBlob(base64: string): Blob | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A suggestion that adds a new figure (placed by its anchor text, like a text edit). */
+function isFigureInsert(suggestion: AiSuggestion): boolean {
+  return suggestion.kind === "image" && suggestion.image?.action === "insert";
 }

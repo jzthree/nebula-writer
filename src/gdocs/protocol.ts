@@ -112,6 +112,15 @@ export interface DocsOpOutcome {
   error?: string;
 }
 
+/** Insert a picture as a new paragraph after paragraph `paragraphIndex` (verified by its text), with an optional caption below. */
+export interface DocsImageInsert {
+  paragraphIndex: number;
+  expectedParagraphText: string;
+  base64: string;
+  mime: string;
+  caption: string | null;
+}
+
 export interface DocsImageBytesPayload {
   base64: string;
   mime: string;
@@ -130,6 +139,8 @@ export const DOCS_SCRIPT_FUNCTIONS = [
   "nebulaReadImage",
   "nebulaReplaceImage",
   "nebulaSelectImage",
+  "nebulaInsertImage",
+  "nebulaDeleteImage",
   "nebulaApplyTable",
   "nebulaSelectTable"
 ] as const;

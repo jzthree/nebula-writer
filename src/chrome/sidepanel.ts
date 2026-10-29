@@ -6,7 +6,7 @@
  * chrome.identity. Only the pane's origin may talk to this page.
  */
 
-import { applyTableOp, buildBatchPlan, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
+import { applyTableOp, buildBatchPlan, deleteImageRequest, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
 import { bindPanelTab, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
@@ -297,6 +297,22 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaReplaceImage() {
     throw new Error("Replacing images is not available from the Chrome extension: the Docs API needs a public image URL. Use the Google Docs add-in for picture swaps.");
+  },
+
+  async nebulaInsertImage() {
+    throw new Error("Inserting figures from the Chrome extension is not available yet (the Docs API only takes images from public URLs). Copy the figure from the card's preview and paste it into the document.");
+  },
+
+  async nebulaDeleteImage(index) {
+    const { docId } = await activeDoc();
+    const parsed = await fetchParsed(docId);
+    const request = deleteImageRequest(parsed.index, Number(index));
+    if (!request) {
+      throw new Error(`The document has no inline image ${Number(index) + 1}.`);
+    }
+    await api(`/${encodeURIComponent(docId)}:batchUpdate`, { method: "POST", body: JSON.stringify({ requests: [request] }) });
+    lastParsed = null;
+    return null;
   },
 
   async nebulaSelectImage() {

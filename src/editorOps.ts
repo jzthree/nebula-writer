@@ -257,6 +257,145 @@ export function revertTableSuggestion(editor: Editor, suggestion: AiSuggestion, 
   return true;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Figures                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/** An inserted figure: the image node, then its caption paragraph when there is one. */
+function figureNodes(editor: Editor, src: string, caption: string | null | undefined): Array<ReturnType<Editor["schema"]["nodeFromJSON"]>> {
+  const nodes = [editor.schema.nodeFromJSON({ type: "image", attrs: { src, alt: caption ?? "" } })];
+  if (caption && caption.trim()) {
+    nodes.push(editor.schema.nodeFromJSON({ type: "paragraph", content: [{ type: "text", text: caption.trim() }] }));
+  }
+  return nodes;
+}
+
+/** Where an inserted figure (image node + optional caption) stands now: found by its src. */
+function findInsertedFigure(editor: Editor, src: string, caption: string | null | undefined): { from: number; to: number } | null {
+  let found: { from: number; to: number } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (found) {
+      return false;
+    }
+    if (node.type.name === "image" && node.attrs.src === src) {
+      let to = pos + node.nodeSize;
+      const next = editor.state.doc.resolve(to).nodeAfter;
+      if (caption && caption.trim() && next?.type.name === "paragraph" && normalizeText(next.textContent) === normalizeText(caption)) {
+        to += next.nodeSize;
+      }
+      found = { from: pos, to };
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
+function applyImageSuggestion(editor: Editor, suggestion: AiSuggestion, options: { confirmRelocated?: boolean }): ApplySuggestionResult {
+  const image = suggestion.image;
+  if (!image) {
+    return { ok: false, reason: "missing" };
+  }
+  const action = image.action ?? "replace";
+  if (action === "insert") {
+    // The anchor text stays: the figure goes after the block that holds it.
+    const match = findSuggestionMatchUncached(editor, suggestion);
+    if (!match) {
+      return { ok: false, reason: "missing" };
+    }
+    if ((match.matchKind === "relocated" || match.matchKind === "ambiguous") && !options.confirmRelocated) {
+      return { ok: false, reason: "needs-confirmation", matchKind: match.matchKind, range: { from: match.from, to: match.to } };
+    }
+    const at = topLevelBlockEnd(editor, match.to);
+    if (at === null || !image.url) {
+      return { ok: false, reason: "missing" };
+    }
+    const nodes = figureNodes(editor, image.url, image.caption);
+    const size = nodes.reduce((sum, node) => sum + node.nodeSize, 0);
+    editor.chain().focus().command(({ tr }) => {
+      tr.insert(at, nodes);
+      return true;
+    }).run();
+    return { ok: true, matchKind: match.matchKind, range: { from: at, to: at + size } };
+  }
+  const target = image.index === null ? null : findImageNode(editor, image.index);
+  if (!target) {
+    return { ok: false, reason: "missing" };
+  }
+  const range = { from: target.pos, to: target.pos + target.nodeSize };
+  if (action === "delete") {
+    editor.chain().focus().command(({ tr }) => {
+      tr.delete(range.from, range.to);
+      return true;
+    }).run();
+    return { ok: true, matchKind: "exact", range: { from: range.from, to: range.from } };
+  }
+  // A picture swap: point the Nth image node at the replacement file.
+  editor.chain().focus().command(({ tr }) => {
+    tr.setNodeMarkup(target.pos, undefined, { ...target.attrs, src: image.url });
+    return true;
+  }).run();
+  return { ok: true, matchKind: "exact", range };
+}
+
+/**
+ * Undo an accepted figure suggestion: remove an inserted figure (and its
+ * caption), point a replaced picture back at the original file, or put a
+ * deleted picture back at `at` (where it stood). False when it cannot be found.
+ */
+export function revertImageSuggestion(editor: Editor, suggestion: AiSuggestion, at: number | null): boolean {
+  const image = suggestion.image;
+  if (!image) {
+    return false;
+  }
+  const action = image.action ?? "replace";
+  if (action === "insert") {
+    const figure = findInsertedFigure(editor, image.url, image.caption);
+    if (!figure) {
+      return false;
+    }
+    editor.chain().focus().command(({ tr }) => {
+      tr.delete(figure.from, figure.to);
+      return true;
+    }).run();
+    return true;
+  }
+  if (!image.originalUrl) {
+    return false;
+  }
+  if (action === "delete") {
+    if (at === null || at < 0 || at > editor.state.doc.content.size) {
+      return false;
+    }
+    const node = editor.schema.nodeFromJSON({ type: "image", attrs: { src: image.originalUrl } });
+    editor.chain().focus().command(({ tr }) => {
+      tr.insert(at, node);
+      return true;
+    }).run();
+    return true;
+  }
+  let target: { pos: number; attrs: Record<string, unknown> } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (target) {
+      return false;
+    }
+    if (node.type.name === "image" && node.attrs.src === image.url) {
+      target = { pos, attrs: { ...node.attrs } };
+      return false;
+    }
+    return true;
+  });
+  const found = target as { pos: number; attrs: Record<string, unknown> } | null;
+  if (!found) {
+    return false;
+  }
+  editor.chain().focus().command(({ tr }) => {
+    tr.setNodeMarkup(found.pos, undefined, { ...found.attrs, src: image.originalUrl });
+    return true;
+  }).run();
+  return true;
+}
+
 export function applySuggestion(
   editor: Editor,
   suggestion: AiSuggestion,
@@ -266,17 +405,7 @@ export function applySuggestion(
     return applyTableSuggestion(editor, suggestion, options);
   }
   if (suggestion.kind === "image" && suggestion.image) {
-    // A picture swap: point the Nth image node at the replacement file.
-    const target = findImageNode(editor, suggestion.image.index);
-    if (!target) {
-      return { ok: false, reason: "missing" };
-    }
-    const src = suggestion.image.url;
-    editor.chain().focus().command(({ tr }) => {
-      tr.setNodeMarkup(target.pos, undefined, { ...target.attrs, src });
-      return true;
-    }).run();
-    return { ok: true, matchKind: "exact", range: { from: target.pos, to: target.pos + target.nodeSize } };
+    return applyImageSuggestion(editor, suggestion, options);
   }
   const match = findSuggestionMatch(editor, suggestion);
   if (!match) {
@@ -325,8 +454,9 @@ export function findSuggestionRange(editor: Editor, suggestion: AiSuggestion): {
 }
 
 export function findSuggestionMatch(editor: Editor, suggestion: AiSuggestion): SuggestionMatch | null {
-  if (suggestion.kind === "image" && suggestion.image) {
-    const target = findImageNode(editor, suggestion.image.index);
+  if (suggestion.kind === "image" && suggestion.image && (suggestion.image.action ?? "replace") !== "insert") {
+    // Replace/delete: the picture itself (insert anchors to its paragraph's text, below).
+    const target = suggestion.image.index === null ? null : findImageNode(editor, suggestion.image.index);
     return target ? { from: target.pos, to: target.pos + target.nodeSize, matchKind: "exact" } : null;
   }
   if (suggestion.kind === "table" && suggestion.table && suggestion.table.action !== "insert") {

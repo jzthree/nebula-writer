@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasis";
 import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment, DocumentCommentsStatus } from "../src/shared";
-import { isImageCandidate, isTableCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, validateTableCandidate, type SuggestionCandidate } from "./suggestion-validation";
+import { isImageCandidate, isTableCandidate, validateImageCandidate, validateSuggestionCandidate, validateTableCandidate, type SuggestionCandidate } from "./suggestion-validation";
 import type { DocumentTable } from "../src/tables";
 
 /**
@@ -206,7 +206,7 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
       continue;
     }
     const verdict = isImageCandidate(candidates[index])
-      ? validateImageReplacementCandidate(candidates[index], run.images)
+      ? validateImageCandidate(candidates[index], run.images, run)
       : isTableCandidate(candidates[index])
       ? validateTableCandidate(candidates[index], run)
       : validateSuggestionCandidate(candidates[index], run);

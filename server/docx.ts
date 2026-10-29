@@ -1024,7 +1024,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
   // Image replacements first: each swaps one picture run for a tracked
   // delete/insert pair with a new media part; the text pipeline then runs on
   // the result (figure runs hold no text, so the two never collide).
-  const imageResult = await replaceDocxImages(zip, sourceDocumentXml, pendingSuggestions.filter((suggestion) => suggestion.kind === "image"), revisionIds);
+  const imageResult = await replaceDocxImages(zip, sourceDocumentXml, pendingSuggestions.filter((suggestion) => suggestion.kind === "image" && (suggestion.image?.action ?? "replace") === "replace"), revisionIds);
   for (const suggestion of imageResult.applied) {
     usedSuggestionIds.add(suggestion.id);
   }
@@ -1344,7 +1344,7 @@ async function replaceDocxImages(
   const ordered = [...suggestions].sort((a, b) => (b.image?.index ?? 0) - (a.image?.index ?? 0));
   for (const suggestion of ordered) {
     const image = suggestion.image;
-    if (!image) {
+    if (!image || image.index === null) {
       failed.push({ suggestion, reason: "The image suggestion carries no replacement file." });
       continue;
     }

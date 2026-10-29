@@ -88,10 +88,19 @@ export interface AiDocumentImage {
   paragraphIndex?: number | null;
 }
 
-/** A proposed replacement of one document image with a file the AI produced. */
+/**
+ * A proposed figure change: replace picture `index` with a file the AI
+ * produced (the default), insert a file as a new figure after the paragraph
+ * holding the suggestion's `original` (with an optional caption paragraph
+ * below it), or delete picture `index`.
+ */
 export interface AiImageReplacement {
-  index: number;
-  /** Absolute path of the replacement file on the sidecar machine. */
+  action?: "replace" | "insert" | "delete";
+  /** The picture replaced or deleted (0-based, document order); null for an insert. */
+  index: number | null;
+  /** insert: caption paragraph placed right below the new figure. */
+  caption?: string | null;
+  /** Absolute path of the new file on the sidecar machine ("" for a delete). */
   path: string;
   /** Sidecar route serving the replacement, for the card's preview. */
   url: string;

@@ -16,6 +16,7 @@ import {
   type DocsDocumentPayload,
   type DocsFocusPayload,
   type DocsImageBytesPayload,
+  type DocsImageInsert,
   type DocsImagePayload,
   type DocsOpOutcome,
   type DocsParagraphPayload,
@@ -634,6 +635,50 @@ export function nebulaReplaceImage(index: number, base64: string, mime: string):
     inserted.setAltDescription(alt);
   }
   image.removeFromParent();
+}
+
+/** Widest a new figure may be: the page width less its margins. */
+function usableWidth(): number {
+  const body = document().getBody();
+  const width = Number(body.getPageWidth()) - Number(body.getMarginLeft()) - Number(body.getMarginRight());
+  return Number.isFinite(width) && width > 50 ? width : 468;
+}
+
+export function nebulaInsertImage(request: DocsImageInsert): void {
+  const blocks = walkBlocks(document().getBody() as unknown as Container);
+  const entry = blocks[request.paragraphIndex];
+  if (!entry || collapse(entry.block.getText()) !== collapse(request.expectedParagraphText)) {
+    throw new Error("The paragraph the figure should follow has changed — re-read the document.");
+  }
+  const parent = entry.block.getParent() as unknown as { getChildIndex(child: Element): number; insertParagraph(index: number, text: string): Paragraph };
+  const at = parent.getChildIndex(entry.block as unknown as Element) + 1;
+  const holder = parent.insertParagraph(at, "");
+  holder.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  const image = holder.appendInlineImage(Utilities.newBlob(Utilities.base64Decode(request.base64), request.mime || "image/png", "figure"));
+  const width = image.getWidth();
+  const height = image.getHeight();
+  const max = usableWidth();
+  if (width > max && height) {
+    image.setWidth(max);
+    image.setHeight(Math.round((height * max) / width));
+  }
+  if (request.caption) {
+    image.setAltDescription(request.caption);
+    const caption = parent.insertParagraph(at + 1, request.caption);
+    caption.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    caption.setHeading(DocumentApp.ParagraphHeading.NORMAL);
+  }
+}
+
+export function nebulaDeleteImage(index: number): void {
+  const { image } = imageAt(index);
+  const paragraph = image.getParent();
+  image.removeFromParent();
+  // A paragraph that held only the picture goes too (unless it is the last in its container, which Docs requires).
+  const holder = paragraph as unknown as { getText?(): string; getNumChildren?(): number; getNextSibling?(): Element | null; removeFromParent?(): void };
+  if (holder.getText && !holder.getText().trim() && holder.getNumChildren?.() === 0 && holder.getNextSibling?.()) {
+    holder.removeFromParent?.();
+  }
 }
 
 export function nebulaSelectImage(index: number): void {

@@ -1960,7 +1960,7 @@ describe("proposeChanges", () => {
         suggestions: {
           type: "array",
           items: {
-            required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile", "tableAction", "tableIndex", "tableRows", "tableHeader"]
+            required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile", "imageAction", "imageCaption", "tableAction", "tableIndex", "tableRows", "tableHeader"]
           }
         }
       }
