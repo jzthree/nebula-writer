@@ -29,7 +29,9 @@ const EXPORTED = [
   "nebulaApply",
   "nebulaReadImage",
   "nebulaReplaceImage",
-  "nebulaSelectImage"
+  "nebulaSelectImage",
+  "nebulaApplyTable",
+  "nebulaSelectTable"
 ];
 
 const result = await build({

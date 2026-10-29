@@ -129,6 +129,28 @@ vi.mock("../src/word/writerClient", () => ({
         sessionReused: false
       };
     }
+    if (request.instruction.startsWith("Table:")) {
+      const table = request.documentTables?.[0];
+      const rows = table ? [...table.rows.map((row) => [...row]), ["Travel", "$5,000"]] : [];
+      const suggestion: AiSuggestion = {
+        id: `tbl-${captured.requests.length}`,
+        kind: "table",
+        table: { action: "replace", index: 0, rows, before: table?.rows ?? null },
+        title: "Add travel to the budget",
+        original: "[Table 1] 2×2",
+        replacement: "",
+        rationale: "Travel was missing.",
+        confidence: 0.8,
+        target: "global",
+        range: null,
+        status: "pending"
+      };
+      return {
+        ai: { message: "Added a travel row.", provider: request.provider, suggestions: [suggestion], agentSessionId: null, activity: [] },
+        session: { id: "word-session", name: "Aims.docx", title: "Aims", sourceDocumentId: "word-live:aims.docx", documentText: request.documentText, documentHtmlLength: 0, revision: 1, suggestions: [suggestion], chatMessages: [], updatedAt: new Date().toISOString() },
+        sessionReused: false
+      } as unknown as Awaited<ReturnType<typeof import("../src/word/writerClient").requestWordSuggestions>>;
+    }
     if (request.instruction.startsWith("Sections:")) {
       const first: AiSuggestion = { id: `g-${captured.requests.length}-1`, ref: "S1", title: "Tighten the opening claim", original: ORIGINAL, replacement: REPLACEMENT, rationale: "Removes hedging.", confidence: 0.8, target: request.mode, range: null, status: "pending" };
       const second: AiSuggestion = { id: `g-${captured.requests.length}-2`, ref: "S2", title: "Sharpen the innovation claim", original: "which has not been done before to our knowledge", replacement: "which no prior study has attempted", rationale: "Direct.", confidence: 0.7, target: request.mode, range: null, status: "pending" };
@@ -440,6 +462,28 @@ describe("Word task pane", () => {
     send("Figure: and again");
     await waitFor(() => expect(captured.requests.length).toBe(2));
     expect(captured.imageUploads).toHaveLength(1);
+  });
+
+  it("sends the document's tables with a request and applies a table change in Word", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: sampleGrantDocument(),
+      documentName: "Aims.docx",
+      tables: [{ afterParagraph: 4, rows: [["Item", "Cost"], ["Personnel", "$120,000"]] }]
+    }).install();
+    await renderPane();
+    send("Table: add travel");
+    await waitFor(() => expect(screen.getByText("Add travel to the budget")).toBeInTheDocument());
+    expect(captured.requests[0].documentTables).toEqual([expect.objectContaining({ index: 0, rows: [["Item", "Cost"], ["Personnel", "$120,000"]] })]);
+    const card = screen.getByLabelText("Suggestion: Add travel to the budget");
+    expect(card.querySelectorAll("td.changed")).toHaveLength(2);
+    expect(card.textContent).toContain("3 rows × 2 columns (was 2 rows × 2 columns)");
+    expect(card.querySelector("[aria-label='Leave as a Word comment']")).toBeNull();
+
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(mock.tableGrid(mock.tableIds()[0])).toEqual([["Item", "Cost"], ["Personnel", "$120,000"], ["Travel", "$5,000"]]));
+    expect(mock.tableEdits.every((edit) => edit.tracked)).toBe(true);
+    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
   });
 
   it("sends a message typed while the AI works into the running turn, like the CLIs", async () => {

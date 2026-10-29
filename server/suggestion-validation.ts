@@ -4,6 +4,7 @@ import { suggestionAnchorFor } from "../src/shared";
 import { parseQuotedText, sameEmphasisSpans, stagedEmphasis } from "./emphasis-staging";
 import { importImageFile } from "./image-files";
 import { repairAnchor } from "./anchor-repair";
+import { cleanGrid, documentTableLabel, sameGrid, type DocumentTable, type TableAction } from "../src/tables";
 
 /**
  * Suggestion safety checks, shared by the AI pipeline and the agent staging
@@ -23,7 +24,99 @@ export type SuggestionCandidate = Partial<AiSuggestion> & {
   /** Image replacement: which document picture (0-based) and the file that replaces it. */
   imageIndex?: unknown;
   imageFile?: unknown;
+  /** Table change: "insert" (after the paragraph holding `original`), "replace" or "delete" (table `tableIndex`). */
+  tableAction?: unknown;
+  tableIndex?: unknown;
+  /** insert/replace: the full grid the table should hold, row by row. */
+  tableRows?: unknown;
+  /** insert: the first row is a header. */
+  tableHeader?: unknown;
 };
+
+export function isTableCandidate(item: SuggestionCandidate): boolean {
+  return typeof item.tableAction === "string" && item.tableAction !== "";
+}
+
+/**
+ * A table change must name an existing table (replace/delete) or anchor to
+ * exact document text (insert: the table goes after that paragraph), and
+ * carry a well-formed grid. The table's grid at staging time is stored with
+ * the suggestion so hosts apply it only to that table, unchanged.
+ */
+export function validateTableCandidate(item: SuggestionCandidate, request: Pick<AiRequest, "documentText" | "documentTables" | "mode" | "selection">): SuggestionValidation {
+  const action = String(item.tableAction) as TableAction;
+  if (!["insert", "replace", "delete"].includes(action)) {
+    return { ok: false, reason: 'tableAction must be "insert", "replace" or "delete".' };
+  }
+  const tables = request.documentTables ?? [];
+  const title = typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 160) : null;
+  const rationale = typeof item.rationale === "string" && item.rationale.trim() ? item.rationale.trim() : "Proposed table change.";
+  const base = { id: randomUUID(), confidence: normalizeConfidence(item.confidence), replacement: "", rationale, status: "pending" as const, kind: "table" as const };
+  let grid: string[][] | null = null;
+  if (action !== "delete") {
+    const cleaned = cleanGrid(item.tableRows);
+    if ("error" in cleaned) {
+      return { ok: false, reason: `tableRows: ${cleaned.error}` };
+    }
+    grid = cleaned.rows;
+  }
+  if (action === "insert") {
+    const quoted = typeof item.original === "string" ? item.original.trim() : "";
+    if (!quoted) {
+      return { ok: false, reason: "original is empty — for a table insert, copy exact text from the paragraph the table should follow." };
+    }
+    let original = quoted;
+    if (!containsAnchoredText(request.documentText, original)) {
+      const repaired = repairAnchor(request.documentText, original, original);
+      if (!repaired) {
+        return { ok: false, reason: "original is not an exact substring of the document. Copy text from the paragraph the new table should follow, verbatim." };
+      }
+      original = repaired.original;
+    }
+    const near = request.mode === "selection" ? request.selection?.from ?? null : null;
+    return {
+      ok: true,
+      suggestion: {
+        ...base,
+        table: { action, index: null, rows: grid, before: null, header: item.tableHeader === true },
+        title: title ?? `Insert a ${grid!.length}×${grid![0].length} table`,
+        original,
+        target: "global",
+        range: null,
+        anchor: suggestionAnchorFor(request.documentText, original, near)
+      }
+    };
+  }
+  const index = typeof item.tableIndex === "number" ? item.tableIndex : Number(item.tableIndex);
+  const table = Number.isInteger(index) ? tables.find((candidate) => candidate.index === index) : undefined;
+  if (!table) {
+    return {
+      ok: false,
+      reason: tables.length
+        ? `tableIndex must be between 0 and ${tables.length - 1} (the document has ${tables.length} table${tables.length === 1 ? "" : "s"}; list them with writer_list_tables).`
+        : "This document has no tables to change. Use tableAction \"insert\" to add one."
+    };
+  }
+  if (grid && sameGrid(grid, table.rows)) {
+    return { ok: false, reason: "tableRows is the same as the table's current content — change something, or skip this table." };
+  }
+  if (grid && table.irregular && (grid.length !== table.rows.length || grid[0].length !== table.rows[0]?.length)) {
+    return { ok: false, reason: "This table has merged cells, so only its cell text can change: keep the same number of rows and columns." };
+  }
+  return {
+    ok: true,
+    suggestion: {
+      ...base,
+      table: { action, index: table.index, rows: grid, before: table.rows.map((row) => [...row]) },
+      title: title ?? (action === "delete" ? `Delete table ${table.index + 1}` : `Revise table ${table.index + 1}`),
+      original: documentTableLabel(table),
+      target: "global",
+      range: null
+    }
+  };
+}
+
+
 
 export function isImageCandidate(item: SuggestionCandidate): boolean {
   return item.imageIndex !== undefined && item.imageIndex !== null && item.imageIndex !== "";

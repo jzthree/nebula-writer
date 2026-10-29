@@ -171,6 +171,49 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   },
   {
     definition: {
+      name: "writer_list_tables",
+      description: "List the document's tables in document order: { tables: [{ index, label, rows, context, irregular }] }. `rows` is the grid of cell texts, row by row; `context` is the paragraph just before the table (often its caption). Cell text also appears as plain paragraphs in the document text. `irregular` tables have merged cells: only their cell text can change, not their shape.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false }
+    },
+    handler: () => forward("GET", "/tables")
+  },
+  {
+    definition: {
+      name: "writer_stage_table_edit",
+      description: "Propose a table change for the reviewer: insert a new table after a paragraph, rewrite a table (edit cells, add/remove/reorder rows or columns), or delete one. For replace pass the COMPLETE new grid — copy unchanged cells exactly; Writer applies only the difference, so unchanged cells keep their formatting. The card shows the grid with changed cells marked; it is applied directly in Word (tracked when Track Changes is on) and Google Docs. Returns the same per-item verdicts as writer_stage_suggestions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["insert", "replace", "delete"], description: "insert a new table, replace an existing table's content/shape, or delete a table." },
+          index: { type: "number", description: "replace/delete: 0-based table index from writer_list_tables." },
+          rows: { type: "array", items: { type: "array", items: { type: "string" } }, description: "insert/replace: the full grid, row by row (header row first), each row an array of cell texts." },
+          after: { type: "string", description: "insert: exact text from the paragraph the new table should follow (copied verbatim from the document)." },
+          header: { type: "boolean", description: "insert: the first row is a header row (default false)." },
+          title: { type: "string", description: "Short label for the change." },
+          rationale: { type: "string", description: "Why this change helps." },
+          confidence: { type: "number", description: "0-1 confidence (default 0.65)." }
+        },
+        required: ["action", "title", "rationale"],
+        additionalProperties: false
+      }
+    },
+    handler: async (args) => forward("POST", "/stage", {
+      suggestions: [{
+        tableAction: args.action,
+        tableIndex: args.index ?? null,
+        tableRows: args.rows ?? null,
+        tableHeader: args.header === true,
+        original: typeof args.after === "string" ? args.after : "",
+        replacement: "",
+        title: args.title,
+        rationale: args.rationale,
+        confidence: args.confidence
+      }],
+      ...(AGENT_PROVIDER ? { agent: AGENT_PROVIDER } : {})
+    })
+  },
+  {
+    definition: {
       name: "writer_list_images",
       description: "List the document's images (figures, inline pictures) in document order: { images: [{ index, path, mime, width, height, altText, context, paragraphIndex }] }. `path` is a file on this machine — open it with your image-capable file reader (Claude: Read; Codex: view_image) to actually see the picture. `context` is the paragraph the picture sits in, usually its caption.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false }

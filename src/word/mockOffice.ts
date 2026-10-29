@@ -34,8 +34,30 @@ export interface MockWordOptions {
   pictures?: MockPictureSeed[];
   /** Word fields (citations, cross-references) as absolute text spans. */
   fields?: Array<{ from: number; to: number }>;
+  /** Tables: each is inserted after seed paragraph `afterParagraph` (one paragraph per cell line, row by row). */
+  tables?: MockTableSeed[];
   /** Existing comments, anchored to the first occurrence of `anchorText`. */
   comments?: Array<{ anchorText: string; text: string; author?: string; resolved?: boolean; replies?: Array<{ author: string; text: string }> }>;
+}
+
+export interface MockTableSeed {
+  afterParagraph: number;
+  rows: string[][];
+  /** Merged cells (Word reports isUniform false). */
+  irregular?: boolean;
+}
+
+/** Where a paragraph sits when it is part of a table cell. */
+export interface MockCellTag {
+  table: number;
+  row: number;
+  column: number;
+}
+
+export interface MockTableEdit {
+  table: number;
+  action: "insert" | "deleteRows" | "deleteColumns" | "insertRows" | "insertColumns" | "setCell" | "delete";
+  tracked: boolean;
 }
 
 export interface MockPictureSeed {
@@ -76,6 +98,7 @@ type Handler = () => void;
 
 interface ParagraphState extends MockParagraphSeed {
   text: string;
+  cell?: MockCellTag;
 }
 
 export class MockWordHost {
@@ -95,6 +118,10 @@ export class MockWordHost {
   emphasis: EmphasisSpan[] = [];
   /** Every insertText/delete, tracked or not. */
   edits: MockTrackedChange[] = [];
+  /** Table structure and cell edits, in order. */
+  tableEdits: MockTableEdit[] = [];
+  tableMeta = new Map<number, { irregular: boolean; header: number; style: string | null }>();
+  private nextTableId = 1;
   selectionHandlers = new Set<Handler>();
   paragraphHandlers = new Set<Handler>();
   runCount = 0;
@@ -120,14 +147,114 @@ export class MockWordHost {
     this.platform = options.platform ?? "Mac";
     this.pictures = (options.pictures ?? []).map((picture) => ({ ...picture }));
     this.fields = (options.fields ?? []).map((field) => ({ ...field }));
+    const offsets = this.paragraphOffsets();
+    this.emphasis = normalizeEmphasis(options.paragraphs.flatMap((paragraph, index) => shiftEmphasis(paragraph.emphasis ?? [], offsets[index] ?? 0)));
+    // Tables last (later seeds first), so seed paragraph indices stay valid while inserting.
+    for (const table of [...(options.tables ?? [])].sort((a, b) => b.afterParagraph - a.afterParagraph)) {
+      const id = this.insertTable(table.afterParagraph, table.rows, false);
+      this.tableMeta.set(id, { irregular: Boolean(table.irregular), header: 0, style: null });
+    }
+    this.edits = [];
+    this.tableEdits = [];
+    this.trackedChanges = [];
     for (const seed of options.comments ?? []) {
       const from = this.text.indexOf(seed.anchorText);
       if (from >= 0) {
         this.comments.push({ from, to: from + seed.anchorText.length, anchorText: seed.anchorText, text: seed.text, author: seed.author, resolved: seed.resolved, replies: seed.replies });
       }
     }
+  }
+
+  /* ------------------------------ tables ------------------------------ */
+
+  /** Table ids in document order. */
+  tableIds(): number[] {
+    const ids: number[] = [];
+    for (const paragraph of this.paragraphs) {
+      if (paragraph.cell && !ids.includes(paragraph.cell.table)) {
+        ids.push(paragraph.cell.table);
+      }
+    }
+    return ids;
+  }
+
+  tableBlock(id: number): { first: number; last: number } {
+    const first = this.paragraphs.findIndex((paragraph) => paragraph.cell?.table === id);
+    if (first < 0) {
+      throw new Error(`Mock Word: table ${id} no longer exists`);
+    }
+    let last = first;
+    while (this.paragraphs[last + 1]?.cell?.table === id) {
+      last += 1;
+    }
+    return { first, last };
+  }
+
+  tableGrid(id: number): string[][] {
+    const { first, last } = this.tableBlock(id);
+    const grid: string[][] = [];
+    for (let index = first; index <= last; index += 1) {
+      const { text, cell } = this.paragraphs[index];
+      const tag = cell as MockCellTag;
+      grid[tag.row] ??= [];
+      grid[tag.row][tag.column] = grid[tag.row][tag.column] === undefined ? text : `${grid[tag.row][tag.column]}\n${text}`;
+    }
+    return grid.map((row) => Array.from(row, (cell) => cell ?? ""));
+  }
+
+  /** Character range of a table, a row or a cell (the paragraphs it covers). */
+  tableRange(id: number, row?: number, column?: number): { from: number; to: number } {
+    const indices = this.paragraphs.flatMap((paragraph, index) =>
+      paragraph.cell?.table === id && (row === undefined || paragraph.cell.row === row) && (column === undefined || paragraph.cell.column === column) ? [index] : []);
+    if (!indices.length) {
+      throw new Error(`Mock Word: no such table cell ${id}/${row}/${column}`);
+    }
+    return { from: this.paragraphRange(indices[0]).from, to: this.paragraphRange(indices[indices.length - 1]).to };
+  }
+
+  private tableParagraphs(id: number, grid: string[][]): ParagraphState[] {
+    return grid.flatMap((row, r) => row.flatMap((cell, c) => cell.split("\n").map((text) => ({ text, cell: { table: id, row: r, column: c } }))));
+  }
+
+  /** Insert a table after paragraph `after`; returns its id. */
+  insertTable(after: number, rows: string[][], record = true): number {
+    const id = this.nextTableId;
+    this.nextTableId += 1;
+    this.tableMeta.set(id, { irregular: false, header: 0, style: null });
+    this.spliceParagraphs(after + 1, 0, this.tableParagraphs(id, rows));
+    if (record) {
+      this.tableEdits.push({ table: id, action: "insert", tracked: this.changeTrackingMode !== "Off" });
+    }
+    return id;
+  }
+
+  /** Rewrite a table's grid (null removes the table). */
+  writeTable(id: number, grid: string[][] | null, action: MockTableEdit["action"]): void {
+    const { first, last } = this.tableBlock(id);
+    this.spliceParagraphs(first, last - first + 1, grid ? this.tableParagraphs(id, grid) : []);
+    this.tableEdits.push({ table: id, action, tracked: this.changeTrackingMode !== "Off" });
+  }
+
+  /** Replace whole paragraphs, keeping emphasis outside them in place. */
+  spliceParagraphs(start: number, deleteCount: number, inserted: ParagraphState[]): void {
     const offsets = this.paragraphOffsets();
-    this.emphasis = normalizeEmphasis(options.paragraphs.flatMap((paragraph, index) => shiftEmphasis(paragraph.emphasis ?? [], offsets[index] ?? 0)));
+    const from = offsets[start] ?? this.text.length + PARAGRAPH_SEPARATOR.length;
+    const to = start + deleteCount < offsets.length ? offsets[start + deleteCount] : this.text.length + PARAGRAPH_SEPARATOR.length;
+    const original = this.text.slice(from, to);
+    this.paragraphs.splice(start, deleteCount, ...inserted);
+    const added = inserted.reduce((sum, paragraph) => sum + paragraph.text.length + PARAGRAPH_SEPARATOR.length, 0);
+    const delta = added - (to - from);
+    this.emphasis = normalizeEmphasis(this.emphasis.flatMap((span) => {
+      if (span.end <= from) return [span];
+      if (span.start >= to) return [{ ...span, start: span.start + delta, end: span.end + delta }];
+      return span.start < from ? [{ ...span, end: from }] : [];
+    }));
+    const edit = { from, to, original, replacement: inserted.map((paragraph) => paragraph.text + PARAGRAPH_SEPARATOR).join("") };
+    this.edits.push(edit);
+    if (this.changeTrackingMode !== "Off") {
+      this.trackedChanges.push(edit);
+    }
+    this.fireParagraphChanged();
   }
 
   /* ------------------------------ emphasis ------------------------------ */
@@ -509,6 +636,11 @@ class MockBody {
     return { items: host.pictures.map((_, index) => new MockInlinePicture(host, index)), load: () => undefined };
   }
 
+  get tables(): { items: MockTable[]; load: () => void } {
+    const host = this.host;
+    return { items: host.tableIds().map((id) => new MockTable(host, id)), load: () => undefined };
+  }
+
   /** Word's Body.getComments (WordApi 1.4): content, author, resolved, replies, and the anchored range. */
   getComments(): { items: Array<Record<string, unknown>>; load: () => void } {
     const host = this.host;
@@ -827,6 +959,17 @@ export class MockParagraph extends MockRange {
     return Boolean(this.host.paragraphs[this.index]?.isListItem);
   }
 
+  get tableNestingLevel(): number {
+    return this.host.paragraphs[this.index]?.cell ? 1 : 0;
+  }
+
+  insertTable(_rowCount: number, _columnCount: number, location: string, values: string[][]): MockTable {
+    if (location !== "After") {
+      throw new Error(`Mock Word: unsupported table insert location ${location}`);
+    }
+    return new MockTable(this.host, this.host.insertTable(this.index, values));
+  }
+
   getPreviousOrNullObject(): MockParagraph {
     if (this.index === 0) {
       return nullParagraph(this.host);
@@ -847,6 +990,127 @@ function nullParagraph(host: MockWordHost): MockParagraph {
   paragraph.isNullObject = true;
   Object.defineProperty(paragraph, "text", { get: () => "" });
   return paragraph;
+}
+
+export class MockTable {
+  nestingLevel = 1;
+  isNullObject = false;
+
+  constructor(private host: MockWordHost, public id: number) {}
+
+  load(): this {
+    return this;
+  }
+
+  get values(): string[][] {
+    return this.host.tableGrid(this.id);
+  }
+
+  get rowCount(): number {
+    return this.values.length;
+  }
+
+  get isUniform(): boolean {
+    return !this.host.tableMeta.get(this.id)?.irregular;
+  }
+
+  set headerRowCount(value: number) {
+    const meta = this.host.tableMeta.get(this.id);
+    if (meta) meta.header = value;
+  }
+
+  set styleBuiltIn(value: string) {
+    const meta = this.host.tableMeta.get(this.id);
+    if (meta) meta.style = value;
+  }
+
+  get font(): MockFont {
+    const range = this.host.tableRange(this.id);
+    return new MockFont(this.host, range.from, range.to);
+  }
+
+  get rows(): { getFirst: () => MockTableRow } {
+    return { getFirst: () => new MockTableRow(this.host, this.id, 0) };
+  }
+
+  getParagraphBeforeOrNullObject(): MockParagraph {
+    const { first } = this.host.tableBlock(this.id);
+    return first === 0 ? nullParagraph(this.host) : new MockParagraph(this.host, first - 1);
+  }
+
+  getCell(row: number, column: number): MockTableCell {
+    const grid = this.values;
+    if (!grid[row] || grid[row][column] === undefined) {
+      throw new Error(`Mock Word: no cell ${row},${column}`);
+    }
+    return new MockTableCell(this.host, this.id, row, column);
+  }
+
+  deleteRows(row: number, count = 1): void {
+    const grid = this.values;
+    grid.splice(row, count);
+    this.host.writeTable(this.id, grid.length ? grid : null, "deleteRows");
+  }
+
+  deleteColumns(column: number, count = 1): void {
+    const grid = this.values.map((cells) => { const next = [...cells]; next.splice(column, count); return next; });
+    this.host.writeTable(this.id, grid[0]?.length ? grid : null, "deleteColumns");
+  }
+
+  delete(): void {
+    this.host.writeTable(this.id, null, "delete");
+  }
+
+  select(): void {
+    const range = this.host.tableRange(this.id);
+    this.host.setSelection(range.from, range.to);
+  }
+}
+
+export class MockTableRow {
+  constructor(private host: MockWordHost, private table: number, private row: number) {}
+
+  get font(): MockFont {
+    const range = this.host.tableRange(this.table, this.row);
+    return new MockFont(this.host, range.from, range.to);
+  }
+
+  insertRows(location: string, count: number, values?: string[][]): void {
+    const grid = this.host.tableGrid(this.table);
+    const width = grid[0]?.length ?? 0;
+    const rows = Array.from({ length: count }, (_, index) => Array.from({ length: width }, (_, column) => values?.[index]?.[column] ?? ""));
+    grid.splice(location === "Before" ? this.row : this.row + 1, 0, ...rows);
+    this.host.writeTable(this.table, grid, "insertRows");
+  }
+}
+
+export class MockTableCell {
+  constructor(private host: MockWordHost, private table: number, private row: number, private column: number) {}
+
+  get value(): string {
+    return this.host.tableGrid(this.table)[this.row]?.[this.column] ?? "";
+  }
+
+  set value(text: string) {
+    const grid = this.host.tableGrid(this.table);
+    grid[this.row][this.column] = text;
+    this.host.writeTable(this.table, grid, "setCell");
+  }
+
+  get parentRow(): MockTableRow {
+    return new MockTableRow(this.host, this.table, this.row);
+  }
+
+  get body(): { font: MockFont } {
+    const range = this.host.tableRange(this.table, this.row, this.column);
+    return { font: new MockFont(this.host, range.from, range.to) };
+  }
+
+  insertColumns(location: string, count: number): void {
+    const at = location === "Before" ? this.column : this.column + 1;
+    const grid = this.host.tableGrid(this.table).map((cells) => { const next = [...cells]; next.splice(at, 0, ...Array.from({ length: count }, () => "")); return next; });
+    this.host.writeTable(this.table, grid, "insertColumns");
+  }
 }
 
 class MockPageCollection {

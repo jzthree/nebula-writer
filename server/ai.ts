@@ -19,7 +19,8 @@ import { ensureWriterCliHome, ensureWriterCodexMirrorHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
-import { containsAnchoredText, documentImageLabel, isImageCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate } from "./suggestion-validation";
+import { containsAnchoredText, documentImageLabel, isImageCandidate, isTableCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageReplacementCandidate, validateTableCandidate } from "./suggestion-validation";
+import { documentTableLabel, gridForPrompt } from "../src/tables";
 import { imageMimeForName } from "./image-files";
 import { describeFocus, linkRevision } from "./revisions";
 import { nearestDocumentExcerpt, repairAnchor } from "./anchor-repair";
@@ -210,9 +211,27 @@ export const AI_RESPONSE_SCHEMA = {
           imageFile: {
             type: ["string", "null"],
             description: "Only for an image replacement: absolute path of the PNG/JPEG/GIF/WebP file that replaces the image. null for text edits."
+          },
+          tableAction: {
+            type: ["string", "null"],
+            enum: ["insert", "replace", "delete", null],
+            description: "Only for a table change: insert a new table after the paragraph holding `original`, or replace/delete the table `tableIndex`. null otherwise."
+          },
+          tableIndex: {
+            type: ["integer", "null"],
+            description: "Only for replace/delete: the 0-based index of the table (see the Document tables list). null otherwise."
+          },
+          tableRows: {
+            type: ["array", "null"],
+            items: { type: "array", items: { type: "string" } },
+            description: "Only for insert/replace: the COMPLETE grid the table should hold, row by row, each row an array of cell texts (header row first). Unchanged cells are copied exactly. null otherwise."
+          },
+          tableHeader: {
+            type: ["boolean", "null"],
+            description: "Only for insert: true when the first row is a header row. null otherwise."
           }
         },
-        required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile"]
+        required: ["title", "original", "replacement", "rationale", "confidence", "imageIndex", "imageFile", "tableAction", "tableIndex", "tableRows", "tableHeader"]
       }
     }
   },
@@ -680,6 +699,9 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
           `The document has ${images.length} image${images.length === 1 ? "" : "s"}: ${images.map((image) => documentImageLabel(image)).join("; ")}. writer_list_images gives their file paths — open one with your image reader to see it. To replace one, write a new PNG/JPEG/GIF/WebP file and call writer_stage_image_replacement; the reviewer sees before/after previews.`
         ]
       : []),
+    (request.documentTables ?? []).length
+      ? `The document has ${request.documentTables!.length} table${request.documentTables!.length === 1 ? "" : "s"}: ${request.documentTables!.map((table) => documentTableLabel(table)).join("; ")}. writer_list_tables gives their cells as grids; writer_stage_table_edit inserts a new table, rewrites one (pass the complete new grid — Writer applies only the difference: changed cells, added/removed rows and columns) or deletes one.`
+      : "To add a table (budgets, timelines, comparisons), call writer_stage_table_edit with action \"insert\".",
     "",
     "When finished, write a short reply that organizes what you staged. Format: a line starting with `## ` opens a section (e.g. `## Significance`, `## Aim 2 approach`); one or two plain sentences of context; then each suggestion's ref from writer_stage_suggestions on its own line, like `[S3]`, in the order the user should review them. The user's pane shows each suggestion card exactly where you place it and offers Apply-all per section, so reference every staged suggestion once and do not repeat the suggestion text. If nothing was safe to stage, say why in 1-2 sentences.",
     "",
@@ -910,6 +932,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
       : null,
     ...buildAttachmentPromptLines(request),
     ...buildDocumentImagePromptLines(request),
+    ...buildDocumentTablePromptLines(request),
     ...describeDocumentComments(request.documentComments, { status: request.documentCommentsStatus,
       selectionContext: request.mode === "selection" ? matchCommentsToSelection(request.documentText, request.selection, request.documentComments ?? []) : null }),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
@@ -993,6 +1016,39 @@ function buildDocumentImagePromptLines(request: AiRequest): string[] {
     `Document images (${images.length}, in document order${request.provider === "codex" ? "; the same files are attached to this request as image inputs, in this order" : ""}):`,
     ...images.map((image) => `- ${documentImageLabel(image)} — ${image.width && image.height ? `${Math.round(image.width)}×${Math.round(image.height)} ` : ""}${image.mime}, file: ${image.path}`),
     "To propose replacing an image with a file you produced (PNG/JPEG/GIF/WebP, written to your workspace), return a suggestion with imageIndex (0-based), imageFile (the absolute path), original set to the image's label as listed above, and replacement \"\". Text suggestions set imageIndex and imageFile to null."
+  ];
+}
+
+/** Characters of table grids shown in one-shot prompts; larger tables are listed by label only. */
+const TABLE_PROMPT_CHARS = 30_000;
+
+/**
+ * The document's tables as grids (their cell text is also in the Text block,
+ * as plain paragraphs), and the contract for proposing a table change.
+ */
+export function buildDocumentTablePromptLines(request: Pick<AiRequest, "documentTables">): string[] {
+  const tables = request.documentTables ?? [];
+  const contract = "To add a table, return a suggestion with tableAction \"insert\", tableRows (the full grid, header row first), tableHeader, original set to exact text from the paragraph the table should follow, and replacement \"\". Prefer a table over prose for data with rows and columns (budgets, timelines, comparisons) when the user asks for one.";
+  const nulls = "Text and image suggestions set tableAction, tableIndex, tableRows and tableHeader to null.";
+  if (!tables.length) {
+    return [contract, nulls];
+  }
+  let budget = TABLE_PROMPT_CHARS;
+  const listed = tables.map((table) => {
+    const grid = gridForPrompt(table.rows);
+    const label = `${documentTableLabel(table)}${table.irregular ? " (merged cells: only cell text can change)" : ""}`;
+    if (grid.length > budget) {
+      return `${label}: too large to show here; its cells are in the Text block.`;
+    }
+    budget -= grid.length;
+    return `${label}:\n${grid}`;
+  });
+  return [
+    `Document tables (${tables.length}, in document order; tableIndex is 0-based):`,
+    ...listed,
+    "To change a table (edit cells, add/remove/reorder rows or columns), return ONE suggestion with tableAction \"replace\", tableIndex, tableRows (the COMPLETE new grid — copy unchanged cells exactly; Writer applies only the difference), original set to the table's label as listed (e.g. \"[Table 1]\"), and replacement \"\". To remove a table: tableAction \"delete\" with tableIndex and tableRows null. A small wording fix inside one cell can instead be an ordinary text suggestion.",
+    contract,
+    nulls
   ];
 }
 
@@ -2023,7 +2079,7 @@ function parseCliResponseDetailed(provider: CliProviderName, raw: string, reques
   };
 }
 
-type SkipReason = "not-found" | "no-change" | "malformed" | "image";
+type SkipReason = "not-found" | "no-change" | "malformed" | "image" | "table";
 
 /**
  * Name what was dropped and why, so a reviewer can tell "the model misquoted
@@ -2038,9 +2094,10 @@ function describeSkippedSuggestions(skipped: Array<{ title: string; reason: Skip
     "not-found": (count) => `${count} because ${count === 1 ? "its" : "their"} original text was not found verbatim in the document`,
     "no-change": (count) => `${count} because ${count === 1 ? "it" : "they"} changed nothing`,
     "malformed": (count) => `${count} because ${count === 1 ? "it was" : "they were"} malformed (no replacement text)`,
-    "image": (count) => `${count} because ${count === 1 ? "its" : "their"} image replacement was invalid (no such image index, or the file is missing, too large, or not PNG/JPEG/GIF/WebP)`
+    "image": (count) => `${count} because ${count === 1 ? "its" : "their"} image replacement was invalid (no such image index, or the file is missing, too large, or not PNG/JPEG/GIF/WebP)`,
+    "table": (count) => `${count} because ${count === 1 ? "its" : "their"} table change was invalid (no such table, a malformed grid, no change, or an insert anchor not found in the document)`
   };
-  const parts = (["not-found", "no-change", "malformed", "image"] as SkipReason[])
+  const parts = (["not-found", "no-change", "malformed", "image", "table"] as SkipReason[])
     .filter((reason) => byReason.has(reason))
     .map((reason) => {
       const titles = byReason.get(reason) ?? [];
@@ -2410,6 +2467,10 @@ function normalizeSuggestion(item: Partial<AiSuggestion>, request: AiRequest): {
   if (isImageCandidate(item)) {
     const verdict = validateImageReplacementCandidate(item, request.documentImages ?? []);
     return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "image" };
+  }
+  if (isTableCandidate(item)) {
+    const verdict = validateTableCandidate(item, request);
+    return verdict.ok ? { suggestion: verdict.suggestion } : { skipped: "table" };
   }
   const quotedOriginal = parseQuotedText(item.original);
   const quotedReplacement = parseQuotedText(item.replacement);

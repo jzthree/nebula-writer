@@ -12,7 +12,8 @@
  */
 
 import { bridgeEmphasisGaps, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
-import { DOCS_CHANGE_HIGHLIGHT, DOCS_EMPHASIS_HIGHLIGHT, type DocsDocumentPayload, type DocsImagePayload, type DocsOpOutcome, type DocsParagraphPayload, type DocsReplaceOp } from "../gdocs/protocol";
+import { DOCS_CHANGE_HIGHLIGHT, DOCS_EMPHASIS_HIGHLIGHT, type DocsDocumentPayload, type DocsImagePayload, type DocsOpOutcome, type DocsParagraphPayload, type DocsReplaceOp, type DocsTableOp } from "../gdocs/protocol";
+import { columnCount, findEditTarget, planTableMorph, type DocumentTable, type TableStep } from "../tables";
 
 /* ------------------------------------------------------------------------- */
 /* The slice of the Docs API JSON we read                                    */
@@ -43,11 +44,18 @@ export interface ApiParagraph {
   bullet?: { listId?: string; nestingLevel?: number };
 }
 
+export interface ApiTableCell {
+  startIndex?: number;
+  endIndex?: number;
+  content?: ApiStructuralElement[];
+  tableCellStyle?: { rowSpan?: number; columnSpan?: number };
+}
+
 export interface ApiStructuralElement {
   startIndex?: number;
   endIndex?: number;
   paragraph?: ApiParagraph;
-  table?: { tableRows?: Array<{ tableCells?: Array<{ content?: ApiStructuralElement[] }> }> };
+  table?: { rows?: number; columns?: number; tableRows?: Array<{ tableCells?: ApiTableCell[] }> };
   tableOfContents?: { content?: ApiStructuralElement[] };
   sectionBreak?: unknown;
 }
@@ -84,9 +92,28 @@ interface ParagraphIndex {
   textLength: number;
 }
 
+/** Where a cell's content sits: from its first paragraph's start to its last paragraph mark (exclusive end). */
+interface CellIndex {
+  startIndex: number;
+  endIndex: number;
+  /** Indices (in payload.paragraphs) of the cell's own paragraphs. */
+  paragraphs: number[];
+  /** Holds something other than paragraphs (a nested table): its text cannot be rewritten safely. */
+  nested: boolean;
+}
+
+/** A top-level table's index range and cell map. */
+export interface TableIndex {
+  startIndex: number;
+  endIndex: number;
+  cells: CellIndex[][];
+}
+
 export interface DocsIndex {
   paragraphs: ParagraphIndex[];
   imageIds: string[];
+  /** Top-level tables, parallel to payload.tables. */
+  tables: TableIndex[];
   revisionId: string;
 }
 
@@ -125,32 +152,95 @@ function formatOf(style: ApiTextStyle | undefined): EmphasisFormat {
   };
 }
 
+/** How many paragraphs `parseDocument` reads from an element (tables and contents lists included). */
+function paragraphCount(element: ApiStructuralElement): number {
+  if (element.paragraph) {
+    return 1;
+  }
+  const children = element.table
+    ? (element.table.tableRows ?? []).flatMap((row) => (row.tableCells ?? []).flatMap((cell) => cell.content ?? []))
+    : element.tableOfContents?.content ?? [];
+  return children.reduce((sum, child) => sum + paragraphCount(child), 0);
+}
+
 /** Turn a documents.get response into the add-in payload plus the index map the batch builder needs. */
 export function parseDocument(doc: ApiDocument): ParsedDocument {
   const paragraphs: DocsParagraphPayload[] = [];
   const indexes: ParagraphIndex[] = [];
   const images: DocsImagePayload[] = [];
   const imageIds: string[] = [];
+  const tables: DocumentTable[] = [];
+  const tableIndexes: TableIndex[] = [];
 
-  const visit = (elements: ApiStructuralElement[] | undefined) => {
+  const visit = (elements: ApiStructuralElement[] | undefined, topLevel: boolean) => {
+    let previousText: string | null = null;
     for (const element of elements ?? []) {
       if (element.paragraph) {
         const paragraphIndex = paragraphs.length;
         const parsed = parseParagraph(element, paragraphIndex, doc, images, imageIds);
         paragraphs.push(parsed.payload);
         indexes.push(parsed.index);
+        previousText = parsed.payload.text;
       } else if (element.table) {
+        const firstParagraph = paragraphs.length;
+        const rows: string[][] = [];
+        const cells: CellIndex[][] = [];
+        let irregular = false;
         for (const row of element.table.tableRows ?? []) {
+          const rowTexts: string[] = [];
+          const rowCells: CellIndex[] = [];
           for (const cell of row.tableCells ?? []) {
-            visit(cell.content);
+            const before = paragraphs.length;
+            visit(cell.content, false);
+            const own = (cell.content ?? []).filter((item) => item.paragraph);
+            const nested = (cell.content ?? []).some((item) => !item.paragraph);
+            // The cell's own paragraphs are the ones directly in its content (nested tables add more after them).
+            const ownIndexes: number[] = [];
+            let cursor = before;
+            for (const item of cell.content ?? []) {
+              if (item.paragraph) {
+                ownIndexes.push(cursor);
+                cursor += 1;
+              } else {
+                cursor += paragraphCount(item);
+              }
+            }
+            rowTexts.push(ownIndexes.map((index) => paragraphs[index].text).join("\n"));
+            const first = own[0];
+            const last = own[own.length - 1];
+            rowCells.push({
+              startIndex: first?.startIndex ?? cell.startIndex ?? 0,
+              endIndex: last?.endIndex ?? cell.endIndex ?? 0,
+              paragraphs: ownIndexes,
+              nested
+            });
+            if ((cell.tableCellStyle?.columnSpan ?? 1) > 1 || (cell.tableCellStyle?.rowSpan ?? 1) > 1 || nested) {
+              irregular = true;
+            }
           }
+          rows.push(rowTexts);
+          cells.push(rowCells);
         }
+        if (rows.some((row) => row.length !== rows[0]?.length)) {
+          irregular = true;
+        }
+        if (topLevel) {
+          tables.push({
+            index: tables.length,
+            rows,
+            paragraphIndex: paragraphs.length > firstParagraph ? firstParagraph : null,
+            context: previousText,
+            ...(irregular ? { irregular: true } : {})
+          });
+          tableIndexes.push({ startIndex: element.startIndex ?? 0, endIndex: element.endIndex ?? 0, cells });
+        }
+        previousText = null;
       } else if (element.tableOfContents) {
-        visit(element.tableOfContents.content);
+        visit(element.tableOfContents.content, false);
       }
     }
   };
-  visit(doc.body?.content);
+  visit(doc.body?.content, true);
 
   return {
     payload: {
@@ -158,9 +248,10 @@ export function parseDocument(doc: ApiDocument): ParsedDocument {
       documentId: doc.documentId ?? "",
       paragraphs,
       images,
+      tables,
       fingerprint: doc.revisionId ?? ""
     },
-    index: { paragraphs: indexes, imageIds, revisionId: doc.revisionId ?? "" }
+    index: { paragraphs: indexes, imageIds, tables: tableIndexes, revisionId: doc.revisionId ?? "" }
   };
 }
 
@@ -366,4 +457,202 @@ export function imageContentUri(doc: ApiDocument, index: DocsIndex, imageIndex: 
 export function emphasisOfRuns(runs: Array<{ content: string; textStyle?: ApiTextStyle }>): EmphasisSpan[] {
   const text = runs.map((run) => run.content).join("");
   return bridgeEmphasisGaps(text, emphasisFromPieces(runs.map((run) => ({ text: run.content, format: formatOf(run.textStyle) }))));
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tables                                                                    */
+/* ------------------------------------------------------------------------- */
+
+type ApiRequest = Record<string, unknown>;
+
+function cellLocation(table: TableIndex, rowIndex: number, columnIndex: number): Record<string, unknown> {
+  return { tableStartLocation: { index: table.startIndex }, rowIndex, columnIndex };
+}
+
+/**
+ * Requests for a morph's row/column steps, in order. Each step's indices
+ * refer to the table as the requests before it left it; the table's own
+ * start index does not move while its rows and columns change.
+ */
+export function buildTableStructureRequests(table: TableIndex, steps: TableStep[]): ApiRequest[] {
+  const requests: ApiRequest[] = [];
+  for (const step of steps) {
+    switch (step.type) {
+      case "deleteRow":
+        requests.push({ deleteTableRow: { tableCellLocation: cellLocation(table, step.row, 0) } });
+        break;
+      case "deleteColumn":
+        requests.push({ deleteTableColumn: { tableCellLocation: cellLocation(table, 0, step.column) } });
+        break;
+      case "insertRow":
+        requests.push({ insertTableRow: step.at === 0
+          ? { tableCellLocation: cellLocation(table, 0, 0), insertBelow: false }
+          : { tableCellLocation: cellLocation(table, step.at - 1, 0), insertBelow: true } });
+        break;
+      case "insertColumn":
+        requests.push({ insertTableColumn: step.at === 0
+          ? { tableCellLocation: cellLocation(table, 0, 0), insertRight: false }
+          : { tableCellLocation: cellLocation(table, 0, step.at - 1), insertRight: true } });
+        break;
+      default:
+        break;
+    }
+  }
+  return requests;
+}
+
+/**
+ * Requests that set cell texts in a freshly read table: each cell's text
+ * (all but its final paragraph mark) is deleted and the new text inserted,
+ * later cells first so earlier indices stay valid. `bold` rows get bold
+ * text (a header); `highlight` colours the new text.
+ */
+export function buildTableCellRequests(
+  table: TableIndex,
+  cells: Array<{ row: number; column: number; text: string }>,
+  options: { highlight: boolean; boldRows?: number[] }
+): ApiRequest[] {
+  const located = cells.map((cell) => {
+    const index = table.cells[cell.row]?.[cell.column];
+    if (!index) {
+      throw new Error(`The table has no cell at row ${cell.row + 1}, column ${cell.column + 1}.`);
+    }
+    if (index.nested) {
+      throw new Error(`The cell at row ${cell.row + 1}, column ${cell.column + 1} holds a nested table; Writer does not rewrite it.`);
+    }
+    return { ...cell, index };
+  }).sort((a, b) => b.index.startIndex - a.index.startIndex);
+  const requests: ApiRequest[] = [];
+  for (const cell of located) {
+    const start = cell.index.startIndex;
+    const end = cell.index.endIndex - 1;
+    if (end > start) {
+      requests.push({ deleteContentRange: { range: { startIndex: start, endIndex: end } } });
+    }
+    const text = cell.text.replace(/\r\n?/g, "\n");
+    if (!text) {
+      continue;
+    }
+    requests.push({ insertText: { location: { index: start }, text } });
+    if (options.boldRows?.includes(cell.row)) {
+      requests.push(styleRequest(start, start + text.length, { bold: true }, "bold"));
+    }
+    if (options.highlight) {
+      requests.push(styleRequest(start, start + text.length, { backgroundColor: rgb(DOCS_CHANGE_HIGHLIGHT) }, "backgroundColor"));
+    }
+  }
+  return requests;
+}
+
+/** Where a new table goes after a paragraph: before its mark, or after the table it sits in. */
+export function tableInsertLocation(parsed: ParsedDocument, afterParagraphIndex: number): number {
+  const paragraph = parsed.index.paragraphs[afterParagraphIndex];
+  if (!paragraph) {
+    throw new Error("The paragraph the table should follow no longer exists — re-read the document.");
+  }
+  const enclosing = parsed.index.tables.find((table) => paragraph.startIndex >= table.startIndex && paragraph.startIndex < table.endIndex);
+  // insertTable puts a newline before the table: at the paragraph's last
+  // index that ends the paragraph and the table follows it. A paragraph in
+  // a table cell would nest the new table, so it goes after that table.
+  return enclosing ? enclosing.endIndex : paragraph.endIndex - 1;
+}
+
+export interface TableApplyIo {
+  read(): Promise<ParsedDocument>;
+  batch(requests: ApiRequest[]): Promise<void>;
+}
+
+function errorOutcome(id: string, error: string): DocsOpOutcome {
+  return { id, ok: false, error };
+}
+
+/**
+ * Apply a table op in phases (structure, re-read, then cell text), since
+ * every structural change shifts the indices of the text after it. Nothing
+ * is sent until the target is verified against the document as read now.
+ */
+export async function applyTableOp(op: DocsTableOp, io: TableApplyIo): Promise<DocsOpOutcome> {
+  const parsed = await io.read();
+  const tables = parsed.payload.tables ?? [];
+  if (op.action === "insert") {
+    const rows = op.rows;
+    if (!rows?.length || !columnCount(rows)) {
+      return errorOutcome(op.id, "The new table has no cells.");
+    }
+    const at = op.afterParagraphIndex;
+    const paragraph = at !== null ? parsed.payload.paragraphs[at] : undefined;
+    if (!paragraph || (op.expectedParagraphText !== null && collapse(paragraph.text) !== collapse(op.expectedParagraphText))) {
+      return errorOutcome(op.id, "The paragraph the table should follow has moved or changed since the suggestion was made.");
+    }
+    const location = tableInsertLocation(parsed, at as number);
+    const before = parsed.index.tables.filter((table) => table.startIndex < location).length;
+    const width = columnCount(rows);
+    await io.batch([{ insertTable: { rows: rows.length, columns: width, location: { index: location } } }]);
+    const fresh = await io.read();
+    const created = fresh.index.tables[before];
+    if (!created || created.cells.length !== rows.length || created.cells[0]?.length !== width) {
+      return errorOutcome(op.id, "Google Docs inserted the table, but Writer could not find it to fill in. Check the document.");
+    }
+    const cells = rows.flatMap((row, r) => Array.from({ length: width }, (_, c) => ({ row: r, column: c, text: row[c] ?? "" }))).filter((cell) => cell.text);
+    const requests = [
+      ...(op.header && rows.length > 1 ? [{ pinTableHeaderRows: { tableStartLocation: { index: created.startIndex }, pinnedHeaderRowsCount: 1 } }] : []),
+      ...buildTableCellRequests(created, cells, { highlight: op.highlight, boldRows: op.header ? [0] : [] })
+    ];
+    if (requests.length) {
+      await io.batch(requests);
+    }
+    return { id: op.id, ok: true };
+  }
+
+  const target = findEditTarget(tables, { index: op.index, before: op.before });
+  if (target === null) {
+    return errorOutcome(op.id, "The table has changed (or is gone) since the suggestion was made — re-run the request on the current table.");
+  }
+  const table = parsed.index.tables[target];
+  if (op.action === "delete") {
+    await io.batch([{ deleteContentRange: { range: { startIndex: table.startIndex, endIndex: table.endIndex } } }]);
+    return { id: op.id, ok: true };
+  }
+  if (!op.rows?.length) {
+    return errorOutcome(op.id, "The revised table has no rows.");
+  }
+  const current = tables[target];
+  const morph = planTableMorph(current.rows, op.rows, { irregular: current.irregular });
+  if (current.irregular && morph.structural) {
+    return errorOutcome(op.id, "This table has merged cells, so Writer can change only its cell text, not its rows or columns.");
+  }
+  const structure = buildTableStructureRequests(table, morph.steps);
+  let live = table;
+  if (structure.length) {
+    await io.batch(structure);
+    const fresh = await io.read();
+    const reshaped = fresh.index.tables[target];
+    const width = columnCount(op.rows);
+    if (!reshaped || reshaped.cells.length !== op.rows.length || reshaped.cells.some((row) => row.length !== width)) {
+      return errorOutcome(op.id, "Google Docs changed the table's rows and columns, but not into the expected shape. Check the table before applying again.");
+    }
+    live = reshaped;
+  }
+  const cells = morph.steps.flatMap((step) => (step.type === "setCell" ? [{ row: step.row, column: step.column, text: step.text }] : []));
+  if (cells.length) {
+    await io.batch(buildTableCellRequests(live, cells, { highlight: op.highlight }));
+  }
+  return { id: op.id, ok: true };
+}
+
+/** A paragraph to locate so the author sees a table: its first cell with text. */
+export function tableLocateParagraph(parsed: ParsedDocument, tableIndex: number): number | null {
+  const table = parsed.index.tables[tableIndex];
+  if (!table) {
+    return null;
+  }
+  for (const row of table.cells) {
+    for (const cell of row) {
+      const found = cell.paragraphs.find((index) => parsed.payload.paragraphs[index]?.text.trim());
+      if (found !== undefined) {
+        return found;
+      }
+    }
+  }
+  return null;
 }

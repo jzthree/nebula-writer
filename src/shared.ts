@@ -1,6 +1,8 @@
+import type { AiTableEdit, DocumentTable } from "./tables";
 import type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
 
 export type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
+export type { AiTableEdit, DocumentTable } from "./tables";
 export type AiProviderName = "demo" | "codex" | "claude";
 export type LocalAiProviderName = "codex" | "claude";
 
@@ -125,6 +127,8 @@ export interface AiRequest {
   attachments?: AiAttachment[];
   /** The document's images, extracted to files (Word add-in uploads them; DOCX sessions extract them server-side). */
   documentImages?: AiDocumentImage[];
+  /** The document's tables as grids of cell text, in document order. */
+  documentTables?: DocumentTable[];
   /** Inline emphasis (bold/italic/underline/highlight) in documentText as spans; the model sees it as markers. */
   documentEmphasis?: EmphasisSpan[] | null;
   /** Reviewer comments in the document (Word comments, DOCX comments.xml), with replies. */
@@ -221,9 +225,10 @@ export interface AiCatalogResponse {
 }
 
 export interface AiSuggestion {
-  /** "image": replace one document picture (see `image`); default "text". */
-  kind?: "text" | "image";
+  /** "image": replace one document picture (see `image`); "table": insert, change or delete a table (see `table`); default "text". */
+  kind?: "text" | "image" | "table";
   image?: AiImageReplacement | null;
+  table?: AiTableEdit | null;
   /** Id of the earlier suggestion this one revises (a reply to "refine S3"). */
   revises?: string | null;
   /** Id of the revision that replaced this suggestion; it was withdrawn, not rejected. */
@@ -414,6 +419,8 @@ export interface WordHostContextUpdate {
   /** The document's comments, when the client read them (kept by the sidecar for terminal agents). */
   documentComments?: DocumentComment[] | null;
   documentCommentsStatus?: DocumentCommentsStatus | null;
+  /** The document's tables (sent with documentText; kept by the sidecar for terminal agents). */
+  documentTables?: DocumentTable[] | null;
   /** Make this Word document the active Writer session even if another document is active. */
   adopt?: boolean;
 }

@@ -71,6 +71,9 @@ Port of slides-mcp's connector, adapted:
   `workspace-write` inside the Writer workspace for `full`, which also runs in
   the user's own `CODEX_HOME` so their `config.toml` MCP servers load. Gate
   retirement on validating this path e2e (see Rollout).
+- **Tables** — `writer_list_tables` gives the document's tables as grids;
+  `writer_stage_table_edit` proposes inserting, rewriting (complete new grid;
+  only the difference is applied) or deleting one. See docs/word-addin.md.
 - **Images** — `writer_list_images` / `writer_read_image` hand the agent the
   document's pictures as files (the Word add-in uploads inline pictures;
   DOCX sessions extract media server-side); `writer_stage_image_replacement`

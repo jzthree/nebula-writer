@@ -6,7 +6,7 @@
  * chrome.identity. Only the pane's origin may talk to this page.
  */
 
-import { buildBatchPlan, imageContentUri, parseDocument, type ApiDocument, type ParsedDocument } from "./docsApi";
+import { applyTableOp, buildBatchPlan, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
 import { bindPanelTab, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
@@ -14,7 +14,7 @@ import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComme
 import { openCommentPicker } from "./commentPicker";
 import { planDocsLocate } from "./locate";
 import { locateInDocumentTab } from "./locateBridge";
-import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction } from "../gdocs/protocol";
+import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
 
 declare const __PANE_ORIGIN__: string;
 declare const __PICKER_API_KEY__: string;
@@ -301,6 +301,37 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaSelectImage() {
     throw new Error("Chrome's Google Docs integration cannot select an image directly. Locate a nearby caption or text passage instead.");
+  },
+
+  async nebulaApplyTable(op) {
+    const { docId } = await activeDoc();
+    const tableOp = op as DocsTableOp;
+    try {
+      return await applyTableOp(tableOp, {
+        read: () => fetchParsed(docId),
+        batch: async (requests) => {
+          await api(`/${encodeURIComponent(docId)}:batchUpdate`, { method: "POST", body: JSON.stringify({ requests }) });
+        }
+      });
+    } catch (error) {
+      const result: DocsOpOutcome = { id: tableOp.id, ok: false, error: error instanceof Error ? error.message : String(error) };
+      return result;
+    } finally {
+      lastParsed = null;
+    }
+  },
+
+  async nebulaSelectTable(index) {
+    const { tabId, docId } = await activeDoc();
+    const parsed = await fetchParsed(docId);
+    const paragraphIndex = tableLocateParagraph(parsed, Number(index));
+    if (paragraphIndex === null) {
+      throw new Error("This table has no text to locate it by. Scroll to it in the document.");
+    }
+    const text = parsed.payload.paragraphs[paragraphIndex].text;
+    const plan = planDocsLocate(parsed.payload.paragraphs, { paragraphIndex, start: 0, endParagraphIndex: paragraphIndex, end: text.length, expected: text });
+    await locateInDocumentTab(tabId, docId, plan, (id, message) => chrome.tabs.sendMessage(id, message));
+    return null;
   }
 };
 

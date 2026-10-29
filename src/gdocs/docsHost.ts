@@ -6,11 +6,11 @@
 
 import type { AiSuggestion } from "../shared";
 import { normalizeEmphasis, shiftEmphasis, type EmphasisSpan } from "../emphasis";
-import type { DocumentHost } from "../word/hostBridge";
+import type { DocumentHost, TableApplyOptions } from "../word/hostBridge";
 import { chooseMatchIndex, type BatchApplyItem, type BatchApplyOptions, type BatchApplyOutcome, type SuggestionMatchSet, type WordCapabilities, type WordHostBoot } from "../word/wordHost";
 import { indexParagraphs, type WordDocumentSnapshot, type WordFocusState } from "../word/wordContext";
 import { findMatches, planReplace, rangesOverlap, rangeToParagraphs, type PlannedEdit } from "./docsPlan";
-import type { DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp } from "./protocol";
+import type { DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp, DocsTableOp } from "./protocol";
 import { callScript, waitForScriptHost } from "./scriptBridge";
 
 const SELECTION_POLL_MS = 2_000;
@@ -67,6 +67,7 @@ async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?:
       paragraphText: paragraphs[image.paragraphIndex]?.text.trim() ?? "",
       paragraphIndex: image.paragraphIndex
     })),
+    tables: payload.tables ?? [],
     emphasis,
     comments: payload.comments ?? [],
     commentsStatus: payload.commentsStatus ?? {
@@ -241,6 +242,54 @@ async function selectInlinePicture(index: number): Promise<void> {
   await callScript("nebulaSelectImage", index);
 }
 
+/**
+ * Table suggestions are applied directly (Writer does not use Docs'
+ * suggesting mode); the change highlight marks the cells Writer changed.
+ */
+async function applyTableEdit(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, options: TableApplyOptions): Promise<{ trackedChange: boolean }> {
+  const table = suggestion.table;
+  if (suggestion.kind !== "table" || !table) {
+    throw new Error("This suggestion is not a table change.");
+  }
+  let afterParagraphIndex: number | null = null;
+  let expectedParagraphText: string | null = null;
+  if (table.action === "insert") {
+    const matches = findMatches(snapshot, suggestion.original);
+    if (!matches.length) {
+      throw new Error("The document no longer contains the text the table should follow — the passage may have changed.");
+    }
+    const matchIndex = options.matchIndex !== null && options.matchIndex >= 0 && options.matchIndex < matches.length
+      ? options.matchIndex
+      : chooseMatchIndex(matches, null, suggestion.anchor ?? null);
+    const range = rangeToParagraphs(snapshot.paragraphs, matches[matchIndex].from, matches[matchIndex].to);
+    if (!range) {
+      throw new Error("The passage the table should follow could not be mapped to the document. Refresh Writer and try again.");
+    }
+    afterParagraphIndex = range.endParagraphIndex;
+    expectedParagraphText = snapshot.paragraphs[afterParagraphIndex]?.text ?? null;
+  }
+  const op: DocsTableOp = {
+    id: suggestion.id,
+    action: table.action,
+    index: table.index,
+    before: table.before,
+    rows: table.rows,
+    header: table.header === true,
+    afterParagraphIndex,
+    expectedParagraphText,
+    highlight: options.highlightChanges
+  };
+  const outcome = await callScript<DocsOpOutcome>("nebulaApplyTable", op);
+  if (!outcome?.ok) {
+    throw new Error(outcome?.error ?? "Google Docs did not report a result for this table change.");
+  }
+  return { trackedChange: false };
+}
+
+async function selectTable(_snapshot: WordDocumentSnapshot, index: number): Promise<void> {
+  await callScript("nebulaSelectTable", index);
+}
+
 async function commentInlinePicture(): Promise<void> {
   throw new Error("Google Docs cannot take a comment from Writer.");
 }
@@ -259,5 +308,7 @@ export const googleDocsHost: DocumentHost = {
   readInlinePictureBase64,
   replaceInlinePicture,
   selectInlinePicture,
-  commentInlinePicture
+  commentInlinePicture,
+  applyTableEdit,
+  selectTable
 };

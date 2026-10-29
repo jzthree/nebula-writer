@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { documentTableLabel, parseDocumentTables, type DocumentTable } from "../src/tables";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, open, readFile, readdir, writeFile, mkdir, stat } from "node:fs/promises";
@@ -63,13 +64,13 @@ let writerSessionRevisionCounter = 0;
 // screen, recent focus). Terminal/MCP agents reading the "live" run see it
 // when the active session is that Word document, so "this paragraph"
 // resolves for them exactly as it does for the pane's own requests.
-let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; documentImages: AiDocumentImage[]; documentComments: DocumentComment[]; documentCommentsStatus?: DocumentCommentsStatus | null; receivedAt: string } | null = null;
+let wordHostState: { documentName: string; sourceDocumentId: string; hostContext: WordHostContext; documentImages: AiDocumentImage[]; documentTables: DocumentTable[]; documentComments: DocumentComment[]; documentCommentsStatus?: DocumentCommentsStatus | null; receivedAt: string } | null = null;
 
 // Agentic runs and the terminal agent read the add-in's latest push through
 // this source, so "the paragraph at the caret" follows the author mid-run.
 setLiveHostContextSource(() => (wordHostState ? { documentName: wordHostState.documentName, hostContext: wordHostState.hostContext } : null));
 
-function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined, documentImages?: AiDocumentImage[], documentComments?: DocumentComment[] | null, documentCommentsStatus?: DocumentCommentsStatus | null): void {
+function rememberWordHostContext(documentName: string, hostContext: WordHostContext | null | undefined, documentImages?: AiDocumentImage[], documentComments?: DocumentComment[] | null, documentCommentsStatus?: DocumentCommentsStatus | null, documentTables?: DocumentTable[]): void {
   if (!hostContext) {
     return;
   }
@@ -81,6 +82,7 @@ function rememberWordHostContext(documentName: string, hostContext: WordHostCont
     // Images arrive with AI requests, not with every context push: keep the
     // last set for the same document so terminal agents can see figures too.
     documentImages: documentImages ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentImages : []),
+    documentTables: documentTables ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentTables : []),
     // Comments arrive with requests and full re-reads; keep the last set for terminal agents.
     documentComments: documentComments ?? (wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentComments : []),
     documentCommentsStatus: documentCommentsStatus ?? (documentComments == null && wordHostState?.sourceDocumentId === sourceDocumentId ? wordHostState.documentCommentsStatus : null),
@@ -498,6 +500,7 @@ export function createWriterApp() {
       provider: "terminal",
       instruction: "",
       images: liveDocumentImages(),
+      documentTables: wordHostState && wordHostState.sourceDocumentId === activeWriterSession.sourceDocumentId ? wordHostState.documentTables : [],
       comments: wordHostState && wordHostState.sourceDocumentId === activeWriterSession.sourceDocumentId ? wordHostState.documentComments : [],
       commentsStatus: wordHostState && wordHostState.sourceDocumentId === activeWriterSession.sourceDocumentId ? wordHostState.documentCommentsStatus : null,
       mode: "global",
@@ -591,6 +594,20 @@ export function createWriterApp() {
       note: run.images.length
         ? "Open a path with your image-capable file reader to see the picture; propose a replacement with writer_stage_image_replacement."
         : "This document has no inline images (or the client did not extract them)."
+    });
+  });
+
+  app.get("/api/agent-run/:runId/tables", (request, response) => {
+    const run = resolveAgentRun(request.params.runId);
+    if (!run) {
+      response.status(404).json({ error: noRunError(request.params.runId) });
+      return;
+    }
+    response.json({
+      tables: run.documentTables.map((table) => ({ ...table, label: documentTableLabel(table) })),
+      note: run.documentTables.length
+        ? "rows are the cell texts, row by row. Change a table with writer_stage_table_edit (action replace, the complete new grid); its cells also appear as plain paragraphs in the document text."
+        : "This document has no tables (or the client did not send them). writer_stage_table_edit with action insert adds one."
     });
   });
 
@@ -1101,7 +1118,7 @@ export function createWriterApp() {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages, parsed.request.documentComments, parsed.request.documentCommentsStatus);
+      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages, parsed.request.documentComments, parsed.request.documentCommentsStatus, parsed.request.documentTables);
       const baseSession = wordLiveSessionForRequest(parsed.request);
       let undeliveredSteers: string[] = [];
       const releaseRun = markRunInFlight(parsed.request.runId);
@@ -1154,7 +1171,7 @@ export function createWriterApp() {
       }
       const documentName = wordLiveDocumentName(parsed.update.documentName);
       const sourceDocumentId = wordLiveSourceDocumentId(documentName);
-      rememberWordHostContext(documentName, parsed.update.hostContext, undefined, parsed.update.documentComments, parsed.update.documentCommentsStatus);
+      rememberWordHostContext(documentName, parsed.update.hostContext, undefined, parsed.update.documentComments, parsed.update.documentCommentsStatus, parsed.update.documentTables ?? undefined);
       const isWordSession = activeWriterSession?.sourceDocumentId === sourceDocumentId;
       let adopted = isWordSession;
       const documentText = parsed.update.documentText;
@@ -4029,6 +4046,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
   if ("error" in focus) {
     return focus;
   }
+  const documentTables = parseDocumentTables((body as { documentTables?: unknown }).documentTables);
+  if ("error" in documentTables) {
+    return documentTables;
+  }
   const runIdValue = (body as { runId?: unknown }).runId;
   if (runIdValue !== undefined && runIdValue !== null && !isRunId(runIdValue)) {
     return { error: "runId must be 1-64 letters, digits, '-' or '_'." };
@@ -4065,6 +4086,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       modelOptions: modelOptions.modelOptions,
       toolAccess: isAiToolAccess(toolAccessValue) ? toolAccessValue : null,
       documentImages: documentImages.value,
+      ...(documentTables.value ? { documentTables: documentTables.value } : {}),
       documentEmphasis: isEmphasisSpanList(documentEmphasisValue) ? documentEmphasisValue : null,
       documentComments: isDocumentCommentList(documentCommentsValue) ? documentCommentsValue : null,
       documentCommentsStatus: isDocumentCommentsStatus(commentsStatus) ? commentsStatus : null,
@@ -4188,6 +4210,10 @@ function parseWordHostContextUpdate(body: unknown): { update: WordHostContextUpd
   if (raw.documentEmphasis !== undefined && raw.documentEmphasis !== null && !isEmphasisSpanList(raw.documentEmphasis)) {
     return { error: "Word context updates require documentEmphasis to be a list of emphasis spans when provided." };
   }
+  const documentTables = parseDocumentTables(raw.documentTables);
+  if ("error" in documentTables) {
+    return documentTables;
+  }
   return {
     update: {
       documentName: typeof raw.documentName === "string" ? raw.documentName : null,
@@ -4196,6 +4222,7 @@ function parseWordHostContextUpdate(body: unknown): { update: WordHostContextUpd
       documentEmphasis: isEmphasisSpanList(raw.documentEmphasis) ? raw.documentEmphasis : null,
       documentComments: isDocumentCommentList(raw.documentComments) ? raw.documentComments : null,
       documentCommentsStatus: isDocumentCommentsStatus(raw.documentCommentsStatus) ? raw.documentCommentsStatus : null,
+      documentTables: documentTables.value ?? null,
       adopt: raw.adopt === true
     }
   };

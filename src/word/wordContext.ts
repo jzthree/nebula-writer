@@ -8,6 +8,7 @@
  * Office.js so it is unit-testable and reusable by the mock host.
  */
 
+import type { DocumentTable } from "../tables";
 import type { EmphasisSpan } from "../emphasis";
 import type { DocumentComment, DocumentCommentsStatus } from "../shared";
 import {
@@ -58,6 +59,8 @@ export interface WordDocumentSnapshot {
   paragraphs: WordParagraphInfo[];
   /** Inline pictures (metadata only; bytes are read on demand). */
   pictures?: WordPictureInfo[];
+  /** Top-level tables as grids of cell text (their cell paragraphs are also in `paragraphs`). */
+  tables?: DocumentTable[];
   /** Inline emphasis (bold/italic/underline/highlight) as spans over bodyText. */
   emphasis?: EmphasisSpan[];
   /** Reviewer comments (read on full snapshots; absent on cheap background re-reads). */

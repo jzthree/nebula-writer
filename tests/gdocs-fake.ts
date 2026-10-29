@@ -311,6 +311,39 @@ export class FakeContainer {
       this.children.splice(index, 1);
     }
   }
+
+  /** Table cells: paragraphs joined with "\n". */
+  getText(): string {
+    return this.children.map((child) => (child instanceof FakeParagraph ? child.getText() : "")).join("\n");
+  }
+
+  /** Table cells: replace the content with one paragraph per line. */
+  setText(text: string): this {
+    this.children = text.split("\n").map((line) => new FakeParagraph(this, { text: line }));
+    return this;
+  }
+
+  getColSpan(): number {
+    return 1;
+  }
+
+  getRowSpan(): number {
+    return 1;
+  }
+
+  /** Body: a table filled with `cells`, inserted at `index`. */
+  insertTable(index: number, cells: string[][]): FakeTable {
+    const table = new FakeTable(this);
+    for (const rowCells of cells) {
+      const row = new FakeTableRow(table);
+      for (const text of rowCells) {
+        row.appendTableCell(text);
+      }
+      table.rows.push(row);
+    }
+    this.children.splice(index, 0, table);
+    return table;
+  }
 }
 
 export class FakeTableRow {
@@ -337,6 +370,21 @@ export class FakeTableRow {
   getParent(): FakeTable {
     return this.table;
   }
+
+  appendTableCell(text = ""): FakeContainer {
+    return this.insertTableCell(this.cells.length, text);
+  }
+
+  insertTableCell(index: number, text = ""): FakeContainer {
+    const cell = new FakeContainer(ElementType.TABLE_CELL, this);
+    cell.setText(text);
+    this.cells.splice(index, 0, cell);
+    return cell;
+  }
+
+  removeCell(index: number): FakeContainer {
+    return this.cells.splice(index, 1)[0];
+  }
 }
 
 export class FakeTable {
@@ -362,6 +410,25 @@ export class FakeTable {
 
   getChildIndex(child: unknown): number {
     return this.rows.indexOf(child as FakeTableRow);
+  }
+
+  getCell(row: number, cell: number): FakeContainer {
+    return this.rows[row].cells[cell];
+  }
+
+  insertTableRow(index: number): FakeTableRow {
+    const row = new FakeTableRow(this);
+    this.rows.splice(index, 0, row);
+    return row;
+  }
+
+  removeRow(index: number): FakeTableRow {
+    return this.rows.splice(index, 1)[0];
+  }
+
+  /** Test helper: the cell texts. */
+  grid(): string[][] {
+    return this.rows.map((row) => row.cells.map((cell) => cell.getText()));
   }
 
   getParent(): FakeContainer {

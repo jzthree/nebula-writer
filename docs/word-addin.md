@@ -168,6 +168,33 @@ conversation* on, the turns are appended to the shared session's chat so the
 web app shows the same history.
 
 
+### Tables
+
+The pane reads the document's top-level tables as grids of cell text (the
+cells also stay in the document text as ordinary paragraphs, so a one-word
+fix in a cell is still an ordinary text suggestion). The AI sees each table
+as a grid with its label (`[Table 2] 4×3 after "Table 2. Budget"`) and can
+propose a table change — one-shot suggestions carry `tableAction`,
+`tableIndex`, `tableRows`; agents call `writer_list_tables` and
+`writer_stage_table_edit`:
+
+- **insert** a new table after the paragraph holding exact document text
+  (optionally with a bold header row);
+- **replace** a table with a complete new grid — Writer applies only the
+  difference (`planTableMorph` in `src/tables.ts`): rows and columns that
+  went away are deleted, new ones inserted where they belong, and only the
+  cells whose text changed are rewritten, so the rest keep their
+  formatting. Tables with merged cells can change cell text only;
+- **delete** a table.
+
+The card shows the grid with changed cells marked. Every host checks the
+table still holds the grid the suggestion was made for (found by content if
+its index shifted) and refuses otherwise. Word applies table changes as
+tracked changes when Track Changes is on; Google Docs (Chrome extension and
+Apps Script add-in) edits directly — never through Docs suggestion mode —
+with Writer's change highlight; the web editor replaces the table node.
+DOCX export leaves pending table suggestions out.
+
 ### Inline emphasis (bold, italic, underline, highlight)
 
 Emphasis is how key claims are signposted in a grant, so the pane reads it

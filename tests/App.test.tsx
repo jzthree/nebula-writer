@@ -482,6 +482,42 @@ describe("App suggestion review", () => {
     expect(screen.queryByText("Backlog: 101 pending edits")).not.toBeInTheDocument();
   });
 
+  it("sends the document's tables and applies a table suggestion from its card", async () => {
+    vi.mocked(requestAiSuggestion).mockResolvedValueOnce({
+      provider: "codex",
+      message: "Added a table",
+      suggestions: [{
+        id: "table-1",
+        kind: "table",
+        table: { action: "insert", index: null, rows: [["Item", "Cost"], ["Travel", "$5,000"]], before: null, header: true },
+        title: "Add budget table",
+        original: "This is a local-first writing workspace for revising DOCX documents with AI.",
+        replacement: "",
+        rationale: "Budget reads better as a table.",
+        confidence: 0.8,
+        target: "global",
+        status: "pending"
+      }]
+    });
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("AI instruction"), { target: { value: "Add a budget table" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send revision request" }));
+
+    const card = await screen.findByRole("button", { name: "Jump to proposed change: Add budget table" });
+    expect(vi.mocked(requestAiSuggestion).mock.calls.at(-1)?.[0].documentTables).toEqual([]);
+    expect(within(card).getByText("New 2×2 table")).toBeInTheDocument();
+    expect(within(card).getByText("$5,000")).toBeInTheDocument();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      expect(document.querySelector(".tiptap table")?.textContent ?? "").toContain("$5,000");
+    });
+    // The anchor paragraph stays: a table insert is never a deletion.
+    expect(document.querySelector(".tiptap")?.textContent ?? "").toContain("This is a local-first writing workspace for revising DOCX documents with AI.");
+  });
+
   it("links and highlights a proposed change card in the editor", async () => {
     render(<App />);
 

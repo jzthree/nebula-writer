@@ -1041,7 +1041,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
   const preferredParagraphs = preferredParagraphsByAnchor(paragraphTexts, pendingSuggestions);
   const ambiguousAnchorReasons = new Map<string, string>();
   for (const suggestion of pendingSuggestions) {
-    if (suggestion.commentOnly || suggestion.kind === "image" || preferredParagraphs.has(suggestion.id)) {
+    if (suggestion.commentOnly || suggestion.kind === "image" || suggestion.kind === "table" || preferredParagraphs.has(suggestion.id)) {
       continue;
     }
     const anchor = suggestion.original.trim();
@@ -1057,7 +1057,7 @@ export async function exportTrackedChangesFromSourceWithReport(sourceDocx: Buffe
       );
     }
   }
-  const trackedChangeCandidates = pendingSuggestions.filter((suggestion) => !suggestion.commentOnly && suggestion.kind !== "image" && !ambiguousAnchorReasons.has(suggestion.id));
+  const trackedChangeCandidates = pendingSuggestions.filter((suggestion) => !suggestion.commentOnly && suggestion.kind !== "image" && suggestion.kind !== "table" && !ambiguousAnchorReasons.has(suggestion.id));
   const patchedParagraphs = patchOriginalParagraphs(documentXml, trackedChangeCandidates, usedSuggestionIds, revisionIds, preferredParagraphs);
   const patchedSequences = patchParagraphSequences(patchedParagraphs, trackedChangeCandidates, usedSuggestionIds, revisionIds);
   const patchedSensitiveTextRuns = patchSensitiveParagraphTextRuns(patchedSequences, trackedChangeCandidates, usedSuggestionIds, revisionIds);
@@ -2620,7 +2620,7 @@ interface TrackedRange {
 function preferredParagraphsByAnchor(paragraphTexts: string[], suggestions: AiSuggestion[]): Map<string, number> {
   const preferred = new Map<string, number>();
   for (const suggestion of suggestions) {
-    if (!suggestion.anchor || suggestion.commentOnly || suggestion.kind === "image") {
+    if (!suggestion.anchor || suggestion.commentOnly || suggestion.kind === "image" || suggestion.kind === "table") {
       continue;
     }
     const candidates: Array<{ index: number; before: string; after: string }> = [];

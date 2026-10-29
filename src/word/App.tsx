@@ -44,7 +44,8 @@ import {
   subscribeParagraphChanges,
   subscribeSelectionChanges,
   waitForWordHost,
-  type WordCapabilities, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture } from "./hostBridge";
+  type WordCapabilities, applyTableEdit, commentInlinePicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
+import { findEditTarget } from "../tables";
 import {
   appendSessionChat,
   fetchHealth,
@@ -834,6 +835,7 @@ export function App() {
         hostContext,
         documentText: textChanged ? snapshot.bodyText : null,
         documentEmphasis: textChanged ? snapshot.emphasis ?? [] : null,
+        ...(textChanged && snapshot.tables ? { documentTables: snapshot.tables } : {}),
         ...(snapshot.comments ? { documentComments: snapshot.comments } : {}),
         ...(snapshot.commentsStatus ? { documentCommentsStatus: snapshot.commentsStatus } : {}),
         adopt: true
@@ -943,6 +945,7 @@ export function App() {
         requestedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),
         toolAccess: settingsRef.current.toolAccess,
         ...(documentImages.length ? { documentImages } : {}),
+        ...(snap.tables?.length ? { documentTables: snap.tables } : {}),
         hostContext,
         ...(modelOptions ? { modelOptions } : {}),
         ...(attachmentsRef.current.length ? { attachments: attachmentsRef.current } : {}),
@@ -1181,7 +1184,7 @@ export function App() {
 
   const ensureMatches = useCallback(async (suggestion: AiSuggestion, snap: WordDocumentSnapshot, force = false): Promise<CardState> => {
     const existing = cardsRef.current[suggestion.id] ?? DEFAULT_CARD_STATE;
-    if (suggestion.kind === "image") {
+    if (suggestion.kind === "image" || (suggestion.kind === "table" && suggestion.table?.action !== "insert")) {
       const next: CardState = { ...existing, matchIndex: 0, matches: 1, heading: null, paragraphIndex: null, error: null };
       patchCard(suggestion.id, next);
       return next;
@@ -1223,6 +1226,29 @@ export function App() {
       });
       return;
     }
+    const edit = suggestion.kind === "table" ? suggestion.table : null;
+    const applied = cardsRef.current[suggestion.id]?.outcome === "applied";
+    if (edit && applied && edit.action === "delete") {
+      return;
+    }
+    if (edit && (edit.action !== "insert" || applied)) {
+      // The table as it is now: the staged grid, or the new one once applied.
+      const grid = applied ? edit.rows : edit.before;
+      void runBusy("Locating in the document…", async () => {
+        try {
+          const latest = (await refreshSnapshot()) ?? snap;
+          const index = grid ? findEditTarget(latest.tables ?? [], { index: edit.index, before: grid }) : null;
+          if (index === null) {
+            throw new Error("This table is no longer in the document as proposed — it may have been edited or removed.");
+          }
+          await selectTable(latest, index);
+          patchCard(suggestion.id, { error: null });
+        } catch (error) {
+          patchCard(suggestion.id, { error: errorMessage(error) });
+        }
+      });
+      return;
+    }
     if (cardsRef.current[suggestion.id]?.outcome === "applied" && !suggestion.commentOnly && suggestion.replacement.trim()) {
       // Once applied, the original is gone from Word: jump to the revised text.
       void runBusy("Locating in the document…", async () => {
@@ -1247,7 +1273,7 @@ export function App() {
         patchCard(suggestion.id, { error: errorMessage(error) });
       }
     });
-  }, [ensureMatches, hostStatus, patchCard, runBusy]);
+  }, [ensureMatches, hostStatus, patchCard, refreshSnapshot, runBusy]);
 
   const cycleMatch = useCallback((suggestion: AiSuggestion, direction: -1 | 1) => {
     const snap = snapshotRef.current;
@@ -1284,7 +1310,24 @@ export function App() {
    */
   const applyMany = useCallback(async (group: AiSuggestion[], snap: WordDocumentSnapshot): Promise<{ applied: AiSuggestion[]; failed: Array<{ suggestion: AiSuggestion; error: string }> }> => {
     const imageGroup = group.filter((suggestion) => suggestion.kind === "image" && suggestion.image);
-    const textGroup = group.filter((suggestion) => suggestion.kind !== "image");
+    const tableGroup = group.filter((suggestion) => suggestion.kind === "table" && suggestion.table);
+    const textGroup = group.filter((suggestion) => suggestion.kind !== "image" && suggestion.kind !== "table");
+    // Tables first: each is verified against its grid at staging time, which a
+    // text edit inside one of its cells (applied below) would change.
+    const tableOutcomes: Array<{ suggestion: AiSuggestion; trackedChange: boolean } | { suggestion: AiSuggestion; error: string }> = [];
+    for (const suggestion of tableGroup) {
+      const state = cardsRef.current[suggestion.id];
+      try {
+        const result = await applyTableEdit(snap, suggestion, {
+          trackChanges: settingsRef.current.trackChanges,
+          highlightChanges: Boolean(settingsRef.current.highlightChanges),
+          matchIndex: state && state.matches !== null && suggestion.table?.action === "insert" ? state.matchIndex : null
+        });
+        tableOutcomes.push({ suggestion, trackedChange: result.trackedChange });
+      } catch (error) {
+        tableOutcomes.push({ suggestion, error: errorMessage(error) });
+      }
+    }
     const items = textGroup.map((suggestion) => {
       const state = cardsRef.current[suggestion.id];
       return {
@@ -1298,6 +1341,15 @@ export function App() {
     const byId = new Map(group.map((suggestion) => [suggestion.id, suggestion]));
     const applied: Array<{ suggestion: AiSuggestion; trackedChange: boolean }> = [];
     const failed: Array<{ suggestion: AiSuggestion; error: string }> = [];
+    for (const outcome of tableOutcomes) {
+      if ("error" in outcome) {
+        patchCard(outcome.suggestion.id, { error: outcome.error });
+        failed.push({ suggestion: outcome.suggestion, error: outcome.error });
+      } else {
+        patchCard(outcome.suggestion.id, { outcome: "applied", detail: outcome.trackedChange ? "tracked change" : "direct edit (Track Changes was off)", error: null });
+        applied.push(outcome);
+      }
+    }
     // Picture replacements: one Word round trip each (bytes come from the sidecar).
     for (const suggestion of imageGroup) {
       const image = suggestion.image;

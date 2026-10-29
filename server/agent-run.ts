@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasis";
 import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment, DocumentCommentsStatus } from "../src/shared";
-import { isImageCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, type SuggestionCandidate } from "./suggestion-validation";
+import { isImageCandidate, isTableCandidate, validateImageReplacementCandidate, validateSuggestionCandidate, validateTableCandidate, type SuggestionCandidate } from "./suggestion-validation";
+import type { DocumentTable } from "../src/tables";
 
 /**
  * Per-run context for agentic AI requests. The spawned agent's MCP tools read
@@ -30,6 +31,8 @@ export interface AgentRunContext {
   attachments: AiAttachment[];
   /** The document's images, extracted to files the agent can look at. */
   images: AiDocumentImage[];
+  /** The document's tables as grids. */
+  documentTables: DocumentTable[];
   /** Reviewer comments in the document (writer_list_comments). */
   comments: DocumentComment[];
   commentsStatus?: DocumentCommentsStatus | null;
@@ -71,6 +74,7 @@ export function createAgentRun(request: AiRequest): AgentRunContext {
     activity: [],
     attachments: request.attachments ?? [],
     images: request.documentImages ?? [],
+    documentTables: request.documentTables ?? [],
     comments: request.documentComments ?? [],
     commentsStatus: request.documentCommentsStatus,
     maxSuggestions: typeof request.maxSuggestions === "number" && Number.isSafeInteger(request.maxSuggestions) && request.maxSuggestions > 0
@@ -203,6 +207,8 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
     }
     const verdict = isImageCandidate(candidates[index])
       ? validateImageReplacementCandidate(candidates[index], run.images)
+      : isTableCandidate(candidates[index])
+      ? validateTableCandidate(candidates[index], run)
       : validateSuggestionCandidate(candidates[index], run);
     if (!verdict.ok) {
       results.push({ index, staged: false, reason: verdict.reason });

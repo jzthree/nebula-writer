@@ -23,6 +23,7 @@ var NebulaDocs = (() => {
   var main_exports = {};
   __export(main_exports, {
     nebulaApply: () => nebulaApply,
+    nebulaApplyTable: () => nebulaApplyTable,
     nebulaFingerprint: () => nebulaFingerprint,
     nebulaFocusKey: () => nebulaFocusKey,
     nebulaReadDocument: () => nebulaReadDocument,
@@ -31,6 +32,7 @@ var NebulaDocs = (() => {
     nebulaReplaceImage: () => nebulaReplaceImage,
     nebulaSelect: () => nebulaSelect,
     nebulaSelectImage: () => nebulaSelectImage,
+    nebulaSelectTable: () => nebulaSelectTable,
     nebulaShowSidebar: () => nebulaShowSidebar,
     onInstall: () => onInstall,
     onOpen: () => onOpen
@@ -143,6 +145,142 @@ var NebulaDocs = (() => {
   // src/gdocs/protocol.ts
   var DOCS_CHANGE_HIGHLIGHT = "#fff2a8";
   var DOCS_EMPHASIS_HIGHLIGHT = "#ffff00";
+
+  // src/tables.ts
+  function columnCount(rows) {
+    return rows.reduce((max, row) => Math.max(max, row.length), 0);
+  }
+  function normalizeCell(text) {
+    return text.replace(/\s+/g, " ").trim();
+  }
+  function sameGrid(a, b) {
+    return a.length === b.length && a.every((row, r) => row.length === b[r].length && row.every((cell, c) => normalizeCell(cell) === normalizeCell(b[r][c])));
+  }
+  function rectangular(rows) {
+    const width = columnCount(rows);
+    return rows.map((row) => Array.from({ length: width }, (_, c) => (row[c] ?? "").replace(/\r\n?/g, "\n")));
+  }
+  function findEditTarget(tables, edit) {
+    if (!edit.before) {
+      return null;
+    }
+    const at = edit.index !== null ? tables.find((table) => table.index === edit.index) : void 0;
+    if (at && sameGrid(at.rows, edit.before)) {
+      return at.index;
+    }
+    const same = tables.filter((table) => sameGrid(table.rows, edit.before));
+    return same.length === 1 ? same[0].index : null;
+  }
+  function align(a, b, same) {
+    const n = a.length;
+    const m = b.length;
+    const table = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+      for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+        table[i2][j2] = same(a[i2], b[j2]) ? table[i2 + 1][j2 + 1] + 1 : Math.max(table[i2 + 1][j2], table[i2][j2 + 1]);
+      }
+    }
+    const pairs = [];
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (same(a[i], b[j]) && table[i][j] === table[i + 1][j + 1] + 1) {
+        pairs.push([i, j]);
+        i += 1;
+        j += 1;
+      } else if (table[i + 1][j] >= table[i][j + 1]) {
+        i += 1;
+      } else {
+        j += 1;
+      }
+    }
+    return pairs;
+  }
+  function mostlyShared(a, b) {
+    const other = b.map(normalizeCell).filter(Boolean);
+    const cells = a.map(normalizeCell).filter(Boolean);
+    if (!cells.length || !other.length) {
+      return false;
+    }
+    const pool = /* @__PURE__ */ new Map();
+    for (const cell of other) {
+      pool.set(cell, (pool.get(cell) ?? 0) + 1);
+    }
+    let shared = 0;
+    for (const cell of cells) {
+      const left = pool.get(cell) ?? 0;
+      if (left > 0) {
+        shared += 1;
+        pool.set(cell, left - 1);
+      }
+    }
+    return shared * 2 >= Math.min(cells.length, other.length);
+  }
+  function planTableMorph(beforeRows, afterRows, options = {}) {
+    const before = rectangular(beforeRows);
+    const after = rectangular(afterRows);
+    const beforeWidth = columnCount(before);
+    const afterWidth = columnCount(after);
+    const column = (grid, c) => grid.map((row) => row[c] ?? "");
+    let columnPairs;
+    let rowPairs;
+    if (options.irregular || beforeWidth === afterWidth && before.length === after.length) {
+      columnPairs = Array.from({ length: Math.min(beforeWidth, afterWidth) }, (_, c) => [c, c]);
+      rowPairs = Array.from({ length: Math.min(before.length, after.length) }, (_, r) => [r, r]);
+    } else {
+      columnPairs = align(
+        Array.from({ length: beforeWidth }, (_, c) => column(before, c)),
+        Array.from({ length: afterWidth }, (_, c) => column(after, c)),
+        mostlyShared
+      );
+      if (!columnPairs.length && beforeWidth && afterWidth) {
+        columnPairs = Array.from({ length: Math.min(beforeWidth, afterWidth) }, (_, c) => [c, c]);
+      }
+      const project = (grid, side) => grid.map((row) => columnPairs.map((pair) => row[pair[side]] ?? ""));
+      const beforeKept = project(before, 0);
+      const afterKept = project(after, 1);
+      rowPairs = align(
+        beforeKept.map((_, r) => r),
+        afterKept.map((_, r) => r),
+        (r0, r1) => mostlyShared(beforeKept[r0], afterKept[r1])
+      );
+      if (!rowPairs.length && before.length && after.length) {
+        rowPairs = Array.from({ length: Math.min(before.length, after.length) }, (_, r) => [r, r]);
+      }
+    }
+    const keptColumns = new Set(columnPairs.map((pair) => pair[0]));
+    const keptRows = new Set(rowPairs.map((pair) => pair[0]));
+    const newColumns = new Set(columnPairs.map((pair) => pair[1]));
+    const newRows = new Set(rowPairs.map((pair) => pair[1]));
+    const steps = [];
+    for (let c = beforeWidth - 1; c >= 0; c -= 1) {
+      if (!keptColumns.has(c)) steps.push({ type: "deleteColumn", column: c });
+    }
+    for (let r = before.length - 1; r >= 0; r -= 1) {
+      if (!keptRows.has(r)) steps.push({ type: "deleteRow", row: r });
+    }
+    for (let r = 0; r < after.length; r += 1) {
+      if (!newRows.has(r)) steps.push({ type: "insertRow", at: r });
+    }
+    for (let c = 0; c < afterWidth; c += 1) {
+      if (!newColumns.has(c)) steps.push({ type: "insertColumn", at: c });
+    }
+    const structural = steps.length > 0;
+    const beforeRowOf = new Map(rowPairs.map(([r0, r1]) => [r1, r0]));
+    const beforeColumnOf = new Map(columnPairs.map(([c0, c1]) => [c1, c0]));
+    for (let r = 0; r < after.length; r += 1) {
+      for (let c = 0; c < afterWidth; c += 1) {
+        const r0 = beforeRowOf.get(r);
+        const c0 = beforeColumnOf.get(c);
+        const current = r0 !== void 0 && c0 !== void 0 ? before[r0][c0] : "";
+        const target = after[r][c];
+        if (normalizeCell(current) !== normalizeCell(target) || current.split("\n").length !== target.split("\n").length) {
+          steps.push({ type: "setCell", row: r, column: c, text: target });
+        }
+      }
+    }
+    return { steps, structural };
+  }
 
   // src/gdocs/script/main.ts
   function onOpen() {
@@ -282,6 +420,7 @@ var NebulaDocs = (() => {
       documentId: doc.getId(),
       paragraphs,
       images,
+      tables: topLevelTables(doc.getBody(), blocks).map((entry) => entry.table),
       fingerprint: fingerprintOf(paragraphs.map((paragraph) => paragraph.text))
     };
   }
@@ -652,6 +791,159 @@ var NebulaDocs = (() => {
     const doc = document();
     doc.setSelection(doc.newRange().addElement(image).build());
   }
+  function topLevelTables(body, blocks) {
+    const types = DocumentApp.ElementType;
+    const out = [];
+    let previousText = null;
+    const count = body.getNumChildren();
+    for (let childIndex = 0; childIndex < count; childIndex += 1) {
+      const child = body.getChild(childIndex);
+      const type = child.getType();
+      if (type === types.PARAGRAPH || type === types.LIST_ITEM) {
+        previousText = child.getText();
+        continue;
+      }
+      if (type !== types.TABLE) {
+        continue;
+      }
+      const element = child.asTable();
+      const rows = [];
+      let irregular = false;
+      for (let r = 0; r < element.getNumRows(); r += 1) {
+        const row = element.getRow(r);
+        const cells = [];
+        for (let c = 0; c < row.getNumCells(); c += 1) {
+          const cell = row.getCell(c);
+          cells.push(cell.getText());
+          if (cell.getColSpan() > 1 || cell.getRowSpan() > 1) {
+            irregular = true;
+          }
+        }
+        rows.push(cells);
+      }
+      if (rows.some((row) => row.length !== rows[0]?.length)) {
+        irregular = true;
+      }
+      const first = blocks.findIndex((entry) => entry.path.length > 1 && entry.path[0] === childIndex);
+      out.push({
+        element,
+        childIndex,
+        table: { index: out.length, rows, paragraphIndex: first >= 0 ? first : null, context: previousText, ...irregular ? { irregular: true } : {} }
+      });
+      previousText = null;
+    }
+    return out;
+  }
+  function styleCell(cell, style) {
+    const types = DocumentApp.ElementType;
+    for (let index = 0; index < cell.getNumChildren(); index += 1) {
+      const child = cell.getChild(index);
+      if (child.getType() !== types.PARAGRAPH && child.getType() !== types.LIST_ITEM) {
+        continue;
+      }
+      const text = child.editAsText();
+      const length = text.getText().length;
+      if (!length) {
+        continue;
+      }
+      if (style.bold) {
+        text.setBold(0, length - 1, true);
+      }
+      if (style.highlight) {
+        text.setBackgroundColor(0, length - 1, DOCS_CHANGE_HIGHLIGHT);
+      }
+    }
+  }
+  function nebulaApplyTable(op) {
+    try {
+      applyTable(op);
+      return { id: op.id, ok: true };
+    } catch (error) {
+      return { id: op.id, ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  function applyTable(op) {
+    const doc = document();
+    const body = doc.getBody();
+    const blocks = walkBlocks(body);
+    if (op.action === "insert") {
+      const rows = op.rows ?? [];
+      const width = columnCount(rows);
+      if (!rows.length || !width) {
+        throw new Error("The new table has no cells.");
+      }
+      const entry = op.afterParagraphIndex !== null ? blocks[op.afterParagraphIndex] : void 0;
+      if (!entry || op.expectedParagraphText !== null && collapse(entry.block.getText()) !== collapse(op.expectedParagraphText)) {
+        throw new Error("The paragraph the table should follow has moved or changed since the suggestion was made.");
+      }
+      const table2 = body.insertTable(entry.path[0] + 1, rows.map((row) => Array.from({ length: width }, (_, c) => row[c] ?? "")));
+      for (let r = 0; r < rows.length; r += 1) {
+        for (let c = 0; c < width; c += 1) {
+          styleCell(table2.getCell(r, c), { bold: op.header && r === 0, highlight: op.highlight });
+        }
+      }
+      return;
+    }
+    const tables = topLevelTables(body, blocks);
+    const target = findEditTarget(tables.map((entry) => entry.table), { index: op.index, before: op.before });
+    if (target === null) {
+      throw new Error("The table has changed (or is gone) since the suggestion was made \u2014 re-run the request on the current table.");
+    }
+    const { element, table } = tables[target];
+    if (op.action === "delete") {
+      element.removeFromParent();
+      return;
+    }
+    if (!op.rows?.length) {
+      throw new Error("The revised table has no rows.");
+    }
+    const morph = planTableMorph(table.rows, op.rows, { irregular: table.irregular });
+    if (table.irregular && morph.structural) {
+      throw new Error("This table has merged cells, so Writer can change only its cell text, not its rows or columns.");
+    }
+    for (const step of morph.steps) {
+      switch (step.type) {
+        case "deleteRow":
+          element.removeRow(step.row);
+          break;
+        case "deleteColumn":
+          for (let r = 0; r < element.getNumRows(); r += 1) {
+            element.getRow(r).removeCell(step.column);
+          }
+          break;
+        case "insertRow": {
+          const width = element.getNumRows() ? element.getRow(0).getNumCells() : columnCount(op.rows);
+          const row = element.insertTableRow(step.at);
+          for (let c = 0; c < width; c += 1) {
+            row.appendTableCell("");
+          }
+          break;
+        }
+        case "insertColumn":
+          for (let r = 0; r < element.getNumRows(); r += 1) {
+            element.getRow(r).insertTableCell(step.at, "");
+          }
+          break;
+        case "setCell": {
+          const cell = element.getCell(step.row, step.column);
+          cell.setText(step.text);
+          if (op.highlight) {
+            styleCell(cell, { highlight: true });
+          }
+          break;
+        }
+      }
+    }
+  }
+  function nebulaSelectTable(index) {
+    const doc = document();
+    const body = doc.getBody();
+    const found = topLevelTables(body, walkBlocks(body))[index];
+    if (!found) {
+      throw new Error(`The document has no table ${index + 1}.`);
+    }
+    doc.setSelection(doc.newRange().addElement(found.element).build());
+  }
   return __toCommonJS(main_exports);
 })();
 
@@ -667,3 +959,5 @@ function nebulaApply() { return NebulaDocs.nebulaApply.apply(null, arguments); }
 function nebulaReadImage() { return NebulaDocs.nebulaReadImage.apply(null, arguments); }
 function nebulaReplaceImage() { return NebulaDocs.nebulaReplaceImage.apply(null, arguments); }
 function nebulaSelectImage() { return NebulaDocs.nebulaSelectImage.apply(null, arguments); }
+function nebulaApplyTable() { return NebulaDocs.nebulaApplyTable.apply(null, arguments); }
+function nebulaSelectTable() { return NebulaDocs.nebulaSelectTable.apply(null, arguments); }

@@ -4,6 +4,7 @@ import { SUGGESTION_ANCHOR_CONTEXT_CHARS, chooseAnchoredCandidate } from "./shar
 import { carryEmphasis, emphasisFromPieces, sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
 import type { AiSuggestion, SelectionContext, SourceTrackedChangePreview } from "./shared";
 import { suggestingRouterKey } from "./suggesting";
+import { findEditTarget, rectangular, sameGrid, type DocumentTable } from "./tables";
 
 type SuggestionRange = { from: number; to: number };
 type TextRangePosition = { from: number; to: number };
@@ -76,11 +77,194 @@ function findImageNode(editor: Editor, index: number): { pos: number; nodeSize: 
   return found;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Tables                                                                    */
+/* ------------------------------------------------------------------------- */
+
+type TopLevelTable = { pos: number; nodeSize: number; table: DocumentTable; hasHeader: boolean };
+
+/** Text of a block node, its paragraphs joined with "\n". */
+function blockText(node: { textBetween: (from: number, to: number, separator: string) => string; content: { size: number } }): string {
+  return node.textBetween(0, node.content.size, "\n");
+}
+
+/** The document's top-level tables, with their positions. */
+function topLevelTables(editor: Editor): TopLevelTable[] {
+  const tables: TopLevelTable[] = [];
+  let previousText: string | null = null;
+  editor.state.doc.forEach((node, pos) => {
+    if (node.type.name !== "table") {
+      previousText = node.isTextblock || node.childCount ? blockText(node) : previousText;
+      return;
+    }
+    const rows: string[][] = [];
+    let irregular = false;
+    let hasHeader = false;
+    node.forEach((row, _offset, rowIndex) => {
+      const cells: string[] = [];
+      row.forEach((cell) => {
+        if ((Number(cell.attrs.colspan) || 1) > 1 || (Number(cell.attrs.rowspan) || 1) > 1) {
+          irregular = true;
+        }
+        if (rowIndex === 0 && cell.type.name === "tableHeader") {
+          hasHeader = true;
+        }
+        cells.push(blockText(cell));
+      });
+      rows.push(cells);
+    });
+    if (rows.some((row) => row.length !== rows[0].length)) {
+      irregular = true;
+    }
+    const context = previousText && previousText.trim() ? previousText.trim() : null;
+    tables.push({
+      pos,
+      nodeSize: node.nodeSize,
+      hasHeader,
+      table: { index: tables.length, rows, paragraphIndex: null, context, ...(irregular ? { irregular: true } : {}) }
+    });
+    previousText = null;
+  });
+  return tables;
+}
+
+/** The document's top-level tables as grids, for AI requests. */
+export function readEditorTables(editor: Editor | null): DocumentTable[] {
+  return editor ? topLevelTables(editor).map((entry) => entry.table) : [];
+}
+
+/** A table node (JSON) holding `rows`; the first row uses header cells when `header`. */
+function tableNodeJson(rows: string[][], header: boolean): Record<string, unknown> {
+  const grid = rectangular(rows);
+  return {
+    type: "table",
+    content: grid.map((row, rowIndex) => ({
+      type: "tableRow",
+      content: row.map((text) => ({
+        type: header && rowIndex === 0 ? "tableHeader" : "tableCell",
+        content: text.split("\n").map((line) => (line ? { type: "paragraph", content: [{ type: "text", text: line }] } : { type: "paragraph" }))
+      }))
+    }))
+  };
+}
+
+function findTableTarget(editor: Editor, suggestion: AiSuggestion): TopLevelTable | null {
+  const edit = suggestion.table;
+  if (!edit) {
+    return null;
+  }
+  const tables = topLevelTables(editor);
+  const index = findEditTarget(tables.map((entry) => entry.table), edit);
+  return index === null ? null : tables[index] ?? null;
+}
+
+/** For a table insert: the end of the top-level block holding the anchor text. */
+function topLevelBlockEnd(editor: Editor, position: number): number | null {
+  const resolved = editor.state.doc.resolve(Math.min(position, editor.state.doc.content.size));
+  if (resolved.depth < 1) {
+    return null;
+  }
+  return resolved.after(1);
+}
+
+function applyTableSuggestion(editor: Editor, suggestion: AiSuggestion, options: { confirmRelocated?: boolean }): ApplySuggestionResult {
+  const edit = suggestion.table;
+  if (!edit) {
+    return { ok: false, reason: "missing" };
+  }
+  if (edit.action === "insert") {
+    if (!edit.rows?.length) {
+      return { ok: false, reason: "missing" };
+    }
+    const match = findSuggestionMatchUncached(editor, suggestion);
+    if (!match) {
+      return { ok: false, reason: "missing" };
+    }
+    if ((match.matchKind === "relocated" || match.matchKind === "ambiguous") && !options.confirmRelocated) {
+      return { ok: false, reason: "needs-confirmation", matchKind: match.matchKind, range: { from: match.from, to: match.to } };
+    }
+    const at = topLevelBlockEnd(editor, match.to);
+    if (at === null) {
+      return { ok: false, reason: "missing" };
+    }
+    const node = editor.schema.nodeFromJSON(tableNodeJson(edit.rows, edit.header === true));
+    editor.chain().focus().command(({ tr }) => {
+      tr.insert(at, node);
+      return true;
+    }).run();
+    return { ok: true, matchKind: match.matchKind, range: { from: at, to: at + node.nodeSize } };
+  }
+  const target = findTableTarget(editor, suggestion);
+  if (!target || !edit.before || !sameGrid(target.table.rows, edit.before)) {
+    return { ok: false, reason: "missing" };
+  }
+  const range = { from: target.pos, to: target.pos + target.nodeSize };
+  if (edit.action === "delete") {
+    editor.chain().focus().command(({ tr }) => {
+      tr.delete(range.from, range.to);
+      return true;
+    }).run();
+    return { ok: true, matchKind: "exact", range };
+  }
+  if (!edit.rows?.length) {
+    return { ok: false, reason: "missing" };
+  }
+  const node = editor.schema.nodeFromJSON(tableNodeJson(edit.rows, target.hasHeader));
+  editor.chain().focus().command(({ tr }) => {
+    tr.replaceWith(range.from, range.to, node);
+    return true;
+  }).run();
+  return { ok: true, matchKind: "exact", range: { from: range.from, to: range.from + node.nodeSize } };
+}
+
+/**
+ * Undo an accepted table suggestion: remove the inserted table, put the old
+ * grid back in place of the rewritten one, or restore a deleted table at
+ * `at` (where it stood). False when the table has changed since.
+ */
+export function revertTableSuggestion(editor: Editor, suggestion: AiSuggestion, at: number | null): boolean {
+  const edit = suggestion.table;
+  if (!edit) {
+    return false;
+  }
+  if (edit.action === "delete") {
+    if (!edit.before?.length || at === null || at < 0 || at > editor.state.doc.content.size) {
+      return false;
+    }
+    const resolved = editor.state.doc.resolve(at);
+    const position = resolved.depth >= 1 ? resolved.before(1) : at;
+    const node = editor.schema.nodeFromJSON(tableNodeJson(edit.before, false));
+    editor.chain().focus().command(({ tr }) => {
+      tr.insert(position, node);
+      return true;
+    }).run();
+    return true;
+  }
+  const tables = topLevelTables(editor);
+  const target = findEditTarget(tables.map((entry) => entry.table), { index: null, before: edit.rows });
+  const entry = target === null ? null : tables[target];
+  if (!entry) {
+    return false;
+  }
+  editor.chain().focus().command(({ tr }) => {
+    if (edit.action === "insert") {
+      tr.delete(entry.pos, entry.pos + entry.nodeSize);
+    } else {
+      tr.replaceWith(entry.pos, entry.pos + entry.nodeSize, editor.schema.nodeFromJSON(tableNodeJson(edit.before ?? [], entry.hasHeader)));
+    }
+    return true;
+  }).run();
+  return true;
+}
+
 export function applySuggestion(
   editor: Editor,
   suggestion: AiSuggestion,
   options: { confirmRelocated?: boolean } = {}
 ): ApplySuggestionResult {
+  if (suggestion.kind === "table") {
+    return applyTableSuggestion(editor, suggestion, options);
+  }
   if (suggestion.kind === "image" && suggestion.image) {
     // A picture swap: point the Nth image node at the replacement file.
     const target = findImageNode(editor, suggestion.image.index);
@@ -143,6 +327,11 @@ export function findSuggestionRange(editor: Editor, suggestion: AiSuggestion): {
 export function findSuggestionMatch(editor: Editor, suggestion: AiSuggestion): SuggestionMatch | null {
   if (suggestion.kind === "image" && suggestion.image) {
     const target = findImageNode(editor, suggestion.image.index);
+    return target ? { from: target.pos, to: target.pos + target.nodeSize, matchKind: "exact" } : null;
+  }
+  if (suggestion.kind === "table" && suggestion.table && suggestion.table.action !== "insert") {
+    // Replace/delete: the table itself (insert anchors to its paragraph's text, below).
+    const target = findTableTarget(editor, suggestion);
     return target ? { from: target.pos, to: target.pos + target.nodeSize, matchKind: "exact" } : null;
   }
   const cache = rangeCacheForEditor(editor);

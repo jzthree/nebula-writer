@@ -63,7 +63,7 @@ import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
 import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
-import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, replacementToContent, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
+import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, readEditorTables, replacementToContent, revertTableSuggestion, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
 import { addReviewTrace, clearReviewHighlight, removeReviewTrace, ReviewHighlight, setReviewHighlight, setReviewTraces, type ReviewTrace } from "./reviewHighlight";
 import { setSourceRevisionHighlight, SourceRevisionHighlight, type SourceRevisionMark } from "./sourceRevisionHighlight";
 import { HeadingEnter } from "./headingEnter";
@@ -263,8 +263,63 @@ function ImageChange({ suggestion }: { suggestion: AiSuggestion }) {
   );
 }
 
+/** A table suggestion as a compact grid: the new table (changed cells marked), or the deleted one struck. */
+function TableChange({ suggestion }: { suggestion: AiSuggestion }) {
+  const edit = suggestion.table;
+  if (!edit) {
+    return null;
+  }
+  const deleting = edit.action === "delete";
+  const rows = rectangularGrid((deleting ? edit.before : edit.rows) ?? []);
+  const before = edit.before ? rectangularGrid(edit.before) : null;
+  const changed = (row: number, column: number) => edit.action === "replace" && before
+    ? (before[row]?.[column] ?? null) !== rows[row][column]
+    : edit.action === "insert";
+  const MAX_ROWS = 12;
+  const header = edit.action === "insert" ? edit.header === true : false;
+  return (
+    <figure className={`table-change table-change-${edit.action}`}>
+      <div className="table-change-scroll">
+        <table>
+          <tbody>
+            {rows.slice(0, MAX_ROWS).map((row, r) => (
+              <tr key={r}>
+                {row.map((cell, c) => {
+                  const Cell = header && r === 0 ? "th" : "td";
+                  return (
+                    <Cell key={c} className={!deleting && edit.action === "replace" && changed(r, c) ? "changed" : undefined}>
+                      {deleting ? <del>{cell}</del> : cell}
+                    </Cell>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <figcaption>
+        {edit.action === "insert" ? `New ${rows.length}×${rows[0]?.length ?? 0} table` : edit.action === "delete" ? `Delete ${suggestion.original}` : `${suggestion.original} → ${rows.length}×${rows[0]?.length ?? 0}`}
+        {rows.length > MAX_ROWS ? ` · ${rows.length - MAX_ROWS} more rows` : ""}
+      </figcaption>
+    </figure>
+  );
+}
+
+function rectangularGrid(rows: string[][]): string[][] {
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  return rows.map((row) => Array.from({ length: width }, (_, c) => row[c] ?? ""));
+}
+
 /** The original and revised text of a decided suggestion, as the review card showed it. */
 function DecidedChange({ suggestion }: { suggestion: AiSuggestion }) {
+  if (suggestion.kind === "table" && suggestion.table) {
+    return (
+      <div className="review-activity-change">
+        <TableChange suggestion={suggestion} />
+        {suggestion.rationale ? <p className="rationale">{suggestion.rationale}</p> : null}
+      </div>
+    );
+  }
   if (suggestion.kind === "image" && suggestion.image) {
     return (
       <div className="review-activity-change">
@@ -4315,6 +4370,7 @@ export function App() {
         documentHtml: "",
         documentText: currentDocumentText,
         documentEmphasis: editor ? editorEmphasisSpans(editor) : [],
+        documentTables: readEditorTables(editor),
         maxSuggestions,
         selection: activeScope === "selection" ? selection : null,
         requestedBy: collabSession.user.name,
@@ -4666,7 +4722,8 @@ export function App() {
   // replacements, but as a strike it covers neighboring prose and reads as if
   // the agent proposed rewriting text it never touched.
   function inlineMaterializeRange(suggestion: AiSuggestion): { from: number; to: number } | null {
-    if (!editor) {
+    // A table change is not a text replacement: it stays a card and is applied as a whole.
+    if (!editor || suggestion.kind === "table") {
       return null;
     }
     const match = findSuggestionMatch(editor, suggestion);
@@ -4840,6 +4897,11 @@ export function App() {
     sourceRange: { from: number; to: number }
   ): { from: number; to: number } | null {
     const docSize = editorInstance.state.doc.content.size;
+    if (suggestion.kind === "table") {
+      // applySuggestion verified the table it changed; the range is the new table (or where a deleted one stood).
+      const from = Math.max(0, Math.min(sourceRange.from, docSize));
+      return suggestion.table?.action === "delete" ? { from, to: from } : { from, to: Math.min(docSize, Math.max(from, sourceRange.to)) };
+    }
     if (!normalizeText(suggestion.replacement)) {
       // Deletion suggestion: confirm the original text is gone from the source location.
       const windowFrom = Math.max(0, Math.min(sourceRange.from, docSize));
@@ -5001,6 +5063,17 @@ export function App() {
     const traceId = `${suggestion.id}-accepted`;
     const trace = acceptedReviewTracesRef.current.find((candidate) => candidate.id === traceId) ?? null;
     const docSize = editor.state.doc.content.size;
+    if (suggestion.kind === "table") {
+      suppressUserTrackingRef.current = true;
+      const reverted = revertTableSuggestion(editor, suggestion, trace ? trace.from : null);
+      lastEditorTextSnapshotRef.current = editorTextSnapshot(editor).text;
+      suppressUserTrackingRef.current = false;
+      if (reverted) {
+        acceptedReviewTracesRef.current = acceptedReviewTracesRef.current.filter((candidate) => candidate.id !== traceId);
+        setEditorTrackedChanges((current) => current.filter((change) => change.id !== `${suggestion.id}-ai-change`));
+      }
+      return reverted;
+    }
     let range: { from: number; to: number } | null = null;
     if (normalizeText(suggestion.replacement)) {
       if (trace && trace.from < trace.to && trace.to <= docSize) {
@@ -7749,6 +7822,9 @@ export function App() {
                   {(() => {
                     if (suggestion.kind === "image" && suggestion.image) {
                       return <ImageChange suggestion={suggestion} />;
+                    }
+                    if (suggestion.kind === "table" && suggestion.table) {
+                      return <TableChange suggestion={suggestion} />;
                     }
                     const segments = wordDiffSegments(suggestion.original, suggestion.replacement);
                     if (!segments) {

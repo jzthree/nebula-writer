@@ -7,6 +7,7 @@
 
 import type { EmphasisSpan } from "../emphasis";
 import type { DocumentComment, DocumentCommentsStatus } from "../shared";
+import type { DocumentTable, TableAction } from "../tables";
 
 export interface DocsParagraphPayload {
   text: string;
@@ -33,6 +34,8 @@ export interface DocsDocumentPayload {
   documentId: string;
   paragraphs: DocsParagraphPayload[];
   images: DocsImagePayload[];
+  /** Top-level tables as grids of cell text (their cell paragraphs are also in `paragraphs`). */
+  tables?: DocumentTable[];
   /** Changes whenever the document text changes; polled for re-reads. */
   fingerprint: string;
 }
@@ -83,6 +86,26 @@ export interface DocsReplaceOp extends DocsTextRange {
   highlight: boolean;
 }
 
+/**
+ * A table change. insert: a new table with `rows` right after paragraph
+ * `afterParagraphIndex` (whose text must still be `expectedParagraphText`).
+ * replace/delete: the table that still holds `before` (at `index`, or the
+ * only table with that grid) is morphed into `rows` or removed. Nothing
+ * changes when the target cannot be verified. `highlight` colours the cells
+ * Writer changed.
+ */
+export interface DocsTableOp {
+  id: string;
+  action: TableAction;
+  index: number | null;
+  before: string[][] | null;
+  rows: string[][] | null;
+  header: boolean;
+  afterParagraphIndex: number | null;
+  expectedParagraphText: string | null;
+  highlight: boolean;
+}
+
 export interface DocsOpOutcome {
   id: string;
   ok: boolean;
@@ -106,7 +129,9 @@ export const DOCS_SCRIPT_FUNCTIONS = [
   "nebulaApply",
   "nebulaReadImage",
   "nebulaReplaceImage",
-  "nebulaSelectImage"
+  "nebulaSelectImage",
+  "nebulaApplyTable",
+  "nebulaSelectTable"
 ] as const;
 
 export type DocsScriptFunction = (typeof DOCS_SCRIPT_FUNCTIONS)[number];

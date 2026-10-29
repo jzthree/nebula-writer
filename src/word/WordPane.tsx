@@ -40,6 +40,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
+import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
 
@@ -1088,7 +1089,10 @@ function SuggestionCard(props: {
 }) {
   const { suggestion, state } = props;
   const handled = state.outcome !== null;
-  const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
+  const isTable = suggestion.kind === "table" && Boolean(suggestion.table);
+  const deletion = !suggestion.commentOnly && !isTable && suggestion.kind !== "image" && suggestion.replacement.trim() === "";
+  // A table that is changed or deleted has no passage of text to hang a Word comment on.
+  const commentable = !isTable || suggestion.table?.action === "insert";
   const [expanded, setExpanded] = useState(false);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"original" | "revised" | null>(null);
@@ -1134,7 +1138,7 @@ function SuggestionCard(props: {
             <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
               <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title={state.outcome === "applied" && !deletion ? "Select the revised text in the document" : "Select this passage in the document"}><Crosshair size={13} aria-hidden="true" /> Locate</button>
               <button type="button" onClick={() => void copy("original")} title="Copy the original text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "original" ? "Copied" : "Copy original"}</button>
-              {suggestion.commentOnly || deletion ? null : (
+              {suggestion.commentOnly || deletion || isTable ? null : (
                 <button type="button" onClick={() => void copy("revised")} title="Copy the revised text to the clipboard"><Copy size={13} aria-hidden="true" /> {copied === "revised" ? "Copied" : "Copy revised"}</button>
               )}
             </div>
@@ -1165,7 +1169,7 @@ function SuggestionCard(props: {
       <p className="wp-card-meta">
         {props.revisionOf ? <span className="tag revision" title="Written after your feedback on the earlier suggestion">Revision of {props.revisionOf}</span> : null}
         {suggestion.proposedBy ? <span>{suggestion.proposedBy}</span> : null}
-        {suggestion.commentOnly ? <span className="tag">advisory</span> : deletion ? <span className="tag">deletion</span> : null}
+        {suggestion.commentOnly ? <span className="tag">advisory</span> : deletion ? <span className="tag">deletion</span> : isTable ? <span className="tag">table</span> : null}
         {state.heading ? <span title="Section in Word">§ {state.heading}</span> : null}
         {state.paragraphIndex !== null ? <span>¶ {state.paragraphIndex + 1}</span> : null}
         {state.matches !== null && state.matches > 1 ? (
@@ -1187,7 +1191,7 @@ function SuggestionCard(props: {
           </button>
         )}
         <button type="button" className={noteOpen ? "active" : ""} onClick={() => setNoteOpen((current) => !current)} disabled={props.busy} aria-expanded={noteOpen} title="Comment on this change — say what to keep or change and Writer replies with a revised suggestion"><MessageSquareText size={13} aria-hidden="true" /> Comment</button>
-        <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage" aria-label="Leave as a Word comment"><MessageSquarePlus size={13} aria-hidden="true" /></button>
+        {commentable ? <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage" aria-label="Leave as a Word comment"><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
         <button type="button" className="quiet" onClick={props.onDismiss} disabled={props.busy} title="Dismiss (recorded as rejected)"><X size={13} aria-hidden="true" /></button>
       </div>
       {noteOpen ? (
@@ -1297,6 +1301,9 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
       </figure>
     );
   }
+  if (suggestion.kind === "table" && suggestion.table) {
+    return <TableChange suggestion={suggestion} />;
+  }
   const deletion = !suggestion.commentOnly && suggestion.replacement.trim() === "";
   // Emphasis rides as per-word markers through the diff and renders as real bold/italic/underline/highlight.
   const sides = markedSides(suggestion);
@@ -1331,6 +1338,51 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
         </button>
       ) : null}
     </>
+  );
+}
+
+/** A table change as a small grid: the new table, the revised one with changed cells marked, or the removed one struck through. */
+function TableChange(props: { suggestion: AiSuggestion }) {
+  const edit = props.suggestion.table as AiTableEdit;
+  const before = edit.before ? rectangular(edit.before) : null;
+  const after = edit.rows ? rectangular(edit.rows) : null;
+  const shown = edit.action === "delete" ? before : after;
+  if (!shown?.length) {
+    return <p className="wp-quote">{props.suggestion.original}</p>;
+  }
+  // Cells that are new or whose text changed: by position, after matching rows and columns as the hosts will.
+  const changed = new Set<string>();
+  if (edit.action === "replace" && before && after) {
+    const morph = planTableMorph(before, after);
+    for (const step of morph.steps) {
+      if (step.type === "setCell") {
+        changed.add(`${step.row}:${step.column}`);
+      }
+    }
+  }
+  const shape = (rows: string[][]) => `${rows.length} row${rows.length === 1 ? "" : "s"} × ${rows[0]?.length ?? 0} column${rows[0]?.length === 1 ? "" : "s"}`;
+  const caption = edit.action === "insert"
+    ? `New table · ${shape(shown)}${props.suggestion.original ? ` · after “${props.suggestion.original.length > 60 ? `${props.suggestion.original.slice(0, 57)}…` : props.suggestion.original}”` : ""}`
+    : edit.action === "delete"
+      ? `Delete ${props.suggestion.original}`
+      : `${shape(shown)}${before && (before.length !== shown.length || before[0]?.length !== shown[0]?.length) ? ` (was ${shape(before)})` : ""} · ${changed.size} cell${changed.size === 1 ? "" : "s"} changed`;
+  return (
+    <figure className={`wp-table-change ${edit.action}`}>
+      <div className="wp-table-scroll">
+        <table>
+          <tbody>
+            {shown.map((row, r) => (
+              <tr key={r} className={edit.action === "insert" && edit.header && r === 0 ? "header" : undefined}>
+                {row.map((cell, c) => (
+                  <td key={c} className={changed.has(`${r}:${c}`) ? "changed" : undefined}>{edit.action === "delete" ? <del>{cell}</del> : cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <figcaption>{caption}</figcaption>
+    </figure>
   );
 }
 

@@ -14,6 +14,7 @@
 /// <reference types="office-js" />
 
 import { wordDiffSegments } from "../wordDiff";
+import { findEditTarget, planTableMorph, rectangular, type DocumentTable } from "../tables";
 import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../shared";
 import { bridgeEmphasisGaps, emphasisAt, emphasisFromPieces, hasEmphasis, normalizeEmphasis, sameFormat, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
 
@@ -219,9 +220,12 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
     const inlinePictures = body.inlinePictures;
     body.load("text");
     paragraphs.load(capabilities.paragraphStyles
-      ? `items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem,${PARAGRAPH_FONT_PROPERTIES}`
+      ? `items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem,items/tableNestingLevel,${PARAGRAPH_FONT_PROPERTIES}`
       : `items/text,items/style,items/outlineLevel,items/isListItem,${PARAGRAPH_FONT_PROPERTIES}`);
     inlinePictures.load("items/width,items/height,items/altTextDescription,items/altTextTitle");
+    // Tables (WordApi 1.3, like paragraph styles): their grids come with the first sync.
+    const tableCollection = capabilities.paragraphStyles ? body.tables : null;
+    tableCollection?.load(TABLE_PROPERTIES);
     if (capabilities.trackChanges) {
       context.document.load("changeTrackingMode");
     }
@@ -235,11 +239,18 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
       isListItem: safeBoolean(paragraph, "isListItem")
     }));
     // Picture metadata (never the bytes — those are read on demand when a
-    // request is sent). One extra round trip only when there are pictures.
+    // request is sent) and the paragraph before each table: one extra round
+    // trip, only when there are pictures or tables.
+    const topTables = topLevelTables(tableCollection);
+    const tablesBefore = topTables.map((table) => {
+      const before = table.getParagraphBeforeOrNullObject();
+      before.load("text");
+      return before;
+    });
     let pictures: WordPictureInfo[] = [];
     try {
       const items = inlinePictures.items ?? [];
-      if (items.length) {
+      if (items.length || topTables.length) {
         for (const picture of items) {
           picture.paragraph.load("text");
         }
@@ -260,6 +271,7 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
     } catch {
       pictures = [];
     }
+    const tables = describeTables(topTables, tablesBefore, paragraphs.items ?? []);
     const paragraphInfos = indexParagraphs(bodyText, sources);
     // Inline emphasis: paragraphs whose font is uniform cost nothing extra;
     // mixed paragraphs are read word by word in one more round trip.
@@ -284,6 +296,7 @@ export async function readDocumentSnapshot(capabilities: WordCapabilities, optio
       bodyText,
       paragraphs: paragraphInfos,
       pictures,
+      ...(tableCollection ? { tables } : {}),
       emphasis,
       ...(comments ? { comments } : {}),
       changeTrackingMode: capabilities.trackChanges ? safeString(context.document, "changeTrackingMode") : null,
@@ -1677,4 +1690,213 @@ function safeBoolean(target: object, key: string): boolean | null {
   } catch {
     return null;
   }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tables                                                                    */
+/* ------------------------------------------------------------------------- */
+
+const TABLE_PROPERTIES = "items/values,items/rowCount,items/nestingLevel,items/isUniform";
+
+/** Top-level tables in document order (Word's body.tables also lists nested ones). */
+function topLevelTables(collection: Word.TableCollection | null): Word.Table[] {
+  try {
+    return (collection?.items ?? []).filter((table) => (safeNumber(table, "nestingLevel") ?? 1) <= 1);
+  } catch {
+    return [];
+  }
+}
+
+function tableGrid(table: Word.Table): string[][] {
+  let values: unknown;
+  try {
+    values = table.values;
+  } catch {
+    values = [];
+  }
+  return Array.isArray(values)
+    ? values.map((row) => (Array.isArray(row) ? row.map((cell) => normalizeWordText(String(cell ?? "")).replace(/\n+$/, "")) : []))
+    : [];
+}
+
+/**
+ * Grids of the top-level tables, with the paragraph before each (its caption,
+ * usually) and where each table's first cell sits among the body paragraphs:
+ * the k-th run of paragraphs inside a table starts the k-th top-level table.
+ */
+function describeTables(tables: Word.Table[], before: Word.Paragraph[], paragraphs: Word.Paragraph[]): DocumentTable[] {
+  const starts: number[] = [];
+  let inside = false;
+  paragraphs.forEach((paragraph, index) => {
+    const level = safeNumber(paragraph, "tableNestingLevel") ?? 0;
+    if (level > 0 && !inside) {
+      starts.push(index);
+    }
+    inside = level > 0;
+  });
+  return tables.map((table, index) => {
+    const rows = tableGrid(table);
+    const ragged = rows.some((row) => row.length !== (rows[0]?.length ?? 0));
+    const previous = before[index];
+    let context: string | null = null;
+    try {
+      context = previous && !previous.isNullObject ? normalizeWordText(previous.text ?? "").trim() || null : null;
+    } catch {
+      context = null;
+    }
+    return {
+      index,
+      rows,
+      paragraphIndex: starts.length === tables.length ? starts[index] : null,
+      context,
+      ...(safeBoolean(table, "isUniform") === false || ragged ? { irregular: true } : {})
+    };
+  });
+}
+
+/** The live top-level tables with their current grids (one sync). */
+async function readLiveTables(context: Word.RequestContext): Promise<Array<{ table: Word.Table; index: number; rows: string[][]; irregular: boolean }>> {
+  const collection = context.document.body.tables;
+  collection.load(TABLE_PROPERTIES);
+  await context.sync();
+  return topLevelTables(collection).map((table, index) => {
+    const rows = tableGrid(table);
+    return { table, index, rows, irregular: safeBoolean(table, "isUniform") === false || rows.some((row) => row.length !== (rows[0]?.length ?? 0)) };
+  });
+}
+
+/**
+ * Apply a table suggestion: insert a new table after the paragraph holding
+ * `original`, or morph/delete the table it was made for — found by its grid
+ * at staging time, so a table that changed since is never touched. A morph
+ * deletes what went away, inserts what is new, and sets only the cells
+ * whose text differs (see planTableMorph), so unchanged cells keep their
+ * formatting and Word tracks each piece like any edit. Like text edits in
+ * Word, changes are not colour-highlighted (`highlightChanges` is for hosts
+ * without tracked changes); Track Changes shows them.
+ */
+export async function applyTableEdit(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, options: { trackChanges: "always" | "word"; highlightChanges: boolean; matchIndex: number | null }): Promise<{ trackedChange: boolean }> {
+  const edit = suggestion.table;
+  if (!edit) {
+    throw new Error("This suggestion has no table change.");
+  }
+  const word = requireWord();
+  return word.run(async (context) => {
+    let anchor: Word.Paragraph | null = null;
+    let live: { table: Word.Table; rows: string[][]; irregular: boolean } | null = null;
+    if (edit.action === "insert") {
+      if (!edit.rows?.length) {
+        throw new Error("This table suggestion has no rows to insert.");
+      }
+      const found = await findRanges(context, suggestion.original);
+      if (!found.ranges.length) {
+        throw new Error("Word could not find the paragraph this table should follow — the passage may have changed since the suggestion was made.");
+      }
+      let matchIndex = options.matchIndex;
+      if (matchIndex === null) {
+        matchIndex = found.ranges.length > 1 ? chooseMatchIndex(await describeMatches(context, snapshot, found.ranges), null, suggestion.anchor ?? null) : 0;
+      }
+      anchor = found.ranges[clampIndex(matchIndex, found.ranges.length)].paragraphs.getLast();
+    } else {
+      const tables = await readLiveTables(context);
+      const target = findEditTarget(tables, edit);
+      if (target === null) {
+        throw new Error("The table this suggestion was made for has changed or is gone — re-read the document and ask again.");
+      }
+      live = tables[target];
+    }
+
+    const document = context.document;
+    document.load("changeTrackingMode");
+    await context.sync();
+    let previousMode: string | null = null;
+    let trackedChange: boolean;
+    if (options.trackChanges === "always") {
+      previousMode = String(document.changeTrackingMode ?? "Off");
+      if (previousMode === "Off") {
+        document.changeTrackingMode = "TrackAll";
+        await context.sync();
+      }
+      trackedChange = true;
+    } else {
+      trackedChange = String(document.changeTrackingMode ?? "Off") !== "Off";
+    }
+    try {
+      if (anchor && edit.rows) {
+        const rows = rectangular(edit.rows);
+        const table = anchor.insertTable(rows.length, rows[0].length, "After", rows);
+        table.styleBuiltIn = "GridTable1Light" as Word.BuiltInStyleName;
+        if (edit.header) {
+          table.headerRowCount = 1;
+          table.rows.getFirst().font.bold = true;
+        }
+        table.select();
+      } else if (live && edit.action === "delete") {
+        live.table.delete();
+      } else if (live && edit.rows) {
+        const table = live.table;
+        const morph = planTableMorph(edit.before ?? [], edit.rows, { irregular: live.irregular });
+        if (morph.structural && live.irregular) {
+          throw new Error("This table has merged cells, so Writer can change its cell text but not add or remove rows or columns.");
+        }
+        let rowCount = live.rows.length;
+        let columnCount = live.rows[0]?.length ?? 0;
+        for (const step of morph.steps) {
+          switch (step.type) {
+            case "deleteRow":
+              table.deleteRows(step.row, 1);
+              rowCount -= 1;
+              break;
+            case "deleteColumn":
+              table.deleteColumns(step.column, 1);
+              columnCount -= 1;
+              break;
+            case "insertRow":
+              if (step.at < rowCount) {
+                table.getCell(step.at, 0).parentRow.insertRows("Before", 1);
+              } else {
+                table.getCell(rowCount - 1, 0).parentRow.insertRows("After", 1);
+              }
+              rowCount += 1;
+              break;
+            case "insertColumn":
+              if (step.at < columnCount) {
+                table.getCell(0, step.at).insertColumns("Before", 1);
+              } else {
+                table.getCell(0, columnCount - 1).insertColumns("After", 1);
+              }
+              columnCount += 1;
+              break;
+            case "setCell": {
+              table.getCell(step.row, step.column).value = step.text;
+              break;
+            }
+          }
+        }
+        table.select();
+      }
+      await context.sync();
+    } finally {
+      if (previousMode === "Off") {
+        document.changeTrackingMode = "Off";
+        await context.sync();
+      }
+    }
+    return { trackedChange };
+  });
+}
+
+/** Select a table so Word scrolls to it: the one at `index` if it still matches the snapshot, else the only table with that grid. */
+export async function selectTable(snapshot: WordDocumentSnapshot, index: number): Promise<void> {
+  const word = requireWord();
+  await word.run(async (context) => {
+    const tables = await readLiveTables(context);
+    const known = snapshot.tables?.find((table) => table.index === index);
+    const target = known ? findEditTarget(tables, { index, before: known.rows }) ?? (tables[index] ? index : null) : tables[index] ? index : null;
+    if (target === null) {
+      throw new Error("Word could not find this table — it may have been deleted.");
+    }
+    tables[target].table.select();
+    await context.sync();
+  });
 }

@@ -21,8 +21,10 @@ import {
   type DocsParagraphPayload,
   type DocsReplaceOp,
   type DocsSelectionPayload,
+  type DocsTableOp,
   type DocsTextRange
 } from "../protocol";
+import { columnCount, findEditTarget, planTableMorph, type DocumentTable } from "../../tables";
 
 type Element = GoogleAppsScript.Document.Element;
 type Paragraph = GoogleAppsScript.Document.Paragraph;
@@ -197,6 +199,7 @@ export function nebulaReadDocument(): DocsDocumentPayload {
     documentId: doc.getId(),
     paragraphs,
     images,
+    tables: topLevelTables(doc.getBody() as unknown as Container, blocks).map((entry) => entry.table),
     fingerprint: fingerprintOf(paragraphs.map((paragraph) => paragraph.text))
   };
 }
@@ -637,4 +640,173 @@ export function nebulaSelectImage(index: number): void {
   const { image } = imageAt(index);
   const doc = document();
   doc.setSelection(doc.newRange().addElement(image).build());
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tables                                                                    */
+/* ------------------------------------------------------------------------- */
+
+type Table = GoogleAppsScript.Document.Table;
+type TableCell = GoogleAppsScript.Document.TableCell;
+
+/** The body's top-level tables with their grids, in document order. */
+function topLevelTables(body: Container, blocks: WalkedBlock[]): Array<{ element: Table; childIndex: number; table: DocumentTable }> {
+  const types = DocumentApp.ElementType;
+  const out: Array<{ element: Table; childIndex: number; table: DocumentTable }> = [];
+  let previousText: string | null = null;
+  const count = body.getNumChildren();
+  for (let childIndex = 0; childIndex < count; childIndex += 1) {
+    const child = body.getChild(childIndex);
+    const type = child.getType();
+    if (type === types.PARAGRAPH || type === types.LIST_ITEM) {
+      previousText = (child as unknown as Block).getText();
+      continue;
+    }
+    if (type !== types.TABLE) {
+      continue;
+    }
+    const element = child.asTable();
+    const rows: string[][] = [];
+    let irregular = false;
+    for (let r = 0; r < element.getNumRows(); r += 1) {
+      const row = element.getRow(r);
+      const cells: string[] = [];
+      for (let c = 0; c < row.getNumCells(); c += 1) {
+        const cell = row.getCell(c);
+        cells.push(cell.getText());
+        if (cell.getColSpan() > 1 || cell.getRowSpan() > 1) {
+          irregular = true;
+        }
+      }
+      rows.push(cells);
+    }
+    if (rows.some((row) => row.length !== rows[0]?.length)) {
+      irregular = true;
+    }
+    const first = blocks.findIndex((entry) => entry.path.length > 1 && entry.path[0] === childIndex);
+    out.push({
+      element,
+      childIndex,
+      table: { index: out.length, rows, paragraphIndex: first >= 0 ? first : null, context: previousText, ...(irregular ? { irregular: true } : {}) }
+    });
+    previousText = null;
+  }
+  return out;
+}
+
+/** Style every paragraph of a cell (bold header text, change highlight). */
+function styleCell(cell: TableCell, style: { bold?: boolean; highlight?: boolean }): void {
+  const types = DocumentApp.ElementType;
+  for (let index = 0; index < cell.getNumChildren(); index += 1) {
+    const child = cell.getChild(index);
+    if (child.getType() !== types.PARAGRAPH && child.getType() !== types.LIST_ITEM) {
+      continue;
+    }
+    const text = (child as unknown as Block).editAsText();
+    const length = text.getText().length;
+    if (!length) {
+      continue;
+    }
+    if (style.bold) {
+      text.setBold(0, length - 1, true);
+    }
+    if (style.highlight) {
+      text.setBackgroundColor(0, length - 1, DOCS_CHANGE_HIGHLIGHT);
+    }
+  }
+}
+
+/** Insert, morph or delete a table; the target is verified first and nothing changes if it moved. */
+export function nebulaApplyTable(op: DocsTableOp): DocsOpOutcome {
+  try {
+    applyTable(op);
+    return { id: op.id, ok: true };
+  } catch (error) {
+    return { id: op.id, ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function applyTable(op: DocsTableOp): void {
+  const doc = document();
+  const body = doc.getBody() as unknown as Container & { insertTable(index: number, cells: string[][]): Table };
+  const blocks = walkBlocks(body);
+  if (op.action === "insert") {
+    const rows = op.rows ?? [];
+    const width = columnCount(rows);
+    if (!rows.length || !width) {
+      throw new Error("The new table has no cells.");
+    }
+    const entry = op.afterParagraphIndex !== null ? blocks[op.afterParagraphIndex] : undefined;
+    if (!entry || (op.expectedParagraphText !== null && collapse(entry.block.getText()) !== collapse(op.expectedParagraphText))) {
+      throw new Error("The paragraph the table should follow has moved or changed since the suggestion was made.");
+    }
+    // A paragraph inside a table cell: the new table goes after that table, not nested in it.
+    const table = body.insertTable(entry.path[0] + 1, rows.map((row) => Array.from({ length: width }, (_, c) => row[c] ?? "")));
+    for (let r = 0; r < rows.length; r += 1) {
+      for (let c = 0; c < width; c += 1) {
+        styleCell(table.getCell(r, c), { bold: op.header && r === 0, highlight: op.highlight });
+      }
+    }
+    return;
+  }
+  const tables = topLevelTables(body, blocks);
+  const target = findEditTarget(tables.map((entry) => entry.table), { index: op.index, before: op.before });
+  if (target === null) {
+    throw new Error("The table has changed (or is gone) since the suggestion was made — re-run the request on the current table.");
+  }
+  const { element, table } = tables[target];
+  if (op.action === "delete") {
+    element.removeFromParent();
+    return;
+  }
+  if (!op.rows?.length) {
+    throw new Error("The revised table has no rows.");
+  }
+  const morph = planTableMorph(table.rows, op.rows, { irregular: table.irregular });
+  if (table.irregular && morph.structural) {
+    throw new Error("This table has merged cells, so Writer can change only its cell text, not its rows or columns.");
+  }
+  for (const step of morph.steps) {
+    switch (step.type) {
+      case "deleteRow":
+        element.removeRow(step.row);
+        break;
+      case "deleteColumn":
+        for (let r = 0; r < element.getNumRows(); r += 1) {
+          element.getRow(r).removeCell(step.column);
+        }
+        break;
+      case "insertRow": {
+        const width = element.getNumRows() ? element.getRow(0).getNumCells() : columnCount(op.rows);
+        const row = element.insertTableRow(step.at);
+        for (let c = 0; c < width; c += 1) {
+          row.appendTableCell("");
+        }
+        break;
+      }
+      case "insertColumn":
+        for (let r = 0; r < element.getNumRows(); r += 1) {
+          element.getRow(r).insertTableCell(step.at, "");
+        }
+        break;
+      case "setCell": {
+        const cell = element.getCell(step.row, step.column);
+        cell.setText(step.text);
+        if (op.highlight) {
+          styleCell(cell, { highlight: true });
+        }
+        break;
+      }
+    }
+  }
+}
+
+export function nebulaSelectTable(index: number): void {
+  const doc = document();
+  const body = doc.getBody() as unknown as Container;
+  const found = topLevelTables(body, walkBlocks(body))[index];
+  if (!found) {
+    throw new Error(`The document has no table ${index + 1}.`);
+  }
+  doc.setSelection(doc.newRange().addElement(found.element).build());
 }

@@ -40,6 +40,22 @@ export interface DocumentHost {
   replaceInlinePicture(index: number, base64: string, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }>;
   selectInlinePicture(index: number): Promise<void>;
   commentInlinePicture(index: number, text: string): Promise<void>;
+  /**
+   * Apply a table suggestion (kind "table"): insert its grid after the
+   * paragraph holding `original` (match `matchIndex`), or morph/delete the
+   * table it was made for (found by its `before` grid, see findEditTarget).
+   * Fails without changing anything when that table is gone or changed.
+   */
+  applyTableEdit(snapshot: WordDocumentSnapshot, suggestion: AiSuggestion, options: TableApplyOptions): Promise<{ trackedChange: boolean }>;
+  /** Select a table (by its index in the snapshot) so the author sees it. */
+  selectTable(snapshot: WordDocumentSnapshot, index: number): Promise<void>;
+}
+
+export interface TableApplyOptions {
+  trackChanges: "always" | "word";
+  highlightChanges: boolean;
+  /** insert: which occurrence of `original` to insert after (null: chosen from the anchor). */
+  matchIndex: number | null;
 }
 
 /** Microsoft Word through Office.js — the original host. */
@@ -57,7 +73,9 @@ export const wordDocumentHost: DocumentHost = {
   readInlinePictureBase64: word.readInlinePictureBase64,
   replaceInlinePicture: word.replaceInlinePicture,
   selectInlinePicture: word.selectInlinePicture,
-  commentInlinePicture: word.commentInlinePicture
+  commentInlinePicture: word.commentInlinePicture,
+  applyTableEdit: word.applyTableEdit,
+  selectTable: word.selectTable
 };
 
 let active: DocumentHost = wordDocumentHost;
@@ -86,3 +104,5 @@ export const readInlinePictureBase64: DocumentHost["readInlinePictureBase64"] = 
 export const replaceInlinePicture: DocumentHost["replaceInlinePicture"] = (index, base64, options) => active.replaceInlinePicture(index, base64, options);
 export const selectInlinePicture: DocumentHost["selectInlinePicture"] = (index) => active.selectInlinePicture(index);
 export const commentInlinePicture: DocumentHost["commentInlinePicture"] = (index, text) => active.commentInlinePicture(index, text);
+export const applyTableEdit: DocumentHost["applyTableEdit"] = (snapshot, suggestion, options) => active.applyTableEdit(snapshot, suggestion, options);
+export const selectTable: DocumentHost["selectTable"] = (snapshot, index) => active.selectTable(snapshot, index);

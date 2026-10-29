@@ -634,6 +634,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-image-change .wp-image-missing { font-size: 11px; color: var(--muted); text-align: center; }
 .wp-image-change figcaption { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
 
+/* Table change cards: the grid with changed cells marked */
+.wp-table-change { margin: 0; display: grid; gap: 4px; }
+.wp-table-scroll { overflow-x: auto; max-height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.wp-table-change table { border-collapse: collapse; width: 100%; font-size: 11.5px; line-height: 1.3; }
+.wp-table-change td { border: 1px solid var(--line-soft); padding: 3px 5px; vertical-align: top; white-space: pre-wrap; min-width: 32px; }
+.wp-table-change tr.header td { font-weight: 600; background: var(--surface-soft); }
+.wp-table-change.insert td, .wp-table-change td.changed { color: var(--green); background: var(--green-soft); }
+.wp-table-change.delete td { color: var(--red); background: var(--red-soft); }
+.wp-table-change figcaption { font-size: 11px; color: var(--muted); }
+
 /* Refine: the next message is about one suggestion */
 .wp-focus-chip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--accent-border); background: var(--accent-bg, var(--surface-soft)); font-size: 11.5px; color: var(--accent-text); }
 .wp-focus-label { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
