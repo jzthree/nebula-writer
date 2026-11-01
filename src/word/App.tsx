@@ -44,7 +44,7 @@ import {
   subscribeParagraphChanges,
   subscribeSelectionChanges,
   waitForWordHost,
-  type WordCapabilities, applyTableEdit, commentInlinePicture, deletePicture, insertPicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
+  type WordCapabilities, applyTableEdit, rejectTrackedRevisions, commentInlinePicture, deletePicture, insertPicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
 import { findEditTarget } from "../tables";
 import { selectionExcerpt, steerMessageBody } from "../steerMessage";
 import { revertSuggestionOf } from "../revertSuggestion";
@@ -341,7 +341,7 @@ export function App() {
   }, [cards, conversationReady, conversationState, suggestions, turns]);
 
   /** Restored cards keep their decision; where they match is worked out again against today's text. */
-  const restoredCard = (state: CardState | undefined): CardState => ({ ...DEFAULT_CARD_STATE, outcome: state?.outcome ?? null, detail: state?.detail ?? null });
+  const restoredCard = (state: CardState | undefined): CardState => ({ ...DEFAULT_CARD_STATE, outcome: state?.outcome ?? null, detail: state?.detail ?? null, revisions: state?.revisions ?? null });
 
   /** Bring a saved page into the pane: its turns before the ones shown, its suggestions and cards where not already here. */
   const mergeConversationPage = useCallback((page: Awaited<ReturnType<typeof fetchConversationFromSidecar<ChatTurn, AiSuggestion, CardState>>>, placement: "restore" | "earlier") => {
@@ -1425,7 +1425,8 @@ export function App() {
           detail: outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)",
           error: null,
           matches: outcome.result.matches,
-          matchIndex: outcome.result.matchIndex
+          matchIndex: outcome.result.matchIndex,
+          revisions: outcome.result.revisions?.length ? outcome.result.revisions : null
         });
         applied.push({ suggestion, trackedChange: outcome.result.trackedChange });
       } else {
@@ -1540,7 +1541,15 @@ export function App() {
     void runBusy("Reverting in Word…", async () => {
       const latest = (await refreshSnapshot()) ?? snap;
       try {
-        if (inverse.kind === "table") {
+        // Applied as tracked changes that are still there: reject them, as Word's Reject would.
+        const revisions = cardsRef.current[suggestion.id]?.revisions;
+        const rejected = revisions?.length ? await rejectTrackedRevisions(revisions) : "missing";
+        if (rejected === "ambiguous") {
+          throw new Error("The same tracked change appears more than once in the document — reject this one in Word's Review tab.");
+        }
+        if (rejected === "rejected") {
+          // Done: the document is as it was, with no new markup.
+        } else if (inverse.kind === "table") {
           await applyTableEdit(latest, inverse, { trackChanges: settingsRef.current.trackChanges, highlightChanges: false, matchIndex: null });
         } else {
           const [outcome] = await applySuggestions(latest, [{ id: inverse.id, suggestion: inverse, matchIndex: null, preferredOffset: preferredOffset(inverse, latest) }], { trackChanges: settingsRef.current.trackChanges, highlightChanges: false });
@@ -1554,7 +1563,7 @@ export function App() {
         return;
       }
       lastPushedTextRef.current = null;
-      patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null });
+      patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null, revisions: null });
       await recordDecision(suggestion, "pending", "Applied, then reverted in Word");
       showNotice("success", "Reverted — the original text is back. The suggestion is pending again.");
       await refreshSnapshot();

@@ -119,6 +119,8 @@ export class MockWordHost {
   supports: Record<string, boolean>;
   platform: string;
   trackedChanges: MockTrackedChange[] = [];
+  /** Where each tracked change's new text starts now (later edits shift it). */
+  private trackedAt = new Map<MockTrackedChange, number>();
   comments: MockComment[] = [];
   pictures: MockPictureSeed[] = [];
   pictureReplacements: MockPictureReplacement[] = [];
@@ -169,6 +171,7 @@ export class MockWordHost {
     this.edits = [];
     this.tableEdits = [];
     this.trackedChanges = [];
+    this.trackedAt.clear();
     for (const seed of options.comments ?? []) {
       const from = this.text.indexOf(seed.anchorText);
       if (from >= 0) {
@@ -465,11 +468,52 @@ export class MockWordHost {
     this.emphasis = normalizeEmphasis(shifted);
     const edit = { from, to, original, replacement };
     this.edits.push(edit);
+    for (const [change, at] of this.trackedAt) {
+      if (at >= to) {
+        this.trackedAt.set(change, at + delta);
+      }
+    }
     if (this.changeTrackingMode !== "Off") {
       this.trackedChanges.push(edit);
+      this.trackedAt.set(edit, from);
     }
     this.fireParagraphChanged();
     return { from, to: from + replacement.length };
+  }
+
+  /* -------------------------- tracked changes -------------------------- */
+
+  /**
+   * Word's TrackedChangeCollection over [from, to] (WordApi 1.6), in document
+   * order: a replacement shows as its deletion and its insertion. The mock
+   * applies tracked edits to the text at once; rejecting either half puts
+   * the original back.
+   */
+  trackedChangeItems(from: number, to: number): Array<{ type: string; text: string; author: string; date: Date; reject: () => void; accept: () => void }> {
+    return [...this.trackedAt]
+      .filter(([, at]) => at >= from && at <= to)
+      .sort((a, b) => a[1] - b[1])
+      .flatMap(([change]) => {
+        const settle = (keep: boolean) => {
+          const at = this.trackedAt.get(change);
+          if (at === undefined) {
+            return;
+          }
+          this.trackedAt.delete(change);
+          this.trackedChanges = this.trackedChanges.filter((entry) => entry !== change);
+          if (!keep) {
+            const mode = this.changeTrackingMode;
+            this.changeTrackingMode = "Off";
+            this.replaceRange(at, at + change.replacement.length, change.original);
+            this.changeTrackingMode = mode;
+          }
+        };
+        const base = { author: "Mock Author", date: new Date(), reject: () => settle(false), accept: () => settle(true) };
+        return [
+          ...(change.original ? [{ ...base, type: "Deleted", text: change.original }] : []),
+          ...(change.replacement ? [{ ...base, type: "Added", text: change.replacement }] : [])
+        ];
+      });
   }
 
   /* ----------------------------- search ----------------------------- */
@@ -677,6 +721,10 @@ class MockBody {
     return { items: host.tableIds().map((id) => new MockTable(host, id)), load: () => undefined };
   }
 
+  getTrackedChanges(): { items: ReturnType<MockWordHost["trackedChangeItems"]>; load: () => void } {
+    return { items: this.host.trackedChangeItems(0, this.host.text.length), load: () => undefined };
+  }
+
   /** Word's Body.getComments (WordApi 1.4): content, author, resolved, replies, and the anchored range. */
   getComments(): { items: Array<Record<string, unknown>>; load: () => void } {
     const host = this.host;
@@ -748,6 +796,10 @@ export class MockRange {
 
   expandTo(other: MockRange): MockRange {
     return new MockRange(this.host, Math.min(this.from, other.from), Math.max(this.to, other.to));
+  }
+
+  getTrackedChanges(): { items: ReturnType<MockWordHost["trackedChangeItems"]>; load: () => void } {
+    return { items: this.host.trackedChangeItems(this.from, this.to), load: () => undefined };
   }
 
   compareLocationWith(other: MockRange): { value: string } {

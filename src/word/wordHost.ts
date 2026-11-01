@@ -95,6 +95,14 @@ export interface ApplyResult {
    * only bold/italic/underline/highlight were set.
    */
   strategy: "range" | "paragraphs" | "words" | "emphasis";
+  /** The tracked changes this apply created, in document order (WordApi 1.6), so a revert can reject exactly them. */
+  revisions?: TrackedRevision[] | null;
+}
+
+/** A Word tracked change, by what it is: enough to find it again among the document's tracked changes. */
+export interface TrackedRevision {
+  type: string;
+  text: string;
 }
 
 const WORD_SEARCH_MAX_CHARS = 250;
@@ -933,6 +941,10 @@ async function runApplyPass(
         emphasisScopes.set(target, { first: target.range.paragraphs.getFirst(), last: target.range.paragraphs.getLast() });
       }
     }
+    // With tracking on, note each passage's tracked changes before the edit:
+    // the ones that are new afterwards are this apply's, for a later revert.
+    const revisionScopes = trackedChange && isSetSupported("WordApi", "1.6") ? new Map(ready.map((target) => [target, target.range.paragraphs.getFirst().getRange("Whole").expandTo(target.range.paragraphs.getLast().getRange("Whole"))])) : null;
+    const revisionsBefore = revisionScopes ? new Map([...revisionScopes].map(([target, scope]) => [target, loadTrackedRevisions(scope)])) : null;
     // Word-level plans for every eligible target, loaded in one sync.
     const wordPlans = await planWordLevelEdits(context, ready.filter((target) => wordLevelEligible(target.item.suggestion)).map((target) => ({ key: target, range: target.range, suggestion: target.item.suggestion })));
     for (const target of ready) {
@@ -976,16 +988,22 @@ async function runApplyPass(
       suggestion: target.item.suggestion,
       scope: emphasisScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }
     })));
+    const revisionsAfter = revisionScopes ? new Map([...revisionScopes].filter(([target]) => !failures.has(target)).map(([target, scope]) => [target, loadTrackedRevisions(scope)])) : null;
+    if (revisionsAfter?.size) {
+      await context.sync();
+    }
     for (const target of ready) {
       const failure = failures.get(target);
       if (failure) {
         outcomes.set(target.item.id, { id: target.item.id, ok: false, error: failure });
         continue;
       }
+      const before = revisionsBefore?.get(target);
+      const after = revisionsAfter?.get(target);
       outcomes.set(target.item.id, {
         id: target.item.id,
         ok: true,
-        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range" }
+        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range", revisions: before && after ? newRevisions(before, after) : null }
       });
     }
   } finally {
@@ -995,6 +1013,72 @@ async function runApplyPass(
     }
   }
   return [...deferred].map((target) => target.item);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tracked changes of an apply, and rejecting them                           */
+/* ------------------------------------------------------------------------- */
+
+function loadTrackedRevisions(scope: Word.Range): Word.TrackedChangeCollection {
+  const collection = scope.getTrackedChanges();
+  collection.load("items/type,items/text");
+  return collection;
+}
+
+function revisionKey(change: { type: string; text: string }): string {
+  return `${change.type}\u0000${change.text}`;
+}
+
+/** The tracked changes in `after` that were not in `before`, in document order. */
+function newRevisions(before: Word.TrackedChangeCollection, after: Word.TrackedChangeCollection): TrackedRevision[] {
+  const remaining = new Map<string, number>();
+  for (const change of before.items) {
+    remaining.set(revisionKey(change), (remaining.get(revisionKey(change)) ?? 0) + 1);
+  }
+  const added: TrackedRevision[] = [];
+  for (const change of after.items) {
+    const key = revisionKey(change);
+    const count = remaining.get(key) ?? 0;
+    if (count > 0) {
+      remaining.set(key, count - 1);
+    } else {
+      added.push({ type: String(change.type), text: change.text });
+    }
+  }
+  return added;
+}
+
+/**
+ * Reject the tracked changes an apply created (WordApi 1.6) — what Reject
+ * does in Word, so the document is as it was with no new markup. "missing":
+ * they are no longer all there as a run (accepted, rejected or edited in
+ * Word since); "ambiguous": the same run appears more than once.
+ */
+export async function rejectTrackedRevisions(revisions: TrackedRevision[]): Promise<"rejected" | "missing" | "ambiguous"> {
+  if (!revisions.length || !isSetSupported("WordApi", "1.6")) {
+    return "missing";
+  }
+  const word = requireWord();
+  return word.run(async (context) => {
+    const all = context.document.body.getTrackedChanges();
+    all.load("items/type,items/text");
+    await context.sync();
+    const items = all.items;
+    const starts: number[] = [];
+    for (let start = 0; start + revisions.length <= items.length; start += 1) {
+      if (revisions.every((revision, offset) => revisionKey({ type: String(items[start + offset].type), text: items[start + offset].text }) === revisionKey(revision))) {
+        starts.push(start);
+      }
+    }
+    if (starts.length !== 1) {
+      return starts.length ? "ambiguous" : "missing";
+    }
+    for (let offset = 0; offset < revisions.length; offset += 1) {
+      items[starts[0] + offset].reject();
+    }
+    await context.sync();
+    return "rejected";
+  });
 }
 
 /* ------------------------------------------------------------------------- */

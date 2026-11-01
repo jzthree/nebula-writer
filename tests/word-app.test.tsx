@@ -382,9 +382,15 @@ describe("Word task pane", () => {
     await waitFor(() => expect(mock.text).toContain(REPLACEMENT));
     await waitFor(() => expect(screen.getByText("Nothing pending")).toBeInTheDocument());
 
+    expect(mock.trackedChanges.length).toBeGreaterThan(0);
+    const editsBefore = mock.edits.length;
+
     fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
     await waitFor(() => expect(mock.text).toContain(ORIGINAL));
     expect(mock.text).not.toContain(REPLACEMENT);
+    // Its tracked changes were rejected, not answered with new ones.
+    expect(mock.trackedChanges).toEqual([]);
+    expect(mock.edits.length - editsBefore).toBeGreaterThan(0);
     await waitFor(() => expect(screen.getByText("1 pending")).toBeInTheDocument());
     expect(screen.getByText("reverted")).toBeInTheDocument();
     await waitFor(() => expect(captured.statusUpdates.map((update) => update.status)).toEqual(["accepted", "pending"]));
@@ -395,6 +401,25 @@ describe("Word task pane", () => {
     await waitFor(() => expect(captured.requests.length).toBe(2));
     const decisions = captured.requests[1].conversation?.flatMap((turn) => turn.decisions ?? []) ?? [];
     expect(decisions).toContainEqual(expect.objectContaining({ title: "Tighten the opening claim", status: "pending", note: "applied, then reverted by the user" }));
+  });
+
+  it("reverts with a new edit once the tracked change was accepted in Word", async () => {
+    await renderPane();
+    send("Review the document.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(mock.text).toContain(REPLACEMENT));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument());
+    for (const change of mock.trackedChangeItems(0, mock.text.length)) {
+      change.accept();
+    }
+    expect(mock.trackedChanges).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
+    await waitFor(() => expect(mock.text).toContain(ORIGINAL));
+    expect(mock.text).not.toContain(REPLACEMENT);
+    expect(mock.trackedChanges.length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText("1 pending")).toBeInTheDocument());
   });
 
   it("passes the chosen model and reasoning level to the request", async () => {

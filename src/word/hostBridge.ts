@@ -16,11 +16,12 @@ import type {
   BatchApplyOptions,
   BatchApplyOutcome,
   SuggestionMatchSet,
+  TrackedRevision,
   WordCapabilities,
   WordHostBoot
 } from "./wordHost";
 
-export type { ApplyResult, BatchApplyItem, BatchApplyOptions, BatchApplyOutcome, SuggestionMatch, SuggestionMatchSet, WordCapabilities, WordHostBoot } from "./wordHost";
+export type { ApplyResult, BatchApplyItem, BatchApplyOptions, BatchApplyOutcome, SuggestionMatch, SuggestionMatchSet, TrackedRevision, WordCapabilities, WordHostBoot } from "./wordHost";
 export { chooseMatchIndex, toWordSearchText } from "./wordHost";
 
 export interface DocumentHost {
@@ -57,6 +58,8 @@ export interface DocumentHost {
   deletePicture(index: number, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }>;
   /** Select a table (by its index in the snapshot) so the author sees it. */
   selectTable(snapshot: WordDocumentSnapshot, index: number): Promise<void>;
+  /** Reject the tracked changes an apply created (see ApplyResult.revisions); hosts without tracked changes omit it. */
+  rejectTrackedRevisions?(revisions: TrackedRevision[]): Promise<"rejected" | "missing" | "ambiguous">;
 }
 
 export interface PictureInsertOptions {
@@ -91,7 +94,8 @@ export const wordDocumentHost: DocumentHost = {
   applyTableEdit: word.applyTableEdit,
   insertPicture: word.insertPicture,
   deletePicture: word.deletePicture,
-  selectTable: word.selectTable
+  selectTable: word.selectTable,
+  rejectTrackedRevisions: word.rejectTrackedRevisions
 };
 
 let active: DocumentHost = wordDocumentHost;
@@ -124,3 +128,4 @@ export const applyTableEdit: DocumentHost["applyTableEdit"] = (snapshot, suggest
 export const selectTable: DocumentHost["selectTable"] = (snapshot, index) => active.selectTable(snapshot, index);
 export const insertPicture: DocumentHost["insertPicture"] = (snapshot, suggestion, base64, options) => active.insertPicture(snapshot, suggestion, base64, options);
 export const deletePicture: DocumentHost["deletePicture"] = (index, options) => active.deletePicture(index, options);
+export const rejectTrackedRevisions = (revisions: TrackedRevision[]): Promise<"rejected" | "missing" | "ambiguous"> => active.rejectTrackedRevisions?.(revisions) ?? Promise.resolve("missing");

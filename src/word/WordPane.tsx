@@ -46,6 +46,7 @@ import { revertSuggestionOf } from "../revertSuggestion";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
 import { excerpt } from "./wordContext";
+import type { TrackedRevision } from "./hostBridge";
 
 export type HostStatus = "booting" | "ready" | "unavailable";
 export type SidecarStatus = "checking" | "ok" | "offline";
@@ -75,6 +76,8 @@ export interface CardState {
   outcome: CardOutcome;
   detail: string | null;
   error: string | null;
+  /** The tracked changes the apply created in Word, so Revert can reject them. */
+  revisions?: TrackedRevision[] | null;
 }
 
 export interface CapabilityRow {
