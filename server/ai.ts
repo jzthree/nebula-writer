@@ -54,6 +54,8 @@ interface CliPromptOptions {
   coveragePass?: DocumentCoverageChunk;
   /** Stands in for the full document in a resumed thread that already holds it (document-delta.ts). */
   documentDelta?: string[] | null;
+  /** What a resumed thread was last told about decisions on its suggestions (see describeConversation). */
+  reportedDecisions?: Record<string, string> | null;
 }
 
 /** Live events from a one-shot CLI run: the agent stream events plus how much of the reply has streamed so far. */
@@ -452,7 +454,7 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
     const toolAccess = resolveToolAccess(request);
     const runTurn = (sessionId: string | null) => runAgentTurn({
       provider,
-      prompt: buildAgentTaskPrompt({ ...request, toolAccess, ...(sessionId ? {} : { agentSessionId: null }) }, run),
+      prompt: buildAgentTaskPrompt({ ...request, toolAccess, ...(sessionId ? {} : { agentSessionId: null }) }, run, sessionId ? conversationStore().threadDecisions(sessionId) : null),
       runUrl: agentRunUrl(run.id),
       workspaceDir: cliWorkspaceDir(),
       env: cliChildEnv(provider, toolAccess),
@@ -480,6 +482,10 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
       result = await retryWithoutSession(provider, request, run, runTurn);
     }
     const suggestions = [...run.staged];
+    if (result.ok && result.sessionId) {
+      // The session now holds the conversation as of these decisions.
+      conversationStore().recordThreadDecisions(result.sessionId, conversationDecisionStates(request));
+    }
     const summary = formatCliDiagnostic(result.text) || defaultAgentSummary(suggestions.length);
     return {
       provider,
@@ -559,8 +565,27 @@ const CONVERSATION_PROMPT_TURNS = 8;
  * feedback signal there is, so they are always included even when the
  * provider session is being resumed.
  */
-export function describeConversation(request: AiRequest): string[] {
+/** Each suggestion's decision state as the conversation digest has it, keyed by suggestion. */
+export function conversationDecisionStates(request: AiRequest): Record<string, string> {
+  const states: Record<string, string> = {};
+  for (const turn of request.conversation ?? []) {
+    for (const decision of turn.decisions ?? []) {
+      states[`${decision.ref ?? ""}|${decision.title}`] = `${decision.status}|${decision.note ?? ""}`;
+    }
+  }
+  return states;
+}
+
+/**
+ * The conversation for the prompt. A resumed thread already holds the
+ * conversation, so when the ledger knows what it was last told (`reported`)
+ * only the user's decisions since then go in; otherwise the recap does.
+ */
+export function describeConversation(request: AiRequest, reported: Record<string, string> | null = null): string[] {
   const turns = request.conversation ?? [];
+  if (request.agentSessionId && reported) {
+    return describeDecisionsSince(request, reported);
+  }
   if (!turns.length) {
     return [];
   }
@@ -585,6 +610,31 @@ export function describeConversation(request: AiRequest): string[] {
   const pendingCount = recent.flatMap((turn) => turn.decisions ?? []).filter((decision) => decision.status === "pending").length;
   lines.push(`Treat "dismissed" as feedback to avoid similar edits, "applied" as the direction the user wants${pendingCount ? `, and do not re-stage the ${pendingCount} still-pending suggestion${pendingCount === 1 ? "" : "s"}` : ""}. When the new request refers to an earlier suggestion ("make it shorter", "same for Aim 2"), stage a revised version rather than repeating it.`);
   return lines;
+}
+
+function describeDecisionsSince(request: AiRequest, reported: Record<string, string>): string[] {
+  const changed: string[] = [];
+  for (const turn of request.conversation ?? []) {
+    for (const decision of turn.decisions ?? []) {
+      const key = `${decision.ref ?? ""}|${decision.title}`;
+      const state = `${decision.status}|${decision.note ?? ""}`;
+      // Still pending and never reported: just staged, and the thread knows it staged it.
+      if (reported[key] === state || (decision.status === "pending" && reported[key] === undefined)) {
+        continue;
+      }
+      const label = decision.ref ? `${decision.ref} "${decision.title}"` : `"${decision.title}"`;
+      const note = decision.note ? ` ("${clipForPrompt(decision.note, 120)}")` : "";
+      changed.push(`- ${label} — ${decision.status}${note}`);
+    }
+  }
+  if (!changed.length) {
+    return ["", "Since your last turn the user has not acted on your suggestions (still pending ones stay staged: do not re-stage them)."];
+  }
+  return [
+    "",
+    "Since your last turn the user acted on your suggestions (applied edits are in the document changes; treat dismissed as feedback, and do not re-stage pending ones):",
+    ...changed
+  ];
 }
 
 function clipForPrompt(text: string, limit: number): string {
@@ -653,7 +703,7 @@ function describeToolAccessForAgent(toolAccess: AiToolAccess): string {
   }
 }
 
-export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments"> & Partial<Pick<AgentRunContext, "images">>): string {
+export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunContext, "maxSuggestions" | "attachments"> & Partial<Pick<AgentRunContext, "images">>, reportedDecisions: Record<string, string> | null = null): string {
   const images = run.images ?? [];
   const selectionText = request.mode === "selection" ? request.selection?.text ?? "" : "";
   const attachmentLines = run.attachments.length
@@ -682,7 +732,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
         : ["The user selected a passage (read it with writer_get_selection) — it is where they are working. Decide from the instruction whether the request is about that passage or about the document as a whole, and act accordingly: edits may land anywhere in the document (say so when they do).", READ_BEYOND_SELECTION]
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
-    ...describeConversation(request),
+    ...describeConversation(request, reportedDecisions),
     ...describeFocus(request.focus, "agentic"),
     "",
     "How to work:",
@@ -746,6 +796,7 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     const ledger = conversationStore();
     const previousDocument = resumeId && fullDocument !== null ? ledger.threadDocument(resumeId) : null;
     const documentDelta = previousDocument !== null && fullDocument !== null ? describeDocumentDelta(previousDocument, fullDocument) : null;
+    const reportedDecisions = resumeId ? ledger.threadDecisions(resumeId) : null;
     let compacted = false;
     let transport: "app-server" | "exec" | null = null;
     const watch = {
@@ -761,7 +812,8 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     };
     let result: string;
     try {
-      result = await runCli(provider, buildCliPrompt(request, documentDelta ? { documentDelta } : {}), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
+      // Only a resumed Codex thread holds the conversation (Claude's one-shot mode has no resume).
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: resumeId }, { ...(documentDelta ? { documentDelta } : {}), reportedDecisions }), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
@@ -780,8 +832,12 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     // compaction (only the app-server reports one).
     const heldBy = threadId ?? resumeId;
     if (provider === "codex" && heldBy) {
-      if (fullDocument !== null && transport === "app-server" && !compacted) {
-        ledger.recordThreadDocument(heldBy, fullDocument);
+      if (transport === "app-server" && !compacted) {
+        ledger.forgetThreadDocument(heldBy);
+        if (fullDocument !== null) {
+          ledger.recordThreadDocument(heldBy, fullDocument);
+        }
+        ledger.recordThreadDecisions(heldBy, conversationDecisionStates(request));
       } else {
         ledger.forgetThreadDocument(heldBy);
       }
@@ -946,7 +1002,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     ...describeDocumentComments(request.documentComments, { status: request.documentCommentsStatus,
       selectionContext: request.mode === "selection" ? matchCommentsToSelection(request.documentText, request.selection, request.documentComments ?? []) : null }),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
-    ...(options.coveragePass ? [] : describeConversation(request)),
+    ...(options.coveragePass ? [] : describeConversation(request, options.reportedDecisions ?? null)),
     ...(options.coveragePass ? [] : describeFocus(request.focus, "oneshot")),
     ...(options.documentDelta && request.mode !== "selection" && !options.coveragePass
       ? options.documentDelta
@@ -1993,7 +2049,12 @@ async function completeReply(
     instruction
   };
   try {
-    const raw = await runCli(provider, buildCliPrompt(followUp), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
+    // In the same Codex thread nothing has changed since the turn it follows: no recap, no second copy of the document.
+    const sameThread = provider === "codex" && threadId ? fullDocumentInPrompt(request) : null;
+    const promptOptions: CliPromptOptions = provider === "codex" && threadId
+      ? { reportedDecisions: conversationDecisionStates(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
+      : {};
+    const raw = await runCli(provider, buildCliPrompt(followUp, promptOptions), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
     const more = parseCliResponseDetailed(provider, raw, followUp);
     const seen = new Set(response.suggestions.map((suggestion) => normalizeWhitespace(suggestion.original)));
     const fresh = more.response.suggestions

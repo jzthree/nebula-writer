@@ -122,6 +122,27 @@ describe("resumed Codex turns send only what changed", () => {
     expect(conversationStore().threadDocument("thread-a")).toBe(DOC);
   });
 
+  it("sends the conversation recap once, then only the user's decisions since the last turn", async () => {
+    const history = (status: "pending" | "dismissed", note: string | null = null): AiRequest["conversation"] => [
+      { role: "user", content: "Tighten paragraph 3" },
+      { role: "assistant", content: "Tightened it.", decisions: [{ ref: "S1", title: "Tighten paragraph 3", status: "pending" }, { ref: "S2", title: "Cut the aside", status, note }] }
+    ];
+    await proposeChanges({ ...request(DOC, null), conversation: [{ role: "user", content: "Earlier question" }, { role: "assistant", content: "Earlier answer." }] });
+    await proposeChanges({ ...request(DOC, "thread-a"), conversation: history("pending") });
+    await proposeChanges({ ...request(DOC, "thread-a"), conversation: history("dismissed", "too blunt") });
+    await proposeChanges({ ...request(DOC, "thread-a"), conversation: history("dismissed", "too blunt") });
+    const [first, second, third, fourth] = prompts();
+    expect(first).toContain("Conversation so far");
+    for (const resumed of [second, third, fourth]) {
+      expect(resumed).not.toContain("Conversation so far");
+      expect(resumed).not.toContain("Earlier answer.");
+    }
+    expect(second).toContain("Since your last turn the user has not acted on your suggestions");
+    expect(third).toContain('- S2 "Cut the aside" — dismissed ("too blunt")');
+    expect(third).not.toContain('S1 "Tighten paragraph 3"');
+    expect(fourth).toContain("has not acted on your suggestions");
+  });
+
   it("does the same for the document context of a caret or selection request", async () => {
     const at = DOC.indexOf("Paragraph 12");
     const selection = { from: at, to: at + paragraphs[11].length, text: paragraphs[11] };

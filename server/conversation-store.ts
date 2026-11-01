@@ -116,6 +116,11 @@ export class ConversationStore {
         text TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_decisions (
+        thread_id TEXT PRIMARY KEY,
+        json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     if (path !== ":memory:") {
       // Conversations are private: owner-only, like the CLIs' own session stores.
@@ -277,6 +282,30 @@ export class ConversationStore {
 
   forgetThreadDocument(threadId: string): void {
     this.statement("DELETE FROM thread_documents WHERE thread_id = ?").run(threadId);
+    this.statement("DELETE FROM thread_decisions WHERE thread_id = ?").run(threadId);
+  }
+
+  /**
+   * What the thread was last told about the user's decisions on its
+   * suggestions (suggestion key → state), so a resumed turn reports only what
+   * changed instead of re-sending the conversation. Null: not known.
+   */
+  threadDecisions(threadId: string): Record<string, string> | null {
+    const row = this.statement("SELECT json FROM thread_decisions WHERE thread_id = ?").get(threadId) as { json: string } | undefined;
+    if (!row) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(row.json) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, string> : null;
+    } catch {
+      return null;
+    }
+  }
+
+  recordThreadDecisions(threadId: string, decisions: Record<string, string>): void {
+    this.statement(`INSERT INTO thread_decisions (thread_id, json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`).run(threadId, JSON.stringify(decisions), new Date().toISOString());
   }
 
   close(): void {
