@@ -11,7 +11,7 @@
  * transcripts and thread resume work unchanged.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { elideLongPayloads } from "./cli-output";
 import { registerSteerable, steerMessageText, type SteerResult } from "./steering";
 
@@ -137,45 +137,314 @@ function serverRequestResponse(method: string): { result?: unknown; error?: { co
   }
 }
 
-export function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServerResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    if (run.signal?.aborted) {
-      rejectPromise(new Error("codex request was interrupted."));
-      return;
-    }
-    let child;
-    try {
-      child = spawn(run.command, ["app-server"], { cwd: run.cwd, env: run.env, stdio: ["pipe", "pipe", "pipe"] });
-    } catch (error) {
-      rejectPromise(new CodexAppServerUnavailable(error instanceof Error ? error.message : String(error)));
-      return;
-    }
-    let settled = false;
-    let initialized = false;
-    let threadId: string | null = null;
-    let turnId: string | null = null;
-    let finalMessage: string | null = null;
-    let stderr = "";
-    const lines: string[] = [];
-    let buffer = "";
-    let nextId = 0;
-    const waiting = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void }>();
-    let timeoutTimer: NodeJS.Timeout | undefined;
-    let initTimer: NodeJS.Timeout | undefined;
-    let unregister: () => void = () => undefined;
+/**
+ * How long an idle app-server is kept for the next turn (WRITER_CODEX_KEEPALIVE_MS;
+ * 0 starts one per turn). Reopening a thread in a fresh process costs seconds
+ * (MCP servers, plugins, the thread's history) and can change the skills Codex
+ * announces, which it then re-sends into the conversation.
+ */
+export function codexKeepAliveMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.WRITER_CODEX_KEEPALIVE_MS?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    return Number(raw);
+  }
+  return DEFAULT_KEEPALIVE_MS;
+}
 
-    const emit = (event: Json) => {
-      const line = elideLongPayloads(JSON.stringify(event));
-      lines.push(line);
-      try {
-        run.onLine?.(line);
-      } catch {
-        // Progress reporting must never break the run.
+const DEFAULT_KEEPALIVE_MS = 30 * 60_000;
+
+interface TurnSink {
+  notify(method: string, params: Json): void;
+  closed(error: Error): void;
+}
+
+/** One running `codex app-server`: shared by every turn whose settings match, until it sits idle. */
+class AppServerProcess {
+  readonly ready: Promise<void>;
+  readonly loadedThreads = new Set<string>();
+  closed = false;
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly waiting = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void }>();
+  private readonly sinks = new Map<string, TurnSink>();
+  private nextId = 0;
+  private buffer = "";
+  private stderrText = "";
+  private stderrTotal = 0;
+  private idleTimer: NodeJS.Timeout | undefined;
+  private initialized = false;
+
+  constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private readonly keepAliveMs: number, private readonly onClose: () => void) {
+    this.child = spawn(command, ["app-server"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    this.child.stdout.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk: string) => this.read(chunk));
+    this.child.stderr.setEncoding("utf8");
+    this.child.stderr.on("data", (chunk: string) => {
+      this.stderrText = (this.stderrText + chunk).slice(-STDERR_TAIL_CHARS);
+      this.stderrTotal += chunk.length;
+    });
+    this.child.stdin.on("error", () => undefined);
+    let failed: (error: Error) => void = () => undefined;
+    const startFailure = new Promise<never>((_, reject) => {
+      failed = reject;
+    });
+    startFailure.catch(() => undefined);
+    this.child.on("error", (error) => {
+      failed(new CodexAppServerUnavailable(error.message));
+      this.shutdown(error);
+    });
+    this.child.on("close", (code) => {
+      const detail = this.stderrText.trim().split("\n").slice(-3).join(" ").slice(0, 400);
+      const message = `codex app-server exited${code === null ? "" : ` with code ${code}`}${this.sinks.size ? " before the turn finished" : ""}${detail ? `: ${detail}` : ""}`;
+      failed(new CodexAppServerUnavailable(message));
+      this.shutdown(new Error(message));
+    });
+    this.ready = Promise.race([
+      startFailure,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new CodexAppServerUnavailable("codex app-server did not initialise in time")), INITIALIZE_TIMEOUT_MS).unref();
+      }),
+      (async () => {
+        try {
+          await this.request("initialize", { clientInfo: { name: "nebula-writer", version: "1" }, capabilities: null });
+        } catch (error) {
+          throw new CodexAppServerUnavailable(error instanceof Error ? error.message : String(error));
+        }
+        this.initialized = true;
+        this.write({ method: "initialized" });
+      })()
+    ]);
+    this.ready.catch(() => this.kill());
+  }
+
+  request(method: string, params: unknown): Promise<Json> {
+    if (this.closed) {
+      return Promise.reject(new Error("codex app-server closed"));
+    }
+    return new Promise((resolve, reject) => {
+      const id = (this.nextId += 1);
+      this.waiting.set(id, { resolve, reject });
+      this.write({ id, method, params });
+    });
+  }
+
+  /** Route the thread's notifications to `sink` while its turn runs. */
+  attach(threadId: string, sink: TurnSink): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+    this.child.ref();
+    this.sinks.set(threadId, sink);
+  }
+
+  detach(threadId: string, sink: TurnSink): void {
+    if (this.sinks.get(threadId) === sink) {
+      this.sinks.delete(threadId);
+    }
+    this.idleIfUnused();
+  }
+
+  busy(threadId: string): boolean {
+    return this.sinks.has(threadId);
+  }
+
+  /** Where stderr stands now, to report only what a turn added. */
+  stderrMark(): number {
+    return this.stderrTotal;
+  }
+
+  stderrSince(mark: number): string {
+    const added = this.stderrTotal - mark;
+    return added <= 0 ? "" : this.stderrText.slice(-Math.min(added, this.stderrText.length));
+  }
+
+  idleIfUnused(): void {
+    if (this.sinks.size || this.closed) {
+      return;
+    }
+    if (this.keepAliveMs <= 0) {
+      this.kill();
+      return;
+    }
+    // Idle: it must not keep the sidecar (or a test run) alive.
+    this.child.unref();
+    if (!this.idleTimer) {
+      this.idleTimer = setTimeout(() => this.kill(), this.keepAliveMs);
+      this.idleTimer.unref();
+    }
+  }
+
+  kill(): void {
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      this.child.kill("SIGTERM");
+      setTimeout(() => this.child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+    }
+    this.shutdown(new Error("codex app-server closed"));
+  }
+
+  private shutdown(error: Error): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+    }
+    for (const waiter of this.waiting.values()) {
+      waiter.reject(this.initialized ? error : new CodexAppServerUnavailable(error.message));
+    }
+    this.waiting.clear();
+    for (const sink of [...this.sinks.values()]) {
+      sink.closed(error);
+    }
+    this.sinks.clear();
+    this.onClose();
+  }
+
+  private write(message: Json): void {
+    if (!this.child.stdin.destroyed) {
+      this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+    }
+  }
+
+  private read(chunk: string): void {
+    this.buffer += chunk;
+    let newline = this.buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = this.buffer.slice(0, newline).trim();
+      this.buffer = this.buffer.slice(newline + 1);
+      if (line) {
+        let message: Json | null = null;
+        try {
+          message = JSON.parse(line) as Json;
+        } catch {
+          // Not JSON-RPC: ignore (diagnostics only).
+        }
+        if (message) {
+          this.handle(message);
+        }
       }
-    };
-    const kill = () => {
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+      newline = this.buffer.indexOf("\n");
+    }
+  }
+
+  private handle(message: Json): void {
+    if (typeof message.id === "number" && !message.method) {
+      const waiter = this.waiting.get(message.id);
+      if (waiter) {
+        this.waiting.delete(message.id);
+        if (message.error) {
+          const error = message.error as Json;
+          waiter.reject(new Error(typeof error.message === "string" ? error.message : JSON.stringify(error)));
+        } else {
+          waiter.resolve((message.result ?? {}) as Json);
+        }
+      }
+      return;
+    }
+    const method = typeof message.method === "string" ? message.method : "";
+    const params = (message.params ?? {}) as Json;
+    if (message.id !== undefined && method) {
+      this.write({ id: message.id, ...serverRequestResponse(method) });
+      return;
+    }
+    // Notifications name their thread; one without a name belongs to the only turn running, if there is one.
+    const threadId = typeof params.threadId === "string" ? params.threadId : null;
+    const sink = threadId ? this.sinks.get(threadId) : this.sinks.size === 1 ? [...this.sinks.values()][0] : undefined;
+    sink?.notify(method, params);
+  }
+}
+
+const pool = new Map<string, AppServerProcess>();
+
+function processFor(run: CodexAppServerRun, keepAliveMs: number): AppServerProcess {
+  if (keepAliveMs <= 0) {
+    return new AppServerProcess(run.command, run.cwd, run.env, 0, () => undefined);
+  }
+  // Same binary, folder, sandbox and environment (CODEX_HOME, tool access) → the same process.
+  const key = JSON.stringify([run.command, run.cwd, run.sandbox, Object.entries(run.env).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))]);
+  const existing = pool.get(key);
+  if (existing && !existing.closed) {
+    return existing;
+  }
+  const created = new AppServerProcess(run.command, run.cwd, run.env, keepAliveMs, () => {
+    if (pool.get(key) === created) {
+      pool.delete(key);
+    }
+  });
+  pool.set(key, created);
+  return created;
+}
+
+/** Stop every kept app-server (sidecar shutdown, tests). */
+export function closeCodexAppServers(): void {
+  for (const process of [...pool.values()]) {
+    process.kill();
+  }
+  pool.clear();
+}
+
+process.once("exit", closeCodexAppServers);
+
+export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServerResult> {
+  if (run.signal?.aborted) {
+    throw new Error("codex request was interrupted.");
+  }
+  let server: AppServerProcess;
+  try {
+    server = processFor(run, codexKeepAliveMs());
+  } catch (error) {
+    throw new CodexAppServerUnavailable(error instanceof Error ? error.message : String(error));
+  }
+  await server.ready;
+  const stderrMark = server.stderrMark();
+  const lines: string[] = [];
+  let finalMessage: string | null = null;
+  let threadId: string | null = null;
+  let turnId: string | null = null;
+  const emit = (event: Json) => {
+    const line = elideLongPayloads(JSON.stringify(event));
+    lines.push(line);
+    try {
+      run.onLine?.(line);
+    } catch {
+      // Progress reporting must never break the run.
+    }
+  };
+
+  return new Promise<CodexAppServerResult>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    let unregister: () => void = () => undefined;
+    const sink: TurnSink = {
+      notify: (method, params) => {
+        // A stopped turn on this thread can still report in: only this turn's events count.
+        const turnOf = typeof params.turnId === "string" ? params.turnId : typeof (params.turn as Json | undefined)?.id === "string" ? (params.turn as Json).id as string : null;
+        if (method === "turn/started") {
+          if (turnId === null && turnOf) {
+            turnId = turnOf;
+          }
+        } else if (turnOf && turnId !== null && turnOf !== turnId) {
+          return;
+        } else if (turnOf && turnId === null) {
+          return;
+        }
+        const translated = translateAppServerNotification(method, params);
+        if (!translated) {
+          return;
+        }
+        const item = translated.item as Json | undefined;
+        if (translated.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
+          finalMessage = item.text;
+        }
+        emit(translated);
+        if (translated.type === "turn.completed") {
+          finish({ ok: true });
+        } else if (translated.type === "turn.failed" || translated.type === "error") {
+          finish({ ok: false, error: new Error(String(translated.message)) });
+        }
+      },
+      closed: (error) => finish({ ok: false, error })
     };
     const finish = (outcome: { ok: true } | { ok: false; error: Error }) => {
       if (settled) {
@@ -186,149 +455,62 @@ export function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServe
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
       }
-      if (initTimer) {
-        clearTimeout(initTimer);
-      }
       run.signal?.removeEventListener("abort", onAbort);
-      for (const waiter of waiting.values()) {
-        waiter.reject(new Error("codex app-server closed"));
+      if (threadId) {
+        server.detach(threadId, sink);
+      } else {
+        server.idleIfUnused();
       }
-      waiting.clear();
-      kill();
+      const stderr = server.stderrSince(stderrMark);
       if (outcome.ok) {
         resolvePromise({ output: lines.join("\n"), finalMessage, threadId, stderr });
       } else {
         rejectPromise(outcome.error);
       }
     };
-    const onAbort = () => {
+    // Stopping a turn interrupts it; the process stays for the next one.
+    const interrupt = (error: Error) => {
       if (threadId && turnId) {
-        void request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
+        void server.request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
       }
-      finish({ ok: false, error: new Error("codex request was interrupted.") });
+      finish({ ok: false, error });
     };
+    const onAbort = () => interrupt(new Error("codex request was interrupted."));
     run.signal?.addEventListener("abort", onAbort, { once: true });
-
-    const write = (message: Json) => {
-      if (!child.stdin.destroyed) {
-        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
-      }
-    };
-    const request = (method: string, params: unknown): Promise<Json> => new Promise((resolve, reject) => {
-      const id = (nextId += 1);
-      waiting.set(id, { resolve, reject });
-      write({ id, method, params });
-    });
-
-    const handle = (message: Json) => {
-      if (typeof message.id === "number" && !message.method) {
-        const waiter = waiting.get(message.id);
-        if (waiter) {
-          waiting.delete(message.id);
-          if (message.error) {
-            const error = message.error as Json;
-            waiter.reject(new Error(typeof error.message === "string" ? error.message : JSON.stringify(error)));
-          } else {
-            waiter.resolve((message.result ?? {}) as Json);
-          }
-        }
-        return;
-      }
-      const method = typeof message.method === "string" ? message.method : "";
-      const params = (message.params ?? {}) as Json;
-      if (message.id !== undefined && method) {
-        write({ id: message.id, ...serverRequestResponse(method) });
-        return;
-      }
-      if (method === "turn/started") {
-        const turn = (params.turn ?? {}) as Json;
-        if (typeof turn.id === "string") {
-          turnId = turn.id;
-        }
-      }
-      const translated = translateAppServerNotification(method, params);
-      if (!translated) {
-        return;
-      }
-      const item = translated.item as Json | undefined;
-      if (translated.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
-        finalMessage = item.text;
-      }
-      emit(translated);
-      if (translated.type === "turn.completed") {
-        finish({ ok: true });
-      } else if (translated.type === "turn.failed" || translated.type === "error") {
-        finish({ ok: false, error: new Error(String(translated.message)) });
-      }
-    };
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buffer += chunk;
-      let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (line) {
-          try {
-            handle(JSON.parse(line) as Json);
-          } catch {
-            // Not JSON-RPC: ignore (diagnostics only).
-          }
-        }
-        newline = buffer.indexOf("\n");
-      }
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
-    });
-    child.stdin.on("error", () => undefined);
-    child.on("error", (error) => {
-      finish({ ok: false, error: initialized ? error : new CodexAppServerUnavailable(error.message) });
-    });
-    child.on("close", (code) => {
-      const detail = stderr.trim().split("\n").slice(-3).join(" ").slice(0, 400);
-      const message = `codex app-server exited${code === null ? "" : ` with code ${code}`} before the turn finished${detail ? `: ${detail}` : ""}`;
-      finish({ ok: false, error: initialized ? new Error(message) : new CodexAppServerUnavailable(message) });
-    });
-
-    initTimer = setTimeout(() => {
-      if (!initialized) {
-        finish({ ok: false, error: new CodexAppServerUnavailable("codex app-server did not initialise in time") });
-      }
-    }, INITIALIZE_TIMEOUT_MS);
+    if (run.timeoutMs && run.timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => interrupt(new Error(`codex timed out after ${Math.round(run.timeoutMs! / 1000)} s`)), run.timeoutMs);
+    }
 
     void (async () => {
       try {
-        await request("initialize", { clientInfo: { name: "nebula-writer", version: "1" }, capabilities: null });
-      } catch (error) {
-        finish({ ok: false, error: new CodexAppServerUnavailable(error instanceof Error ? error.message : String(error)) });
-        return;
-      }
-      initialized = true;
-      if (initTimer) {
-        clearTimeout(initTimer);
-      }
-      write({ method: "initialized" });
-      if (run.timeoutMs && run.timeoutMs > 0) {
-        timeoutTimer = setTimeout(() => finish({ ok: false, error: new Error(`codex timed out after ${Math.round(run.timeoutMs! / 1000)} s`) }), run.timeoutMs);
-      }
-      try {
         const threadParams = { cwd: run.cwd, sandbox: run.sandbox, approvalPolicy: "never", serviceTier: "fast" };
-        const opened = run.resumeThreadId
-          ? await request("thread/resume", { threadId: run.resumeThreadId, ...threadParams })
-          : await request("thread/start", threadParams);
-        const thread = (opened.thread ?? {}) as Json;
-        threadId = typeof thread.id === "string" ? thread.id : run.resumeThreadId;
-        if (threadId) {
-          emit({ type: "thread.started", thread_id: threadId });
+        if (run.resumeThreadId && server.loadedThreads.has(run.resumeThreadId)) {
+          // Still loaded from an earlier turn in this process: nothing to reopen.
+          threadId = run.resumeThreadId;
+        } else {
+          const opened = run.resumeThreadId
+            ? await server.request("thread/resume", { threadId: run.resumeThreadId, ...threadParams })
+            : await server.request("thread/start", threadParams);
+          const thread = (opened.thread ?? {}) as Json;
+          threadId = typeof thread.id === "string" ? thread.id : run.resumeThreadId;
         }
+        if (settled) {
+          return;
+        }
+        if (!threadId) {
+          throw new Error("codex app-server did not return a thread.");
+        }
+        if (server.busy(threadId)) {
+          throw new Error("This conversation already has a Codex turn running.");
+        }
+        server.loadedThreads.add(threadId);
+        server.attach(threadId, sink);
+        emit({ type: "thread.started", thread_id: threadId });
         const input = [
           { type: "text", text: run.prompt, text_elements: [] },
           ...(run.imagePaths ?? []).map((path) => ({ type: "localImage", path }))
         ];
-        const started = await request("turn/start", {
+        const started = await server.request("turn/start", {
           threadId,
           input,
           ...(run.model ? { model: run.model } : {}),
@@ -339,6 +521,9 @@ export function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServe
         if (typeof turn.id === "string") {
           turnId = turn.id;
         }
+        if (settled) {
+          return;
+        }
         unregister = registerSteerable(run.runId, {
           provider: "codex",
           steer: async (text): Promise<SteerResult> => {
@@ -346,7 +531,7 @@ export function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServe
               return { ok: false, reason: "not-running" };
             }
             try {
-              await request("turn/steer", { threadId, expectedTurnId: turnId, input: [{ type: "text", text: steerMessageText(text), text_elements: [] }] });
+              await server.request("turn/steer", { threadId, expectedTurnId: turnId, input: [{ type: "text", text: steerMessageText(text), text_elements: [] }] });
               return { ok: true };
             } catch (error) {
               return { ok: false, reason: "failed", detail: error instanceof Error ? error.message : String(error) };
@@ -354,6 +539,10 @@ export function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAppServe
           }
         });
       } catch (error) {
+        if (threadId && run.resumeThreadId === threadId && !settled) {
+          // A thread this process thought it had may be gone: reopen it next time.
+          server.loadedThreads.delete(threadId);
+        }
         finish({ ok: false, error: error instanceof Error ? error : new Error(String(error)) });
       }
     })();

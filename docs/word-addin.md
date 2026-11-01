@@ -101,6 +101,10 @@ works like typing into the CLI while it works:
 The web app behaves the same way (Shift/⌘+Enter sends, Option+Enter
 queues), and so does the Google Docs sidebar, which runs this pane.
 `WRITER_CODEX_TRANSPORT=exec` puts Codex back on `codex exec` (no steering).
+The app-server stays running between turns (for 30 minutes of idleness by
+default, `WRITER_CODEX_KEEPALIVE_MS`; `0` starts one per turn), so a
+follow-up reuses the loaded thread instead of reopening it, which used to
+take 4–12 s per turn. Stop interrupts the turn and leaves the process running.
 
 Quotes heal themselves where they safely can: a suggestion whose original
 differs from the document only in typography, spacing, or a small misquote
