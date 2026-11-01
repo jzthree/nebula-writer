@@ -659,7 +659,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
   const attachmentLines = run.attachments.length
     ? [
         `The user attached ${run.attachments.length} reference file${run.attachments.length === 1 ? "" : "s"} (read them with writer_read_attachment):`,
-        ...run.attachments.map((attachment) => `- ${attachment.name} (${attachment.text.length.toLocaleString()} characters of extracted text)`),
+        ...run.attachments.map((attachment) => `- ${attachment.name} (${(attachment.chars ?? attachment.text.length).toLocaleString()} characters of extracted text${request.toolAccess !== "document" ? `; the original file is at ${attachment.path}${attachment.textPath ? `, its full text at ${attachment.textPath}` : ""}` : ""})`),
         "Attachments are reference material only: `original` must still quote the document, never an attachment."
       ]
     : [];
@@ -1078,17 +1078,25 @@ export function oneShotImagePaths(request: AiRequest): string[] {
 // Attached reference files: content is inlined because Claude runs with tools
 // disabled; the local path is included because Codex's read-only sandbox can
 // open it (useful when the inline text was truncated).
-function buildAttachmentPromptLines(request: AiRequest): string[] {
+/** Attachments at most this long go into a one-shot prompt whole; longer ones are read from disk by an agent that can read files. */
+export const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
+
+export function buildAttachmentPromptLines(request: AiRequest): string[] {
   const attachments = request.attachments ?? [];
   if (!attachments.length) {
     return [];
   }
+  const readsFiles = resolveToolAccess(request) !== "document";
   const lines: string[] = [
     `The user attached ${attachments.length} reference file${attachments.length === 1 ? "" : "s"}. Use them as context for the instruction. They are reference material only: suggestions must still quote exact text from the Text block, never from the attachments.`
   ];
   for (const attachment of attachments) {
-    lines.push(`Attachment: ${attachment.name} (saved at ${attachment.path})`);
-    if (attachment.text) {
+    const chars = attachment.chars ?? attachment.text.length;
+    const fullText = attachment.textPath ? ` Full extracted text (${chars.toLocaleString()} characters): ${attachment.textPath}.` : "";
+    lines.push(`Attachment: ${attachment.name} (saved at ${attachment.path}).${readsFiles ? fullText : ""}`);
+    if (readsFiles && attachment.text && (attachment.truncated || chars > ATTACHMENT_INLINE_CHAR_LIMIT)) {
+      lines.push(`Not included here: read it yourself from the files above — as much as the instruction needs, up to all of it. Open the original file when its figures, tables or layout matter.`);
+    } else if (attachment.text) {
       lines.push("<<<attachment");
       lines.push(attachment.text);
       lines.push(">>>");
@@ -1096,7 +1104,9 @@ function buildAttachmentPromptLines(request: AiRequest): string[] {
         lines.push(`(Attachment text truncated; the full file is at ${attachment.path}.)`);
       }
     } else {
-      lines.push("(No text could be extracted from this file; if you can read files, the full content is at the path above.)");
+      lines.push(readsFiles
+        ? "(No text could be extracted from this file; read the file at the path above — it may be scanned or an image.)"
+        : "(No text could be extracted from this file.)");
     }
   }
   return lines;

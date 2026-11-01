@@ -411,7 +411,7 @@ export function WordPane(props: WordPaneProps) {
         {props.attachments.length ? (
           <ul className="wp-attachments" aria-label="Attached reference files">
             {props.attachments.map((attachment) => (
-              <li key={attachment.name} title={`${attachment.text.length.toLocaleString()} characters extracted${attachment.truncated ? " (truncated)" : ""} · sent with every request until removed`}>
+              <li key={attachment.name} title={`${(attachment.chars ?? attachment.text.length).toLocaleString()} characters extracted${attachment.truncated && !attachment.textPath ? " (truncated)" : ""} · sent with every request until removed`}>
                 <Paperclip size={11} aria-hidden="true" />
                 <span>{attachment.name}</span>
                 <small>{formatChars(attachment.text.length)}{attachment.truncated ? "+" : ""}</small>

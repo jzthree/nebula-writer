@@ -58,6 +58,10 @@ export interface AiAttachment {
   /** Extracted text, capped at the attachment budget. */
   text: string;
   truncated?: boolean;
+  /** The full extracted text, uncapped, in a file next to the attachment (sidecar machine). */
+  textPath?: string;
+  /** Length of the full extracted text. */
+  chars?: number;
 }
 
 /** The suggestion a message is about ("refine S3"): sent with the request so the AI revises exactly that one. */

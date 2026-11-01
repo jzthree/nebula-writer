@@ -29,6 +29,7 @@ import { restartTerminalRoom } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
 import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSuggestion } from "./inline-suggestions";
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
+import { attachmentTextPathFor, trustedAttachmentTextPath } from "./attachment-text";
 import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
 import { supersedeRevisedSuggestions } from "./revisions";
 import { CONVERSATION_KEY_PATTERN, conversationStore, type ConversationWrite } from "./conversation-store";
@@ -3740,11 +3741,17 @@ async function storeAiAttachment(buffer: Buffer, originalName: string): Promise<
   await writeFile(path, buffer);
   const extracted = await extractAttachmentText(buffer, safeName);
   const truncated = extracted.length > AI_ATTACHMENT_TEXT_CHAR_LIMIT;
+  // The whole text goes to disk, so an agent that can read files is never limited by the preview's cap.
+  const textPath = extracted ? attachmentTextPathFor(path) : null;
+  if (textPath) {
+    await writeFile(textPath, extracted, "utf8");
+  }
   return {
     name: safeName,
     path,
     text: truncated ? extracted.slice(0, AI_ATTACHMENT_TEXT_CHAR_LIMIT) : extracted,
-    ...(truncated ? { truncated: true } : {})
+    ...(truncated ? { truncated: true } : {}),
+    ...(textPath ? { textPath, chars: extracted.length } : {})
   };
 }
 
@@ -3812,7 +3819,7 @@ function parseAiAttachments(value: unknown): { value: AiAttachment[] | undefined
     if (!entry || typeof entry !== "object") {
       return { error: "Each attachment must be an object with name, path, and text." };
     }
-    const { name, path, text, truncated } = entry as Partial<AiAttachment>;
+    const { name, path, text, truncated, textPath, chars } = entry as Partial<AiAttachment>;
     if (typeof name !== "string" || !name.trim()) {
       return { error: "Each attachment requires a name." };
     }
@@ -3830,7 +3837,9 @@ function parseAiAttachments(value: unknown): { value: AiAttachment[] | undefined
       name: name.trim().slice(0, 160),
       path: path.slice(0, 1024),
       text: text.slice(0, AI_ATTACHMENT_TEXT_CHAR_LIMIT),
-      ...(truncated ? { truncated: true } : {})
+      ...(truncated ? { truncated: true } : {}),
+      ...(trustedAttachmentTextPath(textPath) ? { textPath: trustedAttachmentTextPath(textPath)! } : {}),
+      ...(typeof chars === "number" && Number.isInteger(chars) && chars >= 0 ? { chars } : {})
     });
   }
   if (totalChars > AI_ATTACHMENTS_TOTAL_CHAR_LIMIT) {

@@ -1610,7 +1610,7 @@ export function App() {
     for (const file of accepted) {
       uploadAttachment(file).then((attachment) => {
         setAttachments((current) => [...current.filter((item) => item.name !== attachment.name), attachment]);
-        showNotice("success", `Attached ${attachment.name}${attachment.text.length ? ` (${attachment.text.length.toLocaleString()} characters extracted${attachment.truncated ? ", truncated" : ""})` : " — no text could be extracted"}.`);
+        showNotice("success", `Attached ${attachment.name}${attachment.text.length ? ` (${(attachment.chars ?? attachment.text.length).toLocaleString()} characters extracted${attachment.truncated && !attachment.textPath ? ", truncated" : ""})` : " — no text could be extracted"}.`);
       }).catch((error) => {
         showNotice("error", `Could not attach ${file.name}: ${errorMessage(error)}`);
       }).finally(() => {

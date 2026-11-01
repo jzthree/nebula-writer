@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { attachmentFullText } from "./attachment-text";
 import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasis";
 import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment, DocumentCommentsStatus } from "../src/shared";
 import { isImageCandidate, isTableCandidate, validateImageCandidate, validateSuggestionCandidate, validateTableCandidate, type SuggestionCandidate } from "./suggestion-validation";
@@ -245,15 +246,16 @@ export function readAgentRunAttachment(run: AgentRunContext, name: string, offse
   if (!attachment) {
     return null;
   }
-  const totalLength = attachment.text.length;
+  const fullText = attachmentFullText(attachment);
+  const totalLength = fullText.length;
   const offset = clampInteger(offsetInput, 0, Math.max(0, totalLength), 0);
   const limit = clampInteger(limitInput, 1, MAX_READ_LIMIT, DEFAULT_READ_LIMIT);
   return {
     name: attachment.name,
-    text: attachment.text.slice(offset, offset + limit),
+    text: fullText.slice(offset, offset + limit),
     offset,
     totalLength,
-    ...(attachment.truncated ? { note: `The extracted text was truncated at upload; the full file is at ${attachment.path}.` } : {}),
+    ...(attachment.truncated && fullText.length <= attachment.text.length ? { note: `The extracted text was truncated at upload; the full file is at ${attachment.path}.` } : {}),
     ...(totalLength === 0 ? { note: `No text could be extracted from this file; the raw file is at ${attachment.path}.` } : {})
   };
 }

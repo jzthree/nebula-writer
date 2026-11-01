@@ -6979,11 +6979,11 @@ export function App() {
                   <span
                     key={`${attachment.path}-${index}`}
                     className="attachment-chip"
-                    title={`${attachment.path}\nStays in context for every message until removed.${attachment.truncated ? "\nText truncated for the prompt; Codex can read the full file at this path." : ""}${attachment.text ? "" : "\nNo text could be extracted — Codex can read the file at this path, but Claude Code cannot."}`}
+                    title={`${attachment.path}\nStays in context for every message until removed.${(attachment.chars ?? attachment.text.length) ? `\n${(attachment.chars ?? attachment.text.length).toLocaleString()} characters of text; long files are read by the AI from disk, in full.` : "\nNo text could be extracted — the AI can still open the file at this path."}`}
                   >
                     <Paperclip size={12} aria-hidden="true" />
                     {attachment.name}
-                    {attachment.truncated ? <em>truncated</em> : null}
+                    {attachment.truncated && !attachment.textPath ? <em>truncated</em> : null}
                     {!attachment.text ? <em>no text</em> : null}
                     <button
                       type="button"
