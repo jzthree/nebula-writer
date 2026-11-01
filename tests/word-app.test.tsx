@@ -374,6 +374,29 @@ describe("Word task pane", () => {
     expect(screen.getByText(/Applied as a tracked change/)).toBeInTheDocument();
   });
 
+  it("reverts an applied suggestion from its card: the original comes back and the card is pending again", async () => {
+    await renderPane();
+    send("Review the document.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(mock.text).toContain(REPLACEMENT));
+    await waitFor(() => expect(screen.getByText("Nothing pending")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
+    await waitFor(() => expect(mock.text).toContain(ORIGINAL));
+    expect(mock.text).not.toContain(REPLACEMENT);
+    await waitFor(() => expect(screen.getByText("1 pending")).toBeInTheDocument());
+    expect(screen.getByText("reverted")).toBeInTheDocument();
+    await waitFor(() => expect(captured.statusUpdates.map((update) => update.status)).toEqual(["accepted", "pending"]));
+    expect(captured.statusUpdates[1].note).toBe("Applied, then reverted in Word");
+
+    // The next turn tells the agent what happened to it.
+    send("Next.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    const decisions = captured.requests[1].conversation?.flatMap((turn) => turn.decisions ?? []) ?? [];
+    expect(decisions).toContainEqual(expect.objectContaining({ title: "Tighten the opening claim", status: "pending", note: "applied, then reverted by the user" }));
+  });
+
   it("passes the chosen model and reasoning level to the request", async () => {
     await renderPane();
     fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "codex" } });

@@ -35,12 +35,14 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Undo2,
   User,
   X, ListPlus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
+import { revertSuggestionOf } from "../revertSuggestion";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
 import type { RequestScope } from "./wordContext";
 import { excerpt } from "./wordContext";
@@ -183,6 +185,7 @@ export interface WordPaneProps {
   onPreset: (preset: PresetOption) => void;
   onProviderChange: (provider: LocalAiProviderName) => void;
   onRestore: (suggestion: AiSuggestion) => void;
+  onRevert: (suggestion: AiSuggestion) => void;
   onScopeChange: (scope: RequestScope) => void;
   onSettingsChange: (patch: Partial<WordPaneProps["settings"]>) => void;
   onStop: () => void;
@@ -338,6 +341,7 @@ export function WordPane(props: WordPaneProps) {
         onLocate={props.onLocate}
         onNavigate={props.onNavigate}
         onRestore={props.onRestore}
+        onRevert={props.onRevert}
         pendingCount={props.pendingCount}
         suggestionById={props.suggestionById}
         trackChanges={props.settings.trackChanges}
@@ -682,6 +686,7 @@ function Transcript(props: {
   onLocate: (suggestion: AiSuggestion) => void;
   onNavigate: (direction: -1 | 1) => void;
   onRestore: (suggestion: AiSuggestion) => void;
+  onRevert: (suggestion: AiSuggestion) => void;
   pendingCount: number;
   suggestionById: (id: string) => AiSuggestion | null;
   trackChanges: "always" | "word";
@@ -760,6 +765,7 @@ function Transcript(props: {
             onDiscuss={props.onDiscuss}
             onLocate={props.onLocate}
             onRestore={props.onRestore}
+            onRevert={props.onRevert}
             suggestionById={props.suggestionById}
             trackChanges={props.trackChanges}
             turn={turn}
@@ -789,6 +795,7 @@ function TurnView(props: {
   onDiscuss: (suggestion: AiSuggestion, note: string) => void;
   onLocate: (suggestion: AiSuggestion) => void;
   onRestore: (suggestion: AiSuggestion) => void;
+  onRevert: (suggestion: AiSuggestion) => void;
   suggestionById: (id: string) => AiSuggestion | null;
   trackChanges: "always" | "word";
   turn: ChatTurn;
@@ -829,6 +836,7 @@ function TurnView(props: {
             onLocate={() => props.onLocate(suggestion)}
             revisionOf={suggestion.revises ? describeRevisionOf(props.suggestionById(suggestion.revises)) : null}
             onRestore={() => props.onRestore(suggestion)}
+            onRevert={() => props.onRevert(suggestion)}
             state={props.cardState(suggestion)}
             suggestion={suggestion}
             trackChanges={props.trackChanges}
@@ -1082,6 +1090,7 @@ function SuggestionCard(props: {
   onLocate: () => void;
   onDiscuss: (note: string) => void;
   onRestore: () => void;
+  onRevert: () => void;
   /** "S3 Tighten the opening claim" when this card revises an earlier one. */
   revisionOf?: string | null;
   state: CardState;
@@ -1126,6 +1135,8 @@ function SuggestionCard(props: {
           <span className="wp-outcome-actions">
             {state.outcome === "dismissed" ? (
               <button type="button" className="wp-text-button" onClick={props.onRestore} disabled={props.busy}><RotateCcw size={12} aria-hidden="true" /> Restore</button>
+            ) : state.outcome === "applied" && revertSuggestionOf(suggestion) ? (
+              <button type="button" className="wp-text-button" onClick={props.onRevert} disabled={props.busy || !props.hostReady} title="Put the original text back in the document; the suggestion becomes pending again"><Undo2 size={12} aria-hidden="true" /> Revert</button>
             ) : null}
             <button type="button" className="wp-text-button" onClick={() => setOpen((current) => !current)} aria-expanded={open} title={open ? "Hide the proposed change" : "Show what was proposed: the original and the revised text"}>
               {open ? <ChevronLeft size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />} {open ? "Hide change" : "Show change"}
@@ -1168,6 +1179,7 @@ function SuggestionCard(props: {
         <span className="wp-confidence" title="The provider's own estimate of how safe this edit is">{confidenceLabel(suggestion.confidence)}</span>
       </div>
       <p className="wp-card-meta">
+        {state.detail === "reverted" ? <span className="tag" title="You applied this, then reverted it">reverted</span> : null}
         {props.revisionOf ? <span className="tag revision" title="Written after your feedback on the earlier suggestion">Revision of {props.revisionOf}</span> : null}
         {suggestion.proposedBy ? <span>{suggestion.proposedBy}</span> : null}
         {suggestion.commentOnly ? <span className="tag">advisory</span> : deletion ? <span className="tag">deletion</span> : isTable ? <span className="tag">table</span> : null}

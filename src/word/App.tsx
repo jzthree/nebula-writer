@@ -47,6 +47,7 @@ import {
   type WordCapabilities, applyTableEdit, commentInlinePicture, deletePicture, insertPicture, readInlinePictureBase64, replaceInlinePicture, selectInlinePicture, selectTable } from "./hostBridge";
 import { findEditTarget } from "../tables";
 import { selectionExcerpt, steerMessageBody } from "../steerMessage";
+import { revertSuggestionOf } from "../revertSuggestion";
 import {
   appendSessionChat,
   fetchHealth,
@@ -130,6 +131,8 @@ const CONTEXT_PUSH_DEBOUNCE_MS = 700;
 const HEALTH_POLL_MS = 30_000;
 const MAX_TURNS = 200;
 
+/** Card detail of a pending card the user applied and then reverted. */
+const REVERTED_DETAIL = "reverted";
 const DEFAULT_CARD_STATE: CardState = { matchIndex: 0, matches: null, heading: null, paragraphIndex: null, outcome: null, detail: null, error: null };
 /** Turns restored from (or fetched back into) the transcript at a time. */
 const CONVERSATION_PAGE_TURNS = 40;
@@ -1522,6 +1525,42 @@ export function App() {
     void recordDecision(suggestion, "pending", "");
   }, [patchCard, recordDecision]);
 
+  /**
+   * Undo an applied suggestion: apply its inverse (the revised text back to
+   * the original), then return the card to pending so it can be applied
+   * again. Fails without changing anything when the text has since changed.
+   */
+  const revert = useCallback((suggestion: AiSuggestion) => {
+    const snap = snapshotRef.current;
+    const inverse = revertSuggestionOf(suggestion);
+    if (!snap || hostStatus !== "ready" || !inverse || cardsRef.current[suggestion.id]?.outcome !== "applied") {
+      return;
+    }
+    setActiveId(suggestion.id);
+    void runBusy("Reverting in Word…", async () => {
+      const latest = (await refreshSnapshot()) ?? snap;
+      try {
+        if (inverse.kind === "table") {
+          await applyTableEdit(latest, inverse, { trackChanges: settingsRef.current.trackChanges, highlightChanges: false, matchIndex: null });
+        } else {
+          const [outcome] = await applySuggestions(latest, [{ id: inverse.id, suggestion: inverse, matchIndex: null, preferredOffset: preferredOffset(inverse, latest) }], { trackChanges: settingsRef.current.trackChanges, highlightChanges: false });
+          if (!outcome?.ok) {
+            throw new Error("The applied text is no longer in the document as it was applied — it may have been edited since. Undo it in the document instead.");
+          }
+        }
+      } catch (error) {
+        patchCard(suggestion.id, { error: errorMessage(error) });
+        showNotice("error", errorMessage(error));
+        return;
+      }
+      lastPushedTextRef.current = null;
+      patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null });
+      await recordDecision(suggestion, "pending", "Applied, then reverted in Word");
+      showNotice("success", "Reverted — the original text is back. The suggestion is pending again.");
+      await refreshSnapshot();
+    });
+  }, [hostStatus, patchCard, preferredOffset, recordDecision, refreshSnapshot, runBusy, showNotice]);
+
   /** Forget the provider sessions and the transcript, but keep pending cards (carried into the new conversation) and attachments. */
   /** Save what is outstanding, then start over (or forget) the document's saved conversation. */
   const resetSavedConversation = useCallback((mode: "new" | "clear") => {
@@ -1811,6 +1850,7 @@ export function App() {
       }}
       onProviderChange={(provider) => setSettings((current) => ({ ...current, provider }))}
       onRestore={restore}
+      onRevert={revert}
       onScopeChange={(scope) => setSettings((current) => ({ ...current, scope }))}
       onSettingsChange={(patch) => setSettings((current) => ({ ...current, ...patch }))}
       onStop={stop}
@@ -1906,7 +1946,7 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
             ref: suggestion.ref ?? null,
             title: suggestion.title,
             status: state?.outcome === "revised" ? "superseded" : state?.outcome ?? "pending",
-            note: state?.outcome === "dismissed" ? state.detail : state?.outcome === "decided-elsewhere" ? state.detail : state?.outcome === "revised" ? "replaced by a revision after the user's feedback" : null
+            note: !state?.outcome && state?.detail === REVERTED_DETAIL ? "applied, then reverted by the user" : state?.outcome === "dismissed" ? state.detail : state?.outcome === "decided-elsewhere" ? state.detail : state?.outcome === "revised" ? "replaced by a revision after the user's feedback" : null
           };
         });
       digest.push({ role: "assistant", content: turn.text || (turn.status === "error" ? "(the request failed)" : ""), ...(decisions.length ? { decisions } : {}) });
