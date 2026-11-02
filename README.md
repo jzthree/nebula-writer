@@ -225,6 +225,17 @@ npm run build      # typecheck + production build
 npm run qa         # scripted QA loop
 ```
 
+## Related projects
+
+Built around the same conviction — that humans and agents work best in shared
+spaces:
+
+| Project | What it is |
+|---|---|
+| [hop](https://github.com/jzthree/hop) | Terminal access for humans and agents: browser terminals plus an MCP server for creating, driving, and auditing agent sessions |
+| [mybot](https://github.com/jzhoulab/mybot) | The connectivity layer for coding agents: every Claude Code and Codex conversation in one searchable local memory, shared across your team |
+| [nebula-notebook](https://github.com/jzhoulab/nebula-notebook) | An agent-native notebook — you and your AI work in the same cells |
+
 ## License
 
 Private — all rights reserved.
