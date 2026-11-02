@@ -18,6 +18,8 @@ describe("revertSuggestionOf", () => {
     const anchor = { offset: 20, before: "Heading\nA sentence. ", after: " Next one.\nOther" };
     const inverse = revertSuggestionOf({ ...base, original: "Aside here.", replacement: "", anchor });
     expect(inverse).toMatchObject({ original: "A sentence.  Next one.", replacement: "A sentence. Aside here. Next one." });
+    // Whitespace at the deleted passage's ends stayed in the document, so it is part of what to find.
+    expect(revertSuggestionOf({ ...base, original: " Aside here. ", replacement: "", anchor: { offset: 19, before: "A sentence.", after: "Next one." } })).toMatchObject({ original: "A sentence.  Next one.", replacement: "A sentence. Aside here. Next one." });
     expect(inverse?.anchor).toEqual({ offset: 8, before: "Heading\n", after: "\nOther" });
   });
 

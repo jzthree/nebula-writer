@@ -836,7 +836,7 @@ export interface BatchApplyOptions {
 export async function applySuggestions(snapshot: WordDocumentSnapshot, items: BatchApplyItem[], options: BatchApplyOptions): Promise<BatchApplyOutcome[]> {
   const word = requireWord();
   const outcomes = new Map<string, BatchApplyOutcome>();
-  let pending = items;
+  let pending = items.map((item) => ({ ...item, suggestion: fitReplacementEdges(item.suggestion, snapshot.bodyText, item.preferredOffset ?? null) }));
   for (let pass = 0; pass < 3 && pending.length; pass += 1) {
     const remaining = pending;
     pending = await word.run((context) => runApplyPass(context, snapshot, remaining, options, outcomes));
@@ -845,6 +845,33 @@ export async function applySuggestions(snapshot: WordDocumentSnapshot, items: Ba
     outcomes.set(item.id, { id: item.id, ok: false, error: "This change overlaps another change in the same batch; apply it on its own." });
   }
   return items.map((item) => outcomes.get(item.id) ?? { id: item.id, ok: false, error: "Not applied." });
+}
+
+/**
+ * Word's search leaves the whitespace at a passage's ends out of the range it
+ * finds, so that whitespace stays in the document through any edit. Whitespace
+ * at the replacement's ends would then double it: drop it where the document
+ * already has whitespace just beyond the passage. A passage not found as-is in
+ * the snapshot is left alone.
+ */
+export function fitReplacementEdges<T extends Pick<AiSuggestion, "original" | "replacement"> & { emphasis?: AiSuggestion["emphasis"] }>(suggestion: T, documentText: string, preferredOffset: number | null): T {
+  const passage = suggestion.original.trim();
+  if (!passage || !suggestion.replacement.trim()) {
+    return suggestion;
+  }
+  const at = nearestOccurrence(documentText, passage, preferredOffset ?? 0);
+  if (at === null) {
+    return suggestion;
+  }
+  let fitted = suggestion.replacement;
+  if (/\s/.test(documentText[at + passage.length] ?? "\n")) {
+    fitted = fitted.replace(/[ \t\u00a0]+$/, "");
+  }
+  // Emphasis spans count from the replacement's start: its start stays put when it has any.
+  if (!suggestion.emphasis && /\s/.test(at > 0 ? documentText[at - 1] : "\n")) {
+    fitted = fitted.replace(/^[ \t\u00a0]+/, "");
+  }
+  return fitted === suggestion.replacement ? suggestion : { ...suggestion, replacement: fitted };
 }
 
 async function runApplyPass(

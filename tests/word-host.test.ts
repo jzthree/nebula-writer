@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockWordHost, sampleGrantDocument } from "../src/word/mockOffice";
-import { suggestionAnchorFor } from "../src/shared";
+import { suggestionAnchorFor, type AiSuggestion } from "../src/shared";
+import { revertSuggestionOf } from "../src/revertSuggestion";
 import {
   applySuggestion,
   applySuggestions,
@@ -11,6 +12,7 @@ import {
   replaceInlinePicture,
   selectInlinePicture,
   wordPieceOps,
+  fitReplacementEdges,
   detectCapabilities,
   findSuggestionMatches,
   locateSuggestion,
@@ -628,5 +630,51 @@ describe("word host: cheap background reads", () => {
     const withPages = await readFocus(snapshot, capabilities, null, { viewport: true });
     const caretOnly = await readFocus(snapshot, capabilities, withPages, { viewport: false });
     expect(caretOnly.viewport).toEqual(withPages.viewport);
+  });
+});
+
+describe("word host: reverting a direct edit", () => {
+  const BODY = "Sentence A is here. Sentence B is here. Sentence C is here.";
+  const PASSAGES = ["Sentence B is here.", "Sentence B is here. ", " Sentence B is here.", " Sentence B is here. ", "Sentence A is here. Sentence B is here.", "Sentence A is here. Sentence B is here. ", "Sentence C is here.", "Sentence B is here. Sentence C is here."];
+  const REWRITE = "Totally unrelated wording replaces everything entirely now.";
+  const replacementsFor = (passage: string) => {
+    const core = passage.trim();
+    const changed = core.replace("is here", "was there");
+    return ["", changed, `${changed} `, `${core} Added sentence goes here.`, `${core} Added sentence goes here. `, `Added sentence goes here. ${core}`, REWRITE, `${REWRITE} `, `${core.split(". ")[0]}.`];
+  };
+
+  it("puts the text back exactly, whatever whitespace the passage and replacement carried at their ends", async () => {
+    let cases = 0;
+    for (const original of PASSAGES) {
+      for (const replacement of replacementsFor(original)) {
+        if (replacement === original) {
+          continue;
+        }
+        mock.uninstall();
+        mock = new MockWordHost({ paragraphs: [{ text: BODY }] }).install();
+        const offset = BODY.indexOf(original);
+        const suggestion = { id: "s", title: "t", original, replacement, rationale: "", confidence: 1, target: "global", status: "accepted", anchor: { offset, before: BODY.slice(0, offset), after: BODY.slice(offset + original.length) } } as AiSuggestion;
+        const capabilities = detectCapabilities(true);
+        const [forward] = await applySuggestions(await readDocumentSnapshot(capabilities), [{ id: "s", suggestion, matchIndex: 0 }], { trackChanges: "word" });
+        expect(forward.ok, JSON.stringify([original, replacement])).toBe(true);
+        const inverse = revertSuggestionOf(suggestion) as AiSuggestion;
+        const [back] = await applySuggestions(await readDocumentSnapshot(capabilities), [{ id: "s", suggestion: inverse, matchIndex: 0 }], { trackChanges: "word" });
+        expect(back.ok, JSON.stringify([original, replacement])).toBe(true);
+        // Deleting a paragraph's first or last sentence leaves the space beside it, at the paragraph's edge.
+        const atParagraphEdge = replacement === "" && (offset === 0 || offset + original.length === BODY.length);
+        expect(atParagraphEdge ? mock.text.trim() : mock.text, JSON.stringify([original, replacement])).toBe(BODY);
+        cases += 1;
+      }
+    }
+    expect(cases).toBe(72);
+  });
+
+  it("drops whitespace at a replacement's ends only where the document already has some", () => {
+    const fit = (original: string, replacement: string, text: string) => fitReplacementEdges({ original, replacement }, text, null).replacement;
+    expect(fit("Foo", "Foo bar ", "Foo next")).toBe("Foo bar");
+    expect(fit("Old", " New", "A. Old")).toBe("New");
+    expect(fit("Foo.", "Foo. ", "Foo.Next")).toBe("Foo. ");
+    expect(fit("Old", " New", "A.Old")).toBe(" New");
+    expect(fit("Gone", "New ", "Elsewhere")).toBe("New ");
   });
 });

@@ -43,9 +43,11 @@ export function revertSuggestionOf(suggestion: AiSuggestion): AiSuggestion | nul
   if (!anchor || (!before.trim() && !after.trim())) {
     return null;
   }
+  // Word deletes the passage without the whitespace at its ends: that stays between the neighbours.
+  const leftBehind = `${suggestion.original.match(/^\s*/)?.[0] ?? ""}${suggestion.original.match(/\s*$/)?.[0] ?? ""}`;
   return {
     ...suggestion,
-    original: `${before}${after}`,
+    original: `${before}${leftBehind}${after}`,
     replacement: `${before}${suggestion.original}${after}`,
     // Emphasis spans cover the passage alone, not the context around it.
     emphasis: null,
