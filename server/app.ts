@@ -3906,7 +3906,8 @@ function parseRequestFocus(value: unknown): { value: AiRequestFocus | null } | {
       title,
       original,
       replacement: text(raw.replacement, 6000),
-      rationale: text(raw.rationale, 2000).trim() || null
+      rationale: text(raw.rationale, 2000).trim() || null,
+      decision: raw.decision === "applied" || raw.decision === "reverted" || raw.decision === "dismissed" ? raw.decision : null
     }
   };
 }

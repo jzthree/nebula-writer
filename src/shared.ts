@@ -72,7 +72,11 @@ export interface AiRequestFocus {
   original: string;
   replacement: string;
   rationale?: string | null;
+  /** What became of it, when it is no longer simply pending: tells the AI what the document holds now. */
+  decision?: AiFocusDecision | null;
 }
+
+export type AiFocusDecision = "applied" | "reverted" | "dismissed";
 
 /** An image in the document, extracted to a file the AI can look at. */
 export interface AiDocumentImage {

@@ -46,3 +46,20 @@ describe("refining one suggestion", () => {
     expect(describeFocus(null, "oneshot")).toEqual([]);
   });
 });
+
+describe("messages about a change the user already acted on", () => {
+  const focus = { suggestionId: "s", ref: "S1", title: "Tighten", original: "old words", replacement: "new words" };
+
+  it("says what the document holds now and does not demand a revision", () => {
+    const applied = describeFocus({ ...focus, decision: "applied" }, "oneshot").join("\n");
+    expect(applied).toContain("the document holds the replacement");
+    expect(applied).toContain("answer it and stage nothing");
+    expect(applied).not.toContain("Produce exactly ONE");
+    expect(describeFocus({ ...focus, decision: "reverted" }, "oneshot").join("\n")).toContain("holds the original again");
+    expect(describeFocus({ ...focus, decision: "dismissed" }, "oneshot").join("\n")).toContain("still holds the original");
+  });
+
+  it("keeps asking for a revision of a suggestion still pending", () => {
+    expect(describeFocus(focus, "oneshot").join("\n")).toContain("Produce exactly ONE");
+  });
+});

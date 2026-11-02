@@ -15,7 +15,7 @@ import { newAiRunId } from "../sidecarClient";
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiRequestFocus, type SelectionContext } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiFocusDecision, type AiRequestFocus, type SelectionContext } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -133,6 +133,23 @@ const MAX_TURNS = 200;
 
 /** Card detail of a pending card the user applied and then reverted. */
 const REVERTED_DETAIL = "reverted";
+
+/** What the document holds for a card the user acted on, for a message about it. */
+function focusDecision(state: CardState | undefined): AiFocusDecision | null {
+  switch (state?.outcome) {
+    case "applied":
+      return "applied";
+    case "dismissed":
+      return "dismissed";
+    case "decided-elsewhere":
+      return state.detail?.startsWith("accepted") ? "applied" : "dismissed";
+    case null:
+    case undefined:
+      return state?.detail === REVERTED_DETAIL ? "reverted" : null;
+    default:
+      return null;
+  }
+}
 const DEFAULT_CARD_STATE: CardState = { matchIndex: 0, matches: null, heading: null, paragraphIndex: null, outcome: null, detail: null, error: null };
 /** Turns restored from (or fetched back into) the transcript at a time. */
 const CONVERSATION_PAGE_TURNS = 40;
@@ -262,6 +279,7 @@ export function App() {
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
   const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
+  const decisionsRecordedRef = useRef(0);
 
   const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
@@ -704,6 +722,7 @@ export function App() {
     if (!sessionId) {
       return;
     }
+    const decisionsAtFetch = decisionsRecordedRef.current;
     let payload: Awaited<ReturnType<typeof fetchSessionSuggestions>>;
     try {
       payload = await fetchSessionSuggestions();
@@ -716,7 +735,8 @@ export function App() {
     const local = suggestionsRef.current;
     const localIds = new Set(local.map((suggestion) => suggestion.id));
     const incoming = payload.suggestions.filter((suggestion) => suggestion.status === "pending" && !localIds.has(suggestion.id));
-    const decidedElsewhere = payload.suggestions.filter((suggestion) => suggestion.status !== "pending" && localIds.has(suggestion.id) && !cardsRef.current[suggestion.id]?.outcome);
+    // A reply fetched before this pane's latest decision landed says nothing about what others decided.
+    const decidedElsewhere = decisionsAtFetch !== decisionsRecordedRef.current ? [] : payload.suggestions.filter((suggestion) => suggestion.status !== "pending" && localIds.has(suggestion.id) && !cardsRef.current[suggestion.id]?.outcome);
     if (incoming.length) {
       setSuggestions((current) => [...current, ...incoming]);
       setActiveId((current) => current ?? incoming[0].id);
@@ -1326,6 +1346,8 @@ export function App() {
       });
     } catch {
       // A scratch suggestion the sidecar no longer holds — the pane's own state is the record.
+    } finally {
+      decisionsRecordedRef.current += 1;
     }
   }, []);
 
@@ -1522,8 +1544,7 @@ export function App() {
   }, [patchCard, recordDecision]);
 
   const restore = useCallback((suggestion: AiSuggestion) => {
-    patchCard(suggestion.id, { outcome: null, detail: null, error: null });
-    void recordDecision(suggestion, "pending", "");
+    void recordDecision(suggestion, "pending", "").then(() => patchCard(suggestion.id, { outcome: null, detail: null, error: null }));
   }, [patchCard, recordDecision]);
 
   /**
@@ -1563,8 +1584,9 @@ export function App() {
         return;
       }
       lastPushedTextRef.current = null;
-      patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null, revisions: null });
+      // The sidecar first: until it knows, a pending card with an accepted suggestion reads as decided elsewhere.
       await recordDecision(suggestion, "pending", "Applied, then reverted in Word");
+      patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null, revisions: null });
       showNotice("success", "Reverted — the original text is back. The suggestion is pending again.");
       await refreshSnapshot();
     });
@@ -1620,7 +1642,8 @@ export function App() {
       title: suggestion.title || "Suggested revision",
       original: suggestion.original,
       replacement: suggestion.replacement,
-      rationale: suggestion.rationale || null
+      rationale: suggestion.rationale || null,
+      decision: focusDecision(cardsRef.current[suggestion.id])
     };
     void ask({ instruction: note, focus });
   }, [ask]);

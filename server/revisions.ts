@@ -60,7 +60,20 @@ export function describeFocus(focus: AiRequestFocus | null | undefined, engine: 
     `- its original (the passage it targets): ${JSON.stringify(clip(focus.original))}`,
     `- your proposed replacement: ${JSON.stringify(clip(focus.replacement))}`,
     ...(focus.rationale ? [`- your rationale: ${JSON.stringify(clip(focus.rationale))}`] : []),
-    "The user's message below is feedback on that suggestion. Produce exactly ONE revised suggestion for the same passage (copy the original verbatim from the document again — it may be unchanged), applying their feedback; the earlier suggestion is withdrawn automatically. Do not restage your other suggestions. If the message is a question rather than a change, answer it in the message and stage nothing.",
-    ...(engine === "agentic" ? ["Stage the revision with writer_stage_suggestions as a single item."] : [])
+    ...(focus.decision ? describeDecidedFocus(focus.decision) : ["The user's message below is feedback on that suggestion. Produce exactly ONE revised suggestion for the same passage (copy the original verbatim from the document again — it may be unchanged), applying their feedback; the earlier suggestion is withdrawn automatically. Do not restage your other suggestions. If the message is a question rather than a change, answer it in the message and stage nothing."]),
+    ...(engine === "agentic" ? [`Stage ${focus.decision ? "any such suggestion" : "the revision"} with writer_stage_suggestions as a single item.`] : [])
+  ];
+}
+
+/** Feedback on a suggestion the user already acted on: what the document holds now, and no revision unless they want one. */
+function describeDecidedFocus(decision: NonNullable<AiRequestFocus["decision"]>): string[] {
+  const state = {
+    applied: "The user applied it, so the document holds the replacement unless they have edited it since; the original is gone.",
+    reverted: "The user applied it and then reverted it, so the document holds the original again, not the replacement.",
+    dismissed: "The user dismissed it, so the document still holds the original."
+  }[decision];
+  return [
+    state,
+    "The user's message below is about that change. If it asks a question, answer it and stage nothing. If it asks for a different edit, stage exactly ONE suggestion, copying its original verbatim from the document as it is now. Do not restage your other suggestions."
   ];
 }

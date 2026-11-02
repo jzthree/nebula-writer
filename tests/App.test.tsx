@@ -620,6 +620,7 @@ describe("App suggestion review", () => {
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    expect(await screen.findByRole("button", { name: "Comment" })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Undo accept" }));
 
     await waitFor(() => {

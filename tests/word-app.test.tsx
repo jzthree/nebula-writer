@@ -27,6 +27,7 @@ const ORIGINAL = "Chromatin accessibility is actually a very important determina
 const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
 
 // The saved conversation: the real store, in memory, behind the client calls.
+const sessionFetch = vi.hoisted(() => ({ hold: false, release: null as null | ((payload: unknown) => void), onUpdated: null as null | (() => void) }));
 const conversations = vi.hoisted(() => ({ store: null as null | import("../server/conversation-store").ConversationStore, writes: 0 }));
 vi.mock("../src/sidecarClient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sidecarClient")>()),
@@ -224,11 +225,22 @@ vi.mock("../src/word/writerClient", () => ({
   appendSessionChat: async (messages: WriterChatMessage[]) => {
     captured.chat.push(...messages);
   },
-  fetchSessionSuggestions: async () => ({ sessionId: "word-session", revision: 1, suggestions: [] }),
+  fetchSessionSuggestions: async () => {
+    if (!sessionFetch.hold) {
+      return { sessionId: "word-session", revision: 1, suggestions: [] };
+    }
+    sessionFetch.hold = false;
+    return new Promise((resolve) => {
+      sessionFetch.release = resolve;
+    });
+  },
   updateSuggestionStatus: async (id: string, status: string, context: { decisionNote?: string } = {}) => {
     captured.statusUpdates.push({ id, status, note: context.decisionNote });
   },
-  subscribeWriterEvents: () => () => undefined,
+  subscribeWriterEvents: (handlers: { onSessionUpdated?: () => void }) => {
+    sessionFetch.onUpdated = handlers.onSessionUpdated ?? null;
+    return () => undefined;
+  },
   uploadAttachment: async (file: File) => ({ name: file.name, path: `/tmp/attachments/${file.name}`, text: "Reference text extracted from the file.", truncated: false })
 }));
 
@@ -401,6 +413,47 @@ describe("Word task pane", () => {
     await waitFor(() => expect(captured.requests.length).toBe(2));
     const decisions = captured.requests[1].conversation?.flatMap((turn) => turn.decisions ?? []) ?? [];
     expect(decisions).toContainEqual(expect.objectContaining({ title: "Tighten the opening claim", status: "pending", note: "applied, then reverted by the user" }));
+  });
+
+  it("comments on a change after applying or reverting it, and tells the AI where it stands", async () => {
+    await renderPane();
+    send("Review the document.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Comment$/ }));
+    fireEvent.change(screen.getByLabelText("Your note about this change"), { target: { value: "Why this wording?" } });
+    fireEvent.click(screen.getByLabelText("Send this note about the change"));
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].focus).toMatchObject({ title: "Tighten the opening claim", decision: "applied" });
+  });
+
+  it("does not take a reply fetched before a revert landed for another person's decision", async () => {
+    await renderPane();
+    send("Review the document.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument());
+
+    // A refresh goes out while the sidecar still says accepted; its reply arrives after the revert.
+    sessionFetch.hold = true;
+    act(() => sessionFetch.onUpdated?.());
+    await waitFor(() => expect(sessionFetch.release).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
+    await waitFor(() => expect(screen.getByText("reverted")).toBeInTheDocument());
+    await act(async () => {
+      sessionFetch.release?.({ sessionId: "word-session", revision: 1, suggestions: [{ id: "s-1", status: "accepted", decidedBy: "Word" }] });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(screen.getByRole("button", { name: /^Comment$/ })).toBeInTheDocument();
+    expect(screen.queryByText(/decided in Writer/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Comment$/ }));
+    fireEvent.change(screen.getByLabelText("Your note about this change"), { target: { value: "Try again, keep the hedge." } });
+    fireEvent.click(screen.getByLabelText("Send this note about the change"));
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].focus?.decision).toBe("reverted");
   });
 
   it("reverts with a new edit once the tracked change was accepted in Word", async () => {

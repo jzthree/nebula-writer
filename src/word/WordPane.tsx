@@ -1125,6 +1125,31 @@ function SuggestionCard(props: {
     setCopied(ok ? which : null);
     window.setTimeout(() => setCopied(null), 1500);
   };
+  const noteBox = noteOpen ? (
+        <div className="wp-card-note" onClick={(event) => event.stopPropagation()}>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.currentTarget.value)}
+            placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
+            aria-label="Your note about this change"
+            rows={2}
+            autoFocus
+            disabled={props.busy}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                sendNote(note);
+              }
+            }}
+          />
+          <div className="wp-card-note-actions">
+            {QUICK_REFINEMENTS.map((quick) => (
+              <button key={quick.label} type="button" className="wp-text-button" onClick={() => sendNote(quick.instruction)} disabled={props.busy} title={quick.instruction}>{quick.label}</button>
+            ))}
+            <button type="button" className="primary" onClick={() => sendNote(note)} disabled={props.busy || !note.trim()} aria-label="Send this note about the change" title="Send (⌘↩)"><Send size={12} aria-hidden="true" /> Send</button>
+          </div>
+        </div>
+  ) : null;
   if (handled) {
     // The record of what was proposed stays available after the decision —
     // the author often keeps editing after accepting and wants to look back.
@@ -1141,11 +1166,15 @@ function SuggestionCard(props: {
             ) : state.outcome === "applied" && revertSuggestionOf(suggestion) ? (
               <button type="button" className="wp-text-button" onClick={props.onRevert} disabled={props.busy || !props.hostReady} title="Put the original text back in the document; the suggestion becomes pending again"><Undo2 size={12} aria-hidden="true" /> Revert</button>
             ) : null}
+            {state.outcome === "revised" ? null : (
+              <button type="button" className={`wp-text-button ${noteOpen ? "active" : ""}`} onClick={() => setNoteOpen((current) => !current)} disabled={props.busy} aria-expanded={noteOpen} title="Ask about this change, or say what you would do instead"><MessageSquareText size={12} aria-hidden="true" /> Comment</button>
+            )}
             <button type="button" className="wp-text-button" onClick={() => setOpen((current) => !current)} aria-expanded={open} title={open ? "Hide the proposed change" : "Show what was proposed: the original and the revised text"}>
               {open ? <ChevronLeft size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />} {open ? "Hide change" : "Show change"}
             </button>
           </span>
         </div>
+        {noteBox}
         {open ? (
           <div className="wp-card-body">
             <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
@@ -1210,31 +1239,7 @@ function SuggestionCard(props: {
         {commentable ? <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage" aria-label="Leave as a Word comment"><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
         <button type="button" className="quiet" onClick={props.onDismiss} disabled={props.busy} title="Dismiss (recorded as rejected)"><X size={13} aria-hidden="true" /></button>
       </div>
-      {noteOpen ? (
-        <div className="wp-card-note" onClick={(event) => event.stopPropagation()}>
-          <textarea
-            value={note}
-            onChange={(event) => setNote(event.currentTarget.value)}
-            placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
-            aria-label="Your note about this change"
-            rows={2}
-            autoFocus
-            disabled={props.busy}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                event.preventDefault();
-                sendNote(note);
-              }
-            }}
-          />
-          <div className="wp-card-note-actions">
-            {QUICK_REFINEMENTS.map((quick) => (
-              <button key={quick.label} type="button" className="wp-text-button" onClick={() => sendNote(quick.instruction)} disabled={props.busy} title={quick.instruction}>{quick.label}</button>
-            ))}
-            <button type="button" className="primary" onClick={() => sendNote(note)} disabled={props.busy || !note.trim()} aria-label="Send this note about the change" title="Send (⌘↩)"><Send size={12} aria-hidden="true" /> Send</button>
-          </div>
-        </div>
-      ) : null}
+      {noteBox}
     </li>
   );
 }

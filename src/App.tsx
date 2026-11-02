@@ -4840,7 +4840,8 @@ export function App() {
         title: suggestion.title || "Suggested revision",
         original: suggestion.original,
         replacement: suggestion.replacement,
-        rationale: suggestion.rationale || null
+        rationale: suggestion.rationale || null,
+        decision: suggestion.status === "accepted" ? "applied" : suggestion.status === "rejected" ? "dismissed" : null
       }
     });
   }
@@ -7755,6 +7756,49 @@ export function App() {
 	                  : sharedRunDisposition && sharedRunDispositionHasReviewCoverage(sharedRunDisposition)
 	                    ? null
 	                    : suggestionAnchorVisibilityWarning(suggestion, normalizedCurrentDocumentText);
+	                const commentControls = (
+	                  <>
+	                        <button
+	                          type="button"
+	                          className={discussing?.id === suggestion.id ? "active" : ""}
+	                          onClick={(event) => {
+	                            event.stopPropagation();
+	                            setDiscussing((current) => (current?.id === suggestion.id ? null : { id: suggestion.id, note: "" }));
+	                          }}
+	                          aria-expanded={discussing?.id === suggestion.id}
+	                          title="Comment on this change — say what to keep or change and the AI replies with a revised suggestion"
+	                        >
+	                          <MessageSquareText size={16} aria-hidden="true" /> Comment
+	                        </button>
+	                        {discussing?.id === suggestion.id ? (
+	                          <div className="suggestion-note" onClick={(event) => event.stopPropagation()}>
+	                            <textarea
+	                              value={discussing.note}
+	                              onChange={(event) => setDiscussing({ id: suggestion.id, note: event.currentTarget.value })}
+	                              placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
+	                              aria-label="Your note about this change"
+	                              rows={2}
+	                              autoFocus
+	                              disabled={busy !== null}
+	                              onKeyDown={(event) => {
+	                                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+	                                  event.preventDefault();
+	                                  sendSuggestionNote(suggestion, discussing.note);
+	                                }
+	                              }}
+	                            />
+	                            <div className="suggestion-note-actions">
+	                              {[["Shorter", "Make this suggestion shorter while keeping its point."], ["Keep my wording", "Keep my original wording wherever it already works; change only what is necessary."], ["Different angle", "Try a different approach to this passage — a different structure or emphasis, not a light edit."]].map(([label, quick]) => (
+	                                <button key={label} type="button" onClick={() => sendSuggestionNote(suggestion, quick)} disabled={busy !== null} title={quick}>{label}</button>
+	                              ))}
+	                              <button type="button" className="primary" onClick={() => sendSuggestionNote(suggestion, discussing.note)} disabled={busy !== null || !discussing.note.trim()} aria-label="Send this note about the change">
+	                                <Send size={14} aria-hidden="true" /> Send
+	                              </button>
+	                            </div>
+	                          </div>
+	                        ) : null}
+	                  </>
+	                );
 	                return (
                 <article
                   ref={(element) => {
@@ -7950,45 +7994,7 @@ export function App() {
 	                    ) : null}
 	                    {suggestion.status === "pending" ? (
 	                      <>
-	                        <button
-	                          type="button"
-	                          className={discussing?.id === suggestion.id ? "active" : ""}
-	                          onClick={(event) => {
-	                            event.stopPropagation();
-	                            setDiscussing((current) => (current?.id === suggestion.id ? null : { id: suggestion.id, note: "" }));
-	                          }}
-	                          aria-expanded={discussing?.id === suggestion.id}
-	                          title="Comment on this change — say what to keep or change and the AI replies with a revised suggestion"
-	                        >
-	                          <MessageSquareText size={16} aria-hidden="true" /> Comment
-	                        </button>
-	                        {discussing?.id === suggestion.id ? (
-	                          <div className="suggestion-note" onClick={(event) => event.stopPropagation()}>
-	                            <textarea
-	                              value={discussing.note}
-	                              onChange={(event) => setDiscussing({ id: suggestion.id, note: event.currentTarget.value })}
-	                              placeholder="What should change? e.g. keep the citation, shorter, a different angle…"
-	                              aria-label="Your note about this change"
-	                              rows={2}
-	                              autoFocus
-	                              disabled={busy !== null}
-	                              onKeyDown={(event) => {
-	                                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-	                                  event.preventDefault();
-	                                  sendSuggestionNote(suggestion, discussing.note);
-	                                }
-	                              }}
-	                            />
-	                            <div className="suggestion-note-actions">
-	                              {[["Shorter", "Make this suggestion shorter while keeping its point."], ["Keep my wording", "Keep my original wording wherever it already works; change only what is necessary."], ["Different angle", "Try a different approach to this passage — a different structure or emphasis, not a light edit."]].map(([label, quick]) => (
-	                                <button key={label} type="button" onClick={() => sendSuggestionNote(suggestion, quick)} disabled={busy !== null} title={quick}>{label}</button>
-	                              ))}
-	                              <button type="button" className="primary" onClick={() => sendSuggestionNote(suggestion, discussing.note)} disabled={busy !== null || !discussing.note.trim()} aria-label="Send this note about the change">
-	                                <Send size={14} aria-hidden="true" /> Send
-	                              </button>
-	                            </div>
-	                          </div>
-	                        ) : null}
+	                        {commentControls}
 	                        <button
 	                          type="button"
 	                          onClick={(event) => {
@@ -8021,6 +8027,8 @@ export function App() {
 	                        )}
 	                      </>
 	                    ) : suggestion.status === "accepted" ? (
+	                      <>
+	                      {commentControls}
 	                      <button
 	                        type="button"
 	                        title="Put the original text back and return this suggestion to the pending queue"
@@ -8031,7 +8039,10 @@ export function App() {
 	                      >
 	                        <Undo2 size={16} aria-hidden="true" /> Undo accept
 	                      </button>
+	                      </>
 	                    ) : (
+	                      <>
+	                      {commentControls}
 	                      <button
 	                        type="button"
 	                        title="Return this rejected suggestion to the pending queue"
@@ -8042,6 +8053,7 @@ export function App() {
 	                      >
 	                        <Undo2 size={16} aria-hidden="true" /> Restore
 	                      </button>
+	                      </>
 	                    )}
 	                    {copiedSuggestionId === suggestion.id ? (
 	                      <small>Proposed text copied</small>
