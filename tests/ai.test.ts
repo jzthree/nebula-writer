@@ -1545,6 +1545,8 @@ describe("proposeChanges", () => {
       "--json",
       "-c",
       'service_tier="fast"',
+      "-c",
+      'model_reasoning_summary="auto"',
       "--skip-git-repo-check",
       "--sandbox",
       "read-only",
