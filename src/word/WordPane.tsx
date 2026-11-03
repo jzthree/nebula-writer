@@ -521,7 +521,7 @@ function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostS
       <div className="wp-context-where">
         <MapPin size={13} aria-hidden="true" />
         <div>
-          {props.heading ? <strong>{props.heading}</strong> : <strong className="quiet">No heading above the caret</strong>}
+          {props.heading ? <strong>{props.heading}</strong> : <strong className="quiet" title="This line shows the section your cursor is in, taken from the nearest Word heading above it. There is none here: text only counts as a heading if it uses a Heading style.">No section heading here</strong>}
           <span>{props.position}</span>
         </div>
       </div>
