@@ -13,6 +13,7 @@ import {
   selectInlinePicture,
   wordPieceOps,
   fitReplacementEdges,
+  lostWordGaps,
   detectCapabilities,
   findSuggestionMatches,
   locateSuggestion,
@@ -676,5 +677,50 @@ describe("word host: reverting a direct edit", () => {
     expect(fit("Foo.", "Foo. ", "Foo.Next")).toBe("Foo. ");
     expect(fit("Old", " New", "A.Old")).toBe(" New");
     expect(fit("Gone", "New ", "Elsewhere")).toBe("New ");
+  });
+});
+
+describe("word host: spaces at the seams of a word-level edit", () => {
+  const applyAll = (pieces: string[], replacement: string) => {
+    const out = [...pieces];
+    const before = pieces.map(() => "");
+    const after = pieces.map(() => "");
+    for (const op of wordPieceOps(pieces, replacement)) {
+      if (op.kind === "insertStart") before[op.index] += op.text;
+      else if (op.kind === "insertEnd") after[op.index] += op.text;
+      else for (let index = op.from; index <= op.to; index += 1) out[index] = index === op.from && op.kind === "replace" ? op.text : "";
+    }
+    return out.map((text, index) => `${before[index]}${text}${after[index]}`).join("");
+  };
+
+  it("leaves a piece of only whitespace standing between two kept words", () => {
+    expect(applyAll(["uses ", "the", " ", "regulatory"], "uses the regulatory")).toBe("uses the regulatory");
+    expect(applyAll(["the", " ", "regulatory ", "code"], "the regulatory codes")).toBe("the regulatory codes");
+  });
+
+  it("keeps the space a changed word's piece started with", () => {
+    expect(applyAll(["foo", " bar ", "baz"], "foo qux baz")).toBe("foo qux baz");
+  });
+
+  it("removes a gap along with the word it separated", () => {
+    expect(applyAll(["one", " ", "two", " ", "three"], "one three")).toBe("one three");
+    expect(applyAll(["one", " ", "two"], "one")).toBe("one");
+    expect(applyAll(["one", " ", "two", " ", "three"], "one 2 three")).toBe("one 2 three");
+  });
+
+  it("finds adjacent words of the proposal that ended up joined, and nothing the proposal wrote joined", () => {
+    expect(lostWordGaps("It learns theregulatory code here.", "learns the regulatory code")).toEqual([["the", "regulatory"]]);
+    expect(lostWordGaps("It learns the regulatory code here.", "learns the regulatory code")).toEqual([]);
+    expect(lostWordGaps("A co author", "A co author")).toEqual([]);
+  });
+
+  it("puts back a space Word dropped when replacing a word, so the text reads as proposed", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({ paragraphs: [{ text: "The model learns some regulatory code from data." }] }).install();
+    mock.losesReplacedTrailingSpace = true;
+    const suggestion = { id: "s", title: "t", original: "The model learns some regulatory code from data.", replacement: "The model learns the regulatory code from data.", rationale: "", confidence: 1, target: "global", status: "pending" } as AiSuggestion;
+    const [outcome] = await applySuggestions(await readDocumentSnapshot(detectCapabilities(true)), [{ id: "s", suggestion, matchIndex: 0 }], { trackChanges: "always" });
+    expect(outcome).toMatchObject({ ok: true, result: { strategy: "words", restoredGaps: 1 } });
+    expect(mock.text).toBe("The model learns the regulatory code from data.");
   });
 });

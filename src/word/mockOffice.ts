@@ -119,6 +119,8 @@ export class MockWordHost {
   supports: Record<string, boolean>;
   platform: string;
   trackedChanges: MockTrackedChange[] = [];
+  /** Lose the trailing space of a word replaced in place, as real Word has been seen to at revision boundaries. */
+  losesReplacedTrailingSpace = false;
   /** Where each tracked change's new text starts now (later edits shift it). */
   private trackedAt = new Map<MockTrackedChange, number>();
   comments: MockComment[] = [];
@@ -849,7 +851,7 @@ export class MockRange {
     if (location !== "Replace") {
       throw new Error(`Mock Word: unsupported insert location ${location}`);
     }
-    const next = this.host.replaceRange(this.from, this.to, text);
+    const next = this.host.replaceRange(this.from, this.to, this.host.losesReplacedTrailingSpace ? text.trimEnd() : text);
     return new MockRange(this.host, next.from, next.to);
   }
 

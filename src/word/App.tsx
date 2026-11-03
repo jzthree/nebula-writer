@@ -1444,7 +1444,7 @@ export function App() {
       if (outcome.ok) {
         patchCard(suggestion.id, {
           outcome: "applied",
-          detail: outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)",
+          detail: `${outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)"}${outcome.result.restoredGaps ? ` · restored ${outcome.result.restoredGaps} missing space${outcome.result.restoredGaps === 1 ? "" : "s"}` : ""}`,
           error: null,
           matches: outcome.result.matches,
           matchIndex: outcome.result.matchIndex,

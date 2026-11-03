@@ -97,6 +97,8 @@ export interface ApplyResult {
   strategy: "range" | "paragraphs" | "words" | "emphasis";
   /** The tracked changes this apply created, in document order (WordApi 1.6), so a revert can reject exactly them. */
   revisions?: TrackedRevision[] | null;
+  /** Spaces Word lost at the seams of the edit, which the apply put back. */
+  restoredGaps?: number;
 }
 
 /** A Word tracked change, by what it is: enough to find it again among the document's tracked changes. */
@@ -968,6 +970,9 @@ async function runApplyPass(
         emphasisScopes.set(target, { first: target.range.paragraphs.getFirst(), last: target.range.paragraphs.getLast() });
       }
     }
+    // Word-level edits are checked against the proposal afterwards; remember their paragraphs now.
+    const gapScopes = new Map<Target, { first: Word.Paragraph; last: Word.Paragraph }>(ready.filter((target) => target.item.suggestion.replacement.trim()).map((target) => [target, { first: target.range.paragraphs.getFirst(), last: target.range.paragraphs.getLast() }]));
+    const restoredGaps = new Map<Target, number>();
     // With tracking on, note each passage's tracked changes before the edit:
     // the ones that are new afterwards are this apply's, for a later revert.
     const revisionScopes = trackedChange && isSetSupported("WordApi", "1.6") ? new Map(ready.map((target) => [target, target.range.paragraphs.getFirst().getRange("Whole").expandTo(target.range.paragraphs.getLast().getRange("Whole"))])) : null;
@@ -1015,6 +1020,11 @@ async function runApplyPass(
       suggestion: target.item.suggestion,
       scope: emphasisScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }
     })));
+    await restoreLostGaps(context, ready.filter((target) => !failures.has(target) && strategies.get(target) === "words").map((target) => ({
+      ...(gapScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }),
+      replacement: target.item.suggestion.replacement,
+      onRestored: () => restoredGaps.set(target, (restoredGaps.get(target) ?? 0) + 1)
+    })));
     const revisionsAfter = revisionScopes ? new Map([...revisionScopes].filter(([target]) => !failures.has(target)).map(([target, scope]) => [target, loadTrackedRevisions(scope)])) : null;
     if (revisionsAfter?.size) {
       await context.sync();
@@ -1030,7 +1040,7 @@ async function runApplyPass(
       outcomes.set(target.item.id, {
         id: target.item.id,
         ok: true,
-        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range", revisions: before && after ? newRevisions(before, after) : null }
+        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range", revisions: before && after ? newRevisions(before, after) : null, restoredGaps: restoredGaps.get(target) ?? 0 }
       });
     }
   } finally {
@@ -1323,6 +1333,34 @@ async function planWordLevelEdits<Key>(
  * insertion goes at the end of the previous piece (or the start of the first).
  */
 export function wordPieceOps(pieceTexts: string[], replacement: string): PieceOp[] {
+  // A piece of only whitespace after a word with none of its own is the gap
+  // between two words, not a word: plan over the real words, and leave the gaps
+  // standing unless the words on both sides go. (After a word that has its own
+  // space it is just a doubled space, and goes like any unmatched piece.)
+  const isGap = (index: number) => index > 0 && index < pieceTexts.length && !pieceTexts[index].trim() && pieceTexts[index - 1].trimEnd() === pieceTexts[index - 1];
+  const wordIndexes = pieceTexts.flatMap((_text, index) => (isGap(index) ? [] : [index]));
+  if (wordIndexes.length === pieceTexts.length) {
+    return planPieceOps(pieceTexts, replacement);
+  }
+  const at = (index: number) => wordIndexes[index];
+  return planPieceOps(wordIndexes.map((index) => pieceTexts[index]), replacement).map((op): PieceOp => {
+    if (op.kind === "insertStart" || op.kind === "insertEnd") {
+      return { ...op, index: at(op.index) };
+    }
+    if (op.kind === "replace") {
+      return { ...op, from: at(op.from), to: at(op.to) };
+    }
+    // A deleted word takes one neighbouring gap along, or two gaps would meet.
+    const to = at(op.to);
+    if (isGap(to + 1)) {
+      return { kind: "delete", from: at(op.from), to: to + 1 };
+    }
+    const from = at(op.from);
+    return { kind: "delete", from: isGap(from - 1) ? from - 1 : from, to };
+  });
+}
+
+function planPieceOps(pieceTexts: string[], replacement: string): PieceOp[] {
   const words = pieceTexts.map((text) => collapseWhitespace(normalizeWordText(text)));
   const targetWords = collapseWhitespace(normalizeWordText(replacement)).split(" ").filter(Boolean);
   const n = words.length;
@@ -1342,6 +1380,10 @@ export function wordPieceOps(pieceTexts: string[], replacement: string): PieceOp
   const trailingSpace = (index: number) => {
     const text = pieceTexts[index] ?? "";
     return text.slice(text.trimEnd().length);
+  };
+  const leadingSpace = (index: number) => {
+    const text = pieceTexts[index] ?? "";
+    return text.slice(0, text.length - text.trimStart().length);
   };
   const ops: PieceOp[] = [];
   let i = 0;
@@ -1370,7 +1412,7 @@ export function wordPieceOps(pieceTexts: string[], replacement: string): PieceOp
     const first = deleted[0];
     const last = deleted[deleted.length - 1];
     if (deleted.length && inserted.length) {
-      ops.push({ kind: "replace", from: first, to: last, text: `${inserted.join(" ")}${trailingSpace(last)}` });
+      ops.push({ kind: "replace", from: first, to: last, text: `${leadingSpace(first)}${inserted.join(" ")}${trailingSpace(last)}` });
       lastKept = last;
     } else if (deleted.length) {
       if (last === n - 1 && first > 0 && lastKept === first - 1 && trailingSpace(first - 1)) {
@@ -1389,6 +1431,67 @@ export function wordPieceOps(pieceTexts: string[], replacement: string): PieceOp
     }
   }
   return ops;
+}
+
+/**
+ * Word sometimes gives back less than it was told at the seams of an edit,
+ * near revisions and run boundaries. The adjacent words of a replacement that
+ * ended up with no space between them in the text around it (and were not
+ * written that way): each [left, right].
+ */
+export function lostWordGaps(actual: string, replacement: string): Array<[string, string]> {
+  const proposed = collapseWhitespace(normalizeWordText(replacement));
+  const text = collapseWhitespace(normalizeWordText(actual));
+  const words = proposed.split(" ").filter(Boolean);
+  const gaps: Array<[string, string]> = [];
+  for (let index = 0; index + 1 < words.length; index += 1) {
+    const glued = `${words[index]}${words[index + 1]}`;
+    if (text.includes(glued) && !proposed.includes(glued)) {
+      gaps.push([words[index], words[index + 1]]);
+    }
+  }
+  return gaps;
+}
+
+/**
+ * Put back the spaces a word-level edit lost, so the text reads as proposed.
+ * The edit has already landed: a failure here leaves it as it is.
+ */
+async function restoreLostGaps(context: Word.RequestContext, targets: Array<{ first: Word.Paragraph; last: Word.Paragraph; replacement: string; onRestored: () => void }>): Promise<void> {
+  if (!targets.length) {
+    return;
+  }
+  try {
+    const scopes = targets.map((target) => ({ target, scope: target.first.getRange("Whole").expandTo(target.last.getRange("Whole")) }));
+    for (const { scope } of scopes) {
+      scope.load("text");
+    }
+    await context.sync();
+    const glued = scopes.flatMap(({ target, scope }) => lostWordGaps(scope.text ?? "", target.replacement).map(([left, right]) => {
+      const found = scope.search(toWordSearchText(`${left}${right}`), { matchCase: true });
+      found.load("items");
+      return { target, left, found };
+    }));
+    if (!glued.length) {
+      return;
+    }
+    await context.sync();
+    const lefts = glued.filter(({ found }) => found.items.length).map(({ target, left, found }) => {
+      const within = found.items[0].search(toWordSearchText(left), { matchCase: true });
+      within.load("items");
+      return { target, within };
+    });
+    await context.sync();
+    for (const { target, within } of lefts) {
+      if (within.items.length) {
+        within.items[0].insertText(" ", "End");
+        target.onRestored();
+      }
+    }
+    await context.sync();
+  } catch {
+    // Reported by what the document shows; the edit itself stands.
+  }
 }
 
 /** Queue the plan's operations (later pieces first so earlier ones stay put); returns the earliest touched range for selection. */
