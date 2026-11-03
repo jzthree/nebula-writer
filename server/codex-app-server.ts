@@ -87,6 +87,56 @@ export function translateAppServerNotification(method: string, params: Json): Js
   return null;
 }
 
+/**
+ * Early signs of a turn the exec-shaped events only report once a whole item is
+ * done: each reasoning headline as soon as it is written, and each suggestion's
+ * title as the JSON reply reaches it. Per-token deltas go no further than here.
+ */
+export class TurnDeltaTracker {
+  private readonly headlines = new Map<string, string>();
+  private readonly announced = new Set<string>();
+  private reply = "";
+  private replyScanned = 0;
+  private drafted = 0;
+
+  consume(method: string, params: Json): Json[] {
+    const delta = typeof params.delta === "string" ? params.delta : "";
+    if (!delta) {
+      return [];
+    }
+    if (method === "item/reasoning/summaryTextDelta") {
+      const key = `${String(params.itemId)}:${String(params.summaryIndex ?? 0)}`;
+      const text = (this.headlines.get(key) ?? "") + delta;
+      this.headlines.set(key, text);
+      const headline = /^\s*\*\*(.+?)\*\*/.exec(text)?.[1];
+      if (!headline || this.announced.has(key)) {
+        return [];
+      }
+      this.announced.add(key);
+      return [{ type: "reasoning.headline", item_id: params.itemId, text: headline }];
+    }
+    if (method === "item/agentMessage/delta") {
+      this.reply += delta;
+      const events: Json[] = [];
+      const pattern = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      pattern.lastIndex = this.replyScanned;
+      for (let match = pattern.exec(this.reply); match; match = pattern.exec(this.reply)) {
+        this.replyScanned = pattern.lastIndex;
+        this.drafted += 1;
+        let title = match[1];
+        try {
+          title = JSON.parse(`"${match[1]}"`) as string;
+        } catch {
+          // Shown as written.
+        }
+        events.push({ type: "suggestion.drafted", index: this.drafted, title });
+      }
+      return events;
+    }
+    return [];
+  }
+}
+
 function translateItem(item: Json | undefined): Json | null {
   if (!item || typeof item.type !== "string") {
     return null;
@@ -416,6 +466,7 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
     let settled = false;
     let timeoutTimer: NodeJS.Timeout | undefined;
     let unregister: () => void = () => undefined;
+    const deltas = new TurnDeltaTracker();
     const sink: TurnSink = {
       notify: (method, params) => {
         // A stopped turn on this thread can still report in: only this turn's events count.
@@ -428,6 +479,9 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
           return;
         } else if (turnOf && turnId === null) {
           return;
+        }
+        for (const early of deltas.consume(method, params)) {
+          emit(early);
         }
         const translated = translateAppServerNotification(method, params);
         if (!translated) {
@@ -515,6 +569,8 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
           input,
           ...(run.model ? { model: run.model } : {}),
           ...(run.effort ? { effort: run.effort } : {}),
+          // What the model is working on, while it thinks; it adds no measurable time.
+          summary: "auto",
           ...(run.outputSchema ? { outputSchema: run.outputSchema } : {})
         });
         const turn = (started.turn ?? {}) as Json;

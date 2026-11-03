@@ -1799,6 +1799,8 @@ export function buildCliArgs(
       "--json",
       "-c",
       'service_tier="fast"',
+      "-c",
+      'model_reasoning_summary="auto"',
       ...modelCliArgs(provider, modelOptions),
       "--skip-git-repo-check",
       // `exec resume` keeps the session's sandbox and rejects the flag. Full

@@ -2,7 +2,8 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeCodexAppServers, runCodexAppServer, type CodexAppServerRun } from "../server/codex-app-server";
+import { closeCodexAppServers, runCodexAppServer, type CodexAppServerRun, TurnDeltaTracker } from "../server/codex-app-server";
+import { CodexStreamParser } from "../server/agent-runtime";
 
 /** A `codex app-server` that logs each start and each request; a turn whose prompt says SLOW waits to be interrupted. */
 const FAKE = [
@@ -92,5 +93,33 @@ describe("kept-alive Codex app-server", () => {
     const first = await run("one", null);
     await run("two", first.threadId);
     expect(log().filter((line) => line === "spawn")).toHaveLength(2);
+  });
+});
+
+describe("early signs of a Codex turn", () => {
+  it("reports each reasoning headline once, as soon as it is written", () => {
+    const tracker = new TurnDeltaTracker();
+    const delta = (text: string, summaryIndex = 0) => tracker.consume("item/reasoning/summaryTextDelta", { itemId: "r1", summaryIndex, delta: text });
+    expect(delta("**Selecting wea")).toEqual([]);
+    expect(delta("ker paragraphs**\n\nThe second")).toEqual([{ type: "reasoning.headline", item_id: "r1", text: "Selecting weaker paragraphs" }]);
+    expect(delta(" paragraph repeats")).toEqual([]);
+    expect(delta("**Drafting**", 1)).toEqual([{ type: "reasoning.headline", item_id: "r1", text: "Drafting" }]);
+  });
+
+  it("names each suggestion as its title completes, and ignores quoted text that looks like one", () => {
+    const tracker = new TurnDeltaTracker();
+    const delta = (text: string) => tracker.consume("item/agentMessage/delta", { itemId: "m1", delta: text });
+    expect(delta('{"message":"x","suggestions":[{"title":"Tighten')).toEqual([]);
+    expect(delta(' \\"the\\" claim","original":"a \\"title\\": \\"no\\" b"')).toEqual([{ type: "suggestion.drafted", index: 1, title: 'Tighten "the" claim' }]);
+    expect(delta(',"replacement":"c"},{"title":"Second"')).toEqual([{ type: "suggestion.drafted", index: 2, title: "Second" }]);
+  });
+
+  it("turns them into progress, without repeating a headline when the item completes", () => {
+    const parser = new CodexStreamParser();
+    const line = (event: unknown) => parser.consume(JSON.stringify(event));
+    expect(line({ type: "reasoning.headline", item_id: "r1", text: "Selecting paragraphs" })).toEqual([{ kind: "status", stage: "thinking", detail: "Selecting paragraphs" }]);
+    expect(line({ type: "item.completed", item: { id: "r1", type: "reasoning", text: "**Selecting paragraphs**" } })).toEqual([]);
+    expect(line({ type: "item.completed", item: { id: "r2", type: "reasoning", text: "**Other**" } })).toEqual([{ kind: "status", stage: "thinking", detail: "Other" }]);
+    expect(line({ type: "suggestion.drafted", index: 2, title: "Second" })).toEqual([{ kind: "status", stage: "writing", detail: "Writing suggestion 2: Second" }]);
   });
 });

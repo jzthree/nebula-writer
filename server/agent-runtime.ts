@@ -596,6 +596,7 @@ export class CodexStreamParser {
   private sawResult = false;
   private ok = false;
   private readonly seenSearches = new Map<string, "start" | "query">();
+  private readonly headlineItems = new Set<string>();
 
   consume(line: string): AgentEvent[] {
     const trimmed = line.trim();
@@ -621,6 +622,18 @@ export class CodexStreamParser {
 
     if (type === "thread.compacted") {
       return [{ kind: "compacted" }];
+    }
+
+    if (type === "reasoning.headline" && typeof event.text === "string") {
+      if (typeof event.item_id === "string") {
+        this.headlineItems.add(event.item_id);
+      }
+      const headline = summarizeReasoning(event.text);
+      return headline ? [{ kind: "status", stage: "thinking", detail: headline }] : [];
+    }
+
+    if (type === "suggestion.drafted" && typeof event.title === "string") {
+      return [{ kind: "status", stage: "writing", detail: `Writing suggestion ${String(event.index)}: ${event.title.slice(0, 80)}` }];
     }
 
     if (type === "item.started" || type === "item.completed") {
@@ -662,6 +675,10 @@ export class CodexStreamParser {
     if (item.type === "reasoning") {
       if (!completed) {
         return [{ kind: "thinking" }];
+      }
+      // Its headlines already went out one by one as they were written.
+      if (typeof item.id === "string" && this.headlineItems.has(item.id)) {
+        return [];
       }
       const summary = typeof item.text === "string" ? summarizeReasoning(item.text) : "";
       return summary ? [{ kind: "status", stage: "thinking", detail: summary }] : [];
