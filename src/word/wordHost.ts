@@ -1442,12 +1442,16 @@ function planPieceOps(pieceTexts: string[], replacement: string): PieceOp[] {
 export function lostWordGaps(actual: string, replacement: string): Array<[string, string]> {
   const proposed = collapseWhitespace(normalizeWordText(replacement));
   const text = collapseWhitespace(normalizeWordText(actual));
-  const words = proposed.split(" ").filter(Boolean);
+  const present = new Set(text.split(" "));
+  const proposedWords = proposed.split(" ").filter(Boolean);
+  const written = new Set(proposedWords);
   const gaps: Array<[string, string]> = [];
-  for (let index = 0; index + 1 < words.length; index += 1) {
-    const glued = `${words[index]}${words[index + 1]}`;
-    if (text.includes(glued) && !proposed.includes(glued)) {
-      gaps.push([words[index], words[index + 1]]);
+  for (let index = 0; index + 1 < proposedWords.length; index += 1) {
+    const [left, right] = [proposedWords[index], proposedWords[index + 1]];
+    const glued = `${left}${right}`;
+    // A whole word of the text, not part of a longer one, with the spaced pair nowhere to be seen.
+    if (present.has(glued) && !written.has(glued) && !text.includes(`${left} ${right}`)) {
+      gaps.push([left, right]);
     }
   }
   return gaps;

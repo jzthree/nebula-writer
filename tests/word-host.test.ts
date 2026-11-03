@@ -712,6 +712,10 @@ describe("word host: spaces at the seams of a word-level edit", () => {
     expect(lostWordGaps("It learns theregulatory code here.", "learns the regulatory code")).toEqual([["the", "regulatory"]]);
     expect(lostWordGaps("It learns the regulatory code here.", "learns the regulatory code")).toEqual([]);
     expect(lostWordGaps("A co author", "A co author")).toEqual([]);
+    expect(lostWordGaps("grammar of DNA:Puffin explained", "grammar of DNA: Puffin explained")).toEqual([["DNA:", "Puffin"]]);
+    // Ordinary words that merely contain a proposed pair are left alone.
+    expect(lostWordGaps("An independent lab, in dependent cells.", "in dependent cells")).toEqual([]);
+    expect(lostWordGaps("A reindependent lab.", "in dependent cells")).toEqual([]);
   });
 
   it("puts back a space Word dropped when replacing a word, so the text reads as proposed", async () => {
