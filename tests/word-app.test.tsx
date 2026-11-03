@@ -475,6 +475,24 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.getByText("1 pending")).toBeInTheDocument());
   });
 
+  it("returns a card to pending without editing when the change was already undone in Word", async () => {
+    await renderPane();
+    send("Review the document.");
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Revert/ })).toBeInTheDocument());
+    for (const change of mock.trackedChangeItems(0, mock.text.length)) {
+      change.reject();
+    }
+    expect(mock.text).toContain(ORIGINAL);
+    const edits = mock.edits.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /Revert/ }));
+    await waitFor(() => expect(screen.getByText("reverted")).toBeInTheDocument());
+    expect(mock.edits.length).toBe(edits);
+    expect(mock.text).toContain(ORIGINAL);
+  });
+
   it("passes the chosen model and reasoning level to the request", async () => {
     await renderPane();
     fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "codex" } });

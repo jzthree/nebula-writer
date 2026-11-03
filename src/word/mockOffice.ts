@@ -121,6 +121,9 @@ export class MockWordHost {
   trackedChanges: MockTrackedChange[] = [];
   /** Lose the trailing space of a word replaced in place, as real Word has been seen to at revision boundaries. */
   losesReplacedTrailingSpace = false;
+  /** Paragraph proxies taken before a multi-paragraph replace stop covering any text, as real Word's have been seen to. */
+  replaceInvalidatesParagraphs = false;
+  paragraphEpoch = 0;
   /** Where each tracked change's new text starts now (later edits shift it). */
   private trackedAt = new Map<MockTrackedChange, number>();
   comments: MockComment[] = [];
@@ -851,6 +854,9 @@ export class MockRange {
     if (location !== "Replace") {
       throw new Error(`Mock Word: unsupported insert location ${location}`);
     }
+    if (this.host.replaceInvalidatesParagraphs && (text.includes("\n") || this.text.includes("\n"))) {
+      this.host.paragraphEpoch += 1;
+    }
     const next = this.host.replaceRange(this.from, this.to, this.host.losesReplacedTrailingSpace ? text.trimEnd() : text);
     return new MockRange(this.host, next.from, next.to);
   }
@@ -1013,16 +1019,19 @@ export class MockFont {
 }
 
 export class MockParagraph extends MockRange {
+  private readonly epoch: number;
+
   constructor(host: MockWordHost, public index: number) {
     const range = host.paragraphRange(index);
     super(host, range.from, range.to);
+    this.epoch = host.paragraphEpoch;
   }
 
   /** Word paragraph proxies follow the document as it changes; so does this one. */
   private refresh(): this {
     const range = this.host.paragraphRange(this.index);
     this.from = range.from;
-    this.to = range.to;
+    this.to = this.epoch === this.host.paragraphEpoch ? range.to : range.from;
     return this;
   }
 

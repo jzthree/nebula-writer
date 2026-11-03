@@ -1444,7 +1444,7 @@ export function App() {
       if (outcome.ok) {
         patchCard(suggestion.id, {
           outcome: "applied",
-          detail: `${outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)"}${outcome.result.restoredGaps ? ` · restored ${outcome.result.restoredGaps} missing space${outcome.result.restoredGaps === 1 ? "" : "s"}` : ""}`,
+          detail: `${outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)"}${outcome.result.restoredGaps ? ` · restored ${outcome.result.restoredGaps} missing space${outcome.result.restoredGaps === 1 ? "" : "s"}` : ""}${outcome.result.unformatted ? " · its bold/italic could not be set — check the formatting" : ""}`,
           error: null,
           matches: outcome.result.matches,
           matchIndex: outcome.result.matchIndex,
@@ -1568,8 +1568,10 @@ export function App() {
         if (rejected === "ambiguous") {
           throw new Error("The same tracked change appears more than once in the document — reject this one in Word's Review tab.");
         }
-        if (rejected === "rejected") {
-          // Done: the document is as it was, with no new markup.
+        const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+        const undoneInWord = suggestion.kind !== "table" && suggestion.kind !== "image" && Boolean(suggestion.replacement.trim()) && !flat(latest.bodyText).includes(flat(suggestion.replacement)) && flat(latest.bodyText).includes(flat(suggestion.original));
+        if (rejected === "rejected" || undoneInWord) {
+          // Done: the document is as it was, with no new markup (or the change was already undone in Word).
         } else if (inverse.kind === "table") {
           await applyTableEdit(latest, inverse, { trackChanges: settingsRef.current.trackChanges, highlightChanges: false, matchIndex: null });
         } else {

@@ -99,6 +99,8 @@ export interface ApplyResult {
   revisions?: TrackedRevision[] | null;
   /** Spaces Word lost at the seams of the edit, which the apply put back. */
   restoredGaps?: number;
+  /** The text landed, but the emphasis the suggestion asks for could not be set on all of it. */
+  unformatted?: boolean;
 }
 
 /** A Word tracked change, by what it is: enough to find it again among the document's tracked changes. */
@@ -973,6 +975,8 @@ async function runApplyPass(
     // Word-level edits are checked against the proposal afterwards; remember their paragraphs now.
     const gapScopes = new Map<Target, { first: Word.Paragraph; last: Word.Paragraph }>(ready.filter((target) => target.item.suggestion.replacement.trim()).map((target) => [target, { first: target.range.paragraphs.getFirst(), last: target.range.paragraphs.getLast() }]));
     const restoredGaps = new Map<Target, number>();
+    const replacedRanges = new Map<Target, Word.Range>();
+    const unformatted = new Set<Target>();
     // With tracking on, note each passage's tracked changes before the edit:
     // the ones that are new afterwards are this apply's, for a later revert.
     const revisionScopes = trackedChange && isSetSupported("WordApi", "1.6") ? new Map(ready.map((target) => [target, target.range.paragraphs.getFirst().getRange("Whole").expandTo(target.range.paragraphs.getLast().getRange("Whole"))])) : null;
@@ -1010,24 +1014,36 @@ async function runApplyPass(
       }
       strategies.set(target, "range");
       earliest = target.range.insertText(suggestion.replacement, "Replace");
+      // The paragraphs it replaced may be gone: this range is where the new text is.
+      replacedRanges.set(target, earliest);
     }
     if (earliest) {
       // One selection for the whole batch: Word scrolls once, to the first change.
       earliest.select("Select");
     }
     await context.sync();
-    await applyRequestedEmphasis(context, ready.filter((target) => !failures.has(target) && emphasisScopes.has(target)).map((target) => ({
-      suggestion: target.item.suggestion,
-      scope: emphasisScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }
-    })));
+    await applyRequestedEmphasis(context, ready.filter((target) => !failures.has(target) && emphasisScopes.has(target)).map((target) => {
+      const paragraphs = emphasisScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph };
+      return {
+        suggestion: target.item.suggestion,
+        scope: replacedRanges.get(target) ?? paragraphs.first.getRange("Whole").expandTo(paragraphs.last.getRange("Whole")),
+        onUnlocated: () => unformatted.add(target)
+      };
+    }));
     await restoreLostGaps(context, ready.filter((target) => !failures.has(target) && strategies.get(target) === "words").map((target) => ({
       ...(gapScopes.get(target) as { first: Word.Paragraph; last: Word.Paragraph }),
       replacement: target.item.suggestion.replacement,
       onRestored: () => restoredGaps.set(target, (restoredGaps.get(target) ?? 0) + 1)
     })));
-    const revisionsAfter = revisionScopes ? new Map([...revisionScopes].filter(([target]) => !failures.has(target)).map(([target, scope]) => [target, loadTrackedRevisions(scope)])) : null;
-    if (revisionsAfter?.size) {
-      await context.sync();
+    let revisionsAfter: Map<Target, Word.TrackedChangeCollection> | null = null;
+    if (revisionScopes) {
+      try {
+        revisionsAfter = new Map([...revisionScopes].filter(([target]) => !failures.has(target)).map(([target, scope]) => [target, loadTrackedRevisions(replacedRanges.get(target)?.expandTo(target.range) ?? scope)]));
+        await context.sync();
+      } catch {
+        // The edit stands; a later revert edits the text back instead of rejecting.
+        revisionsAfter = null;
+      }
     }
     for (const target of ready) {
       const failure = failures.get(target);
@@ -1040,7 +1056,7 @@ async function runApplyPass(
       outcomes.set(target.item.id, {
         id: target.item.id,
         ok: true,
-        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range", revisions: before && after ? newRevisions(before, after) : null, restoredGaps: restoredGaps.get(target) ?? 0 }
+        result: { trackedChange, matches: target.matches, matchIndex: target.matchIndex, strategy: strategies.get(target) ?? "range", revisions: before && after ? newRevisions(before, after) : null, restoredGaps: restoredGaps.get(target) ?? 0, unformatted: unformatted.has(target) }
       });
     }
   } finally {
@@ -1131,62 +1147,89 @@ export async function rejectTrackedRevisions(revisions: TrackedRevision[]): Prom
  */
 async function applyRequestedEmphasis(
   context: Word.RequestContext,
-  entries: Array<{ suggestion: Pick<AiSuggestion, "replacement" | "emphasis">; scope: { first: Word.Paragraph; last: Word.Paragraph } }>
+  entries: Array<{ suggestion: Pick<AiSuggestion, "replacement" | "emphasis">; scope: Word.Range; onUnlocated: () => void }>
 ): Promise<void> {
   if (!entries.length) {
     return;
   }
-  const loaded = entries.map((entry) => {
-    const range = entry.scope.first.getRange("Whole").expandTo(entry.scope.last.getRange("Whole"));
-    range.load("text");
-    // Words without their trailing space (what is read and formatted) and
-    // with it (formatted too when the next word shares the emphasis, so an
-    // underline or highlight runs through the space instead of breaking).
-    const words = range.getTextRanges(WORD_ENDING_MARKS, true);
-    words.load(PIECE_FONT_PROPERTIES);
-    const wide = range.getTextRanges(WORD_ENDING_MARKS, false);
-    wide.load("items/text");
-    return { ...entry, range, words, wide };
+  const withParagraphs = entries.map((entry) => {
+    const paragraphs = entry.scope.paragraphs;
+    paragraphs.load("items/text");
+    return { ...entry, paragraphs };
   });
+  await context.sync();
+  const loaded = withParagraphs.map((entry) => ({
+    ...entry,
+    // A word never runs across a paragraph mark, so each paragraph is read on its own.
+    pieces: (entry.paragraphs.items ?? []).map((paragraph) => {
+      // Words without their trailing space (what is read and formatted) and
+      // with it (formatted too when the next word shares the emphasis, so an
+      // underline or highlight runs through the space instead of breaking).
+      const words = paragraph.getTextRanges(WORD_ENDING_MARKS, true);
+      words.load(PIECE_FONT_PROPERTIES);
+      const wide = paragraph.getTextRanges(WORD_ENDING_MARKS, false);
+      wide.load("items/text");
+      return { text: normalizeWordText(paragraph.text ?? ""), words, wide };
+    })
+  }));
   await context.sync();
   let changed = false;
   for (const entry of loaded) {
-    const replacement = normalizeWordText(entry.suggestion.replacement).trim();
     const spans = entry.suggestion.emphasis?.replacement ?? [];
-    const scopeText = normalizeWordText(entry.range.text ?? "");
-    const at = replacement ? scopeText.indexOf(replacement) : -1;
-    if (at < 0) {
-      continue; // The new text could not be located; Word's inherited formatting stands.
+    // The replacement line by line: spans count from its start, Word's text is per paragraph.
+    const lines: Array<{ text: string; offset: number }> = [];
+    let offset = 0;
+    for (const line of normalizeWordText(entry.suggestion.replacement).split("\n")) {
+      if (line.trim()) {
+        lines.push({ text: line.trim(), offset: offset + (line.length - line.trimStart().length) });
+      }
+      offset += line.length + 1;
     }
-    const words = entry.words.items ?? [];
-    const wide = entry.wide.items ?? [];
-    const aligned = wide.length === words.length;
-    let cursor = 0;
-    const desiredByIndex: Array<EmphasisFormat | null> = words.map((piece) => {
-      const text = normalizeWordText(piece.text ?? "");
-      if (!text) {
-        return null;
+    let nextLine = 0;
+    let located = 0;
+    for (const paragraph of entry.pieces) {
+      const lineIndex = lines.findIndex((line, index) => index >= nextLine && paragraph.text.includes(line.text));
+      if (lineIndex < 0) {
+        continue;
       }
-      const found = scopeText.indexOf(text, cursor);
-      const start = found >= 0 ? found : cursor;
-      cursor = start + text.length;
-      const coreStart = start + (text.length - text.trimStart().length);
-      const coreEnd = start + text.trimEnd().length;
-      if (coreEnd <= coreStart || coreEnd <= at || coreStart >= at + replacement.length) {
-        return null;
-      }
-      return uniformEmphasis(spans, coreStart - at, coreEnd - at) ?? emphasisAt(spans, coreStart - at);
-    });
-    desiredByIndex.forEach((desired, index) => {
-      if (!desired) {
-        return;
-      }
-      const next = desiredByIndex[index + 1];
-      const throughSpace = aligned && next !== null && next !== undefined && sameFormat(next, desired) ? wide[index] : null;
-      if (setFontEmphasis(words[index].font, desired, throughSpace?.font ?? null)) {
-        changed = true;
-      }
-    });
+      nextLine = lineIndex + 1;
+      located += 1;
+      const line = lines[lineIndex];
+      const at = paragraph.text.indexOf(line.text);
+      const words = paragraph.words.items ?? [];
+      const wide = paragraph.wide.items ?? [];
+      const aligned = wide.length === words.length;
+      let cursor = 0;
+      const desiredByIndex: Array<EmphasisFormat | null> = words.map((piece) => {
+        const text = normalizeWordText(piece.text ?? "");
+        if (!text) {
+          return null;
+        }
+        const found = paragraph.text.indexOf(text, cursor);
+        const start = found >= 0 ? found : cursor;
+        cursor = start + text.length;
+        const coreStart = start + (text.length - text.trimStart().length);
+        const coreEnd = start + text.trimEnd().length;
+        if (coreEnd <= coreStart || coreEnd <= at || coreStart >= at + line.text.length) {
+          return null;
+        }
+        const from = coreStart - at + line.offset;
+        return uniformEmphasis(spans, from, coreEnd - at + line.offset) ?? emphasisAt(spans, from);
+      });
+      desiredByIndex.forEach((desired, index) => {
+        if (!desired) {
+          return;
+        }
+        const next = desiredByIndex[index + 1];
+        const throughSpace = aligned && next !== null && next !== undefined && sameFormat(next, desired) ? wide[index] : null;
+        if (setFontEmphasis(words[index].font, desired, throughSpace?.font ?? null)) {
+          changed = true;
+        }
+      });
+    }
+    if (located < lines.length) {
+      entry.onUnlocated();
+    }
   }
   if (changed) {
     await context.sync();

@@ -728,3 +728,37 @@ describe("word host: spaces at the seams of a word-level edit", () => {
     expect(mock.text).toBe("The model learns the regulatory code from data.");
   });
 });
+
+describe("word host: formatting a multi-paragraph replacement", () => {
+  const ORIGINAL = "First lead. First body text here.\nSecond lead. Second body text here.";
+  const REPLACEMENT = "New heading.\nSecond lead. Second body text here.\nFirst lead. First body text here.";
+  const suggestion = {
+    id: "s", title: "t", original: ORIGINAL, replacement: REPLACEMENT, rationale: "", confidence: 1, target: "global", status: "pending",
+    emphasis: { original: [{ start: 0, end: 11, bold: true }, { start: 34, end: 46, bold: true }], replacement: [{ start: 0, end: 12, bold: true }, { start: 13, end: 25, italic: true }, { start: 49, end: 60, italic: true }] }
+  } as AiSuggestion;
+
+  async function apply(stale: boolean) {
+    mock.uninstall();
+    mock = new MockWordHost({ paragraphs: [{ text: "Intro paragraph." }, { text: "First lead. First body text here.", emphasis: [{ start: 0, end: 11, bold: true }] }, { text: "Second lead. Second body text here.", emphasis: [{ start: 0, end: 12, bold: true }] }, { text: "Closing paragraph." }] }).install();
+    mock.replaceInvalidatesParagraphs = stale;
+    const [outcome] = await applySuggestions(await readDocumentSnapshot(detectCapabilities(true)), [{ id: "s", suggestion, matchIndex: 0 }], { trackChanges: "always" });
+    return outcome;
+  }
+
+  it.each([false, true])("sets each paragraph's emphasis on the new text, not the bold it inherited (stale paragraphs: %s)", async (stale) => {
+    const outcome = await apply(stale);
+    expect(outcome).toMatchObject({ ok: true, result: { strategy: "range", unformatted: false } });
+    const text = mock.text;
+    const span = (needle: string) => mock.emphasisOver(text.indexOf(needle), text.indexOf(needle) + needle.length);
+    expect(span("New heading.")).toEqual({ bold: true });
+    expect(span("Second lead.")).toEqual({ italic: true });
+    expect(span("First lead.")).toEqual({ italic: true });
+    expect(span("Second body text here.")).toEqual({});
+    expect(span("First body text here.")).toEqual({});
+  });
+
+  it("still records the tracked changes for a revert when the old paragraphs went stale", async () => {
+    const outcome = await apply(true);
+    expect(outcome.ok && outcome.result.revisions?.length).toBeGreaterThan(0);
+  });
+});
