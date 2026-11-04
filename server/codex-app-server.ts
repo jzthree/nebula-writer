@@ -98,6 +98,7 @@ export class TurnDeltaTracker {
   private reply = "";
   private replyScanned = 0;
   private drafted = 0;
+  private readonly objects = new SuggestionObjectScanner();
 
   consume(method: string, params: Json): Json[] {
     const delta = typeof params.delta === "string" ? params.delta : "";
@@ -131,9 +132,81 @@ export class TurnDeltaTracker {
         }
         events.push({ type: "suggestion.drafted", index: this.drafted, title });
       }
+      for (const item of this.objects.push(delta)) {
+        events.push({ type: "suggestion.parsed", item });
+      }
       return events;
     }
     return [];
+  }
+}
+
+/**
+ * Each object of the reply's "suggestions" array, as soon as its closing brace
+ * streams in. Strings are tracked so braces inside quoted text do not count.
+ */
+export class SuggestionObjectScanner {
+  private text = "";
+  private position = 0;
+  private arrayFound = false;
+  private depth = 0;
+  private inString = false;
+  private escaped = false;
+  private objectStart = -1;
+
+  push(delta: string): Json[] {
+    this.text += delta;
+    const found: Json[] = [];
+    if (!this.arrayFound) {
+      const match = /"suggestions"\s*:\s*\[/.exec(this.text);
+      if (!match) {
+        return found;
+      }
+      this.arrayFound = true;
+      this.position = match.index + match[0].length;
+    }
+    for (; this.position < this.text.length; this.position += 1) {
+      const char = this.text[this.position];
+      if (this.inString) {
+        if (this.escaped) {
+          this.escaped = false;
+        } else if (char === "\\") {
+          this.escaped = true;
+        } else if (char === '"') {
+          this.inString = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        this.inString = true;
+      } else if (char === "{" || char === "[") {
+        if (char === "{" && this.depth === 0) {
+          this.objectStart = this.position;
+        }
+        this.depth += 1;
+      } else if (char === "}" || char === "]") {
+        if (this.depth === 0) {
+          // The suggestions array closed.
+          this.position = this.text.length;
+          this.arrayFound = true;
+          this.text = "";
+          return found;
+        }
+        this.depth -= 1;
+        if (char === "}" && this.depth === 0 && this.objectStart >= 0) {
+          try {
+            const parsed = JSON.parse(this.text.slice(this.objectStart, this.position + 1)) as unknown;
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              found.push(parsed as Json);
+            }
+          } catch {
+            // Not a whole object after all; the final reply is the record.
+          }
+          this.objectStart = -1;
+        }
+      }
+    }
+    return found;
   }
 }
 

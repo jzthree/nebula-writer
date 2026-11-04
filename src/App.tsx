@@ -851,6 +851,7 @@ export function App() {
   const [aiProgressNote, setAiProgressNote] = useState<string | null>(null);
   // Latest stage of the AI request this tab is waiting on: pushed over the
   // /events socket as it changes, with GET /api/ai/progress as the fallback.
+  const [aiDrafts, setAiDrafts] = useState<AiSuggestion[]>([]);
   const liveAiProgressRef = useRef<{ stage: string; passIndex: number | null; passTotal: number | null; startedAt: string } | null>(null);
   const [remoteAiProgress, setRemoteAiProgress] = useState<{ provider: string; requestedBy: string | null; stage: string } | null>(null);
   const [remoteAiQueue, setRemoteAiQueue] = useState<Array<{ provider: string; requestedBy: string | null }>>([]);
@@ -1842,6 +1843,8 @@ export function App() {
           liveAiProgressRef.current = live && live.stage
             ? { stage: live.stage, passIndex: live.passIndex ?? null, passTotal: live.passTotal ?? null, startedAt: live.startedAt ?? new Date().toISOString() }
             : null;
+          const liveDrafts = (payload.progress as { drafts?: AiSuggestion[] } | null)?.drafts;
+          setAiDrafts(Array.isArray(liveDrafts) ? liveDrafts : []);
           const queue = (payload as { queue?: Array<{ provider?: string; requestedBy?: string | null }> }).queue;
           setRemoteAiQueue(Array.isArray(queue)
             ? queue.filter((entry) => entry?.provider).map((entry) => ({ provider: entry.provider as string, requestedBy: entry.requestedBy ?? null }))
@@ -2269,6 +2272,7 @@ export function App() {
   useEffect(() => {
     if (busy !== "Asking AI") {
       setAiProgressNote(null);
+      setAiDrafts([]);
       return;
     }
     let cancelled = false;
@@ -2297,6 +2301,7 @@ export function App() {
         liveAiProgressRef.current = progress
           ? { stage: progress.stage, passIndex: progress.passIndex, passTotal: progress.passTotal, startedAt: progress.startedAt }
           : null;
+        setAiDrafts(progress?.drafts ?? []);
         render();
       } catch {
         // Sidecar unreachable mid-request; keep the plain busy label.
@@ -7696,6 +7701,18 @@ export function App() {
                     </article>
                   ))}
                 </div>
+              ) : null}
+              {busy === "Asking AI" && aiDrafts.length ? (
+                <ol className="ai-draft-list" aria-label="Suggestions so far">
+                  {aiDrafts.map((draft) => (
+                    <li key={draft.id} className="ai-draft" aria-label={`Draft suggestion: ${draft.title || "Suggested revision"}`}>
+                      <strong>{draft.title || "Suggested revision"}</strong> <small title="Accept and the rest arrive when the turn ends and every suggestion is checked">drafting…</small>
+                      <p><del>{draft.original}</del></p>
+                      {draft.replacement ? <p><ins>{draft.replacement}</ins></p> : null}
+                      {draft.rationale ? <p className="ai-draft-rationale">{draft.rationale}</p> : null}
+                    </li>
+                  ))}
+                </ol>
               ) : null}
               {reviewFilter === "source-revisions" && sourceTrackedChanges.length ? (
                 <div className="empty-state source-revision-handoff" role="status" aria-label="Source revisions use document pane">

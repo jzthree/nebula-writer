@@ -262,6 +262,8 @@ export interface AiProgressSnapshot {
   updatedAt: string;
   /** Configured provider timeout, or null when the run has no time limit. */
   timeoutMs: number | null;
+  /** Suggestions finished while the turn still runs (previews; the reply carries the checked ones). */
+  drafts?: AiSuggestion[];
 }
 
 export async function getAiProgressFromSidecar(apiBase = ""): Promise<{ progress: AiProgressSnapshot | null }> {

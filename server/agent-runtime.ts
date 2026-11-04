@@ -64,7 +64,9 @@ export type AgentEvent =
   | { kind: "result"; ok: boolean; text: string; cost: number | null; sessionId: string | null }
   | { kind: "error"; message: string }
   /** The CLI compacted the thread's context: earlier turns are summarized, their full text no longer held. */
-  | { kind: "compacted" };
+  | { kind: "compacted" }
+  /** One suggestion of a reply still streaming, as the model wrote it (not yet checked). */
+  | { kind: "draft"; item: Record<string, unknown> };
 
 export interface AgentTurnOptions {
   provider: CliProviderName;
@@ -630,6 +632,10 @@ export class CodexStreamParser {
       }
       const headline = summarizeReasoning(event.text);
       return headline ? [{ kind: "status", stage: "thinking", detail: headline }] : [];
+    }
+
+    if (type === "suggestion.parsed" && event.item && typeof event.item === "object") {
+      return [{ kind: "draft", item: event.item as Record<string, unknown> }];
     }
 
     if (type === "suggestion.drafted" && typeof event.title === "string") {

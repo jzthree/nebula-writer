@@ -788,7 +788,7 @@ export function App() {
           const activity = text && (isTool || !last || last.summary !== text)
             ? [...turn.activity, { at: new Date().toISOString(), kind: isTool ? "tool" as const : "status" as const, summary: text }]
             : turn.activity;
-          return { ...turn, progress: text, activity };
+          return { ...turn, progress: text, activity, ...(progress?.drafts?.length ? { drafts: progress.drafts } : {}) };
         }));
       }
     });
@@ -1021,7 +1021,7 @@ export function App() {
       }
       const replyText = response.ai.message || (fresh.length ? `${fresh.length} suggestion${fresh.length === 1 ? "" : "s"} staged.` : "No anchored suggestions were returned.");
       const activity: AiActivityEntry[] | undefined = response.ai.activity?.length ? response.ai.activity : undefined;
-      patchTurn(assistantTurnId, { text: replyText, status: "done", suggestionIds: fresh.map((suggestion) => suggestion.id), progress: null, engine: response.ai.modelOptions ? engineLabel(provider, response.ai.modelOptions) : engine, ...(activity ? { activity } : {}) });
+      patchTurn(assistantTurnId, { text: replyText, status: "done", drafts: undefined, suggestionIds: fresh.map((suggestion) => suggestion.id), progress: null, engine: response.ai.modelOptions ? engineLabel(provider, response.ai.modelOptions) : engine, ...(activity ? { activity } : {}) });
       setRequestState(fresh.length ? "done" : "empty");
       const assistantMessage: WriterChatMessage = { id: assistantTurnId, role: "assistant", content: replyText, author: engine, createdAt: new Date().toISOString() };
       // The first request creates the session, so the author's turn may not have had one to land in yet.

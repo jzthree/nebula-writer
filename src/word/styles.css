@@ -710,3 +710,6 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   font-weight: 600;
   pointer-events: none;
 }
+
+.wp-card.draft { opacity: 0.85; border-style: dashed; }
+.wp-card.draft .wp-confidence { font-style: italic; }

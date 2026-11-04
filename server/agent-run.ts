@@ -39,6 +39,8 @@ export interface AgentRunContext {
   commentsStatus?: DocumentCommentsStatus | null;
   maxSuggestions: number | null;
   staged: AiSuggestion[];
+  /** Called after each staging call that added suggestions, while the turn still runs. */
+  onStaged?: ((staged: AiSuggestion[]) => void) | null;
   rejectedCount: number;
   createdAt: number;
 }
@@ -227,6 +229,9 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
     const staged = { ...verdict.suggestion, ref };
     run.staged.push(staged);
     results.push({ index, staged: true, id: staged.id, ref, ...(verdict.note ? { note: verdict.note } : {}) });
+  }
+  if (results.some((result) => result.staged)) {
+    run.onStaged?.([...run.staged]);
   }
   return {
     results,

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiSuggestion, WordLiveSuggestionRequest, WriterChatMessage } from "../src/shared";
 import { MockWordHost, sampleGrantDocument } from "../src/word/mockOffice";
@@ -27,7 +27,7 @@ const ORIGINAL = "Chromatin accessibility is actually a very important determina
 const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
 
 // The saved conversation: the real store, in memory, behind the client calls.
-const sessionFetch = vi.hoisted(() => ({ hold: false, release: null as null | ((payload: unknown) => void), onUpdated: null as null | (() => void) }));
+const sessionFetch = vi.hoisted(() => ({ hold: false, release: null as null | ((payload: unknown) => void), onUpdated: null as null | (() => void), onProgress: null as null | ((progress: unknown, queue: unknown[]) => void) }));
 const conversations = vi.hoisted(() => ({ store: null as null | import("../server/conversation-store").ConversationStore, writes: 0 }));
 vi.mock("../src/sidecarClient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sidecarClient")>()),
@@ -237,8 +237,9 @@ vi.mock("../src/word/writerClient", () => ({
   updateSuggestionStatus: async (id: string, status: string, context: { decisionNote?: string } = {}) => {
     captured.statusUpdates.push({ id, status, note: context.decisionNote });
   },
-  subscribeWriterEvents: (handlers: { onSessionUpdated?: () => void }) => {
+  subscribeWriterEvents: (handlers: { onSessionUpdated?: () => void; onAiProgress?: (progress: unknown, queue: unknown[]) => void }) => {
     sessionFetch.onUpdated = handlers.onSessionUpdated ?? null;
+    sessionFetch.onProgress = handlers.onAiProgress ?? null;
     return () => undefined;
   },
   uploadAttachment: async (file: File) => ({ name: file.name, path: `/tmp/attachments/${file.name}`, text: "Reference text extracted from the file.", truncated: false })
@@ -491,6 +492,20 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.getByText("reverted")).toBeInTheDocument());
     expect(mock.edits.length).toBe(edits);
     expect(mock.text).toContain(ORIGINAL);
+  });
+
+  it("shows suggestions finished mid-turn as previews, and the checked cards when the turn ends", async () => {
+    await renderPane();
+    send("Slow: review the document.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    const draft = { id: "d-1", ref: "S1", title: "Draft title here", original: ORIGINAL, replacement: REPLACEMENT, rationale: "Shorter.", confidence: 0.8, target: "global", status: "pending" };
+    act(() => sessionFetch.onProgress?.({ provider: "claude", stage: "Writing suggestion 1: Draft title here", passIndex: null, passTotal: null, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), timeoutMs: null, drafts: [draft] }, []));
+    const preview = await screen.findByLabelText("Draft suggestion: Draft title here");
+    expect(preview.textContent).toContain("drafting…");
+    expect(within(preview).queryByRole("button", { name: /Apply/ })).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument(), { timeout: 3000 });
+    expect(screen.queryByLabelText("Draft suggestion: Draft title here")).not.toBeInTheDocument();
   });
 
   it("passes the chosen model and reasoning level to the request", async () => {

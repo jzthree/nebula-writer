@@ -100,6 +100,8 @@ export interface AiProgressSnapshot {
   updatedAt: string;
   /** Configured provider timeout, or null when the run has no time limit. */
   timeoutMs: number | null;
+  /** Suggestions the model has finished while the turn still runs: previews, checked like the final ones. */
+  drafts?: AiSuggestion[];
 }
 
 // Single-slot progress tracker for the local single-user sidecar. The UI polls
@@ -161,8 +163,18 @@ function setAiProgress(provider: string, stage: string, pass?: { index: number; 
     passTotal: pass?.total ?? null,
     startedAt: currentAiProgress?.startedAt ?? now,
     updatedAt: now,
-    timeoutMs: cliTimeoutMs() || null
+    timeoutMs: cliTimeoutMs() || null,
+    ...(currentAiProgress?.drafts?.length ? { drafts: currentAiProgress.drafts } : {})
   };
+  publishAiState();
+}
+
+/** Show suggestions finished mid-turn to every client, alongside the stage. */
+function setAiProgressDrafts(drafts: AiSuggestion[]): void {
+  if (!currentAiProgress) {
+    return;
+  }
+  currentAiProgress = { ...currentAiProgress, drafts, updatedAt: new Date().toISOString() };
   publishAiState();
 }
 
@@ -448,6 +460,7 @@ function withModelOptions(request: AiRequest, response: AiResponse): AiResponse 
 // the same salvage behavior coverage passes had.
 async function agenticCliProvider(provider: CliProviderName, request: AiRequest, options: AiRunOptions = {}): Promise<AiResponse> {
   const run = createAgentRun(request);
+  run.onStaged = (staged) => setAiProgressDrafts(staged);
   try {
     throwIfAborted(provider, options.signal);
     setAiProgress(provider, `The ${providerLabel(provider)} agent is starting`, undefined, request.requestedBy ?? null);
@@ -1863,6 +1876,7 @@ function createOneShotProgressReporter(
   const label = providerLabel(provider);
   let lastStage = "";
   let lastOutputPublishedAt = 0;
+  const drafts: AiSuggestion[] = [];
   const publish = (stage: string, force = false, tool = false) => {
     if (!force && stage === lastStage) {
       return;
@@ -1898,6 +1912,14 @@ function createOneShotProgressReporter(
       case "result":
         publish(event.ok ? "Checking the suggestions" : "Reporting a provider error");
         break;
+      case "draft": {
+        const checked = normalizeSuggestion(event.item as Partial<AiSuggestion>, request);
+        if ("suggestion" in checked) {
+          drafts.push({ ...checked.suggestion, ref: `S${drafts.length + 1}` });
+          setAiProgressDrafts([...drafts]);
+        }
+        break;
+      }
       default:
         break;
     }

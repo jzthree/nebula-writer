@@ -4781,3 +4781,10 @@ button:disabled {
 }
 .message-show-earlier:hover:not(:disabled) { border-color: var(--line-strong); }
 .message-show-earlier:disabled { cursor: progress; opacity: 0.7; }
+
+.ai-draft-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.ai-draft { border: 1px dashed var(--border, #c8c8c8); border-radius: 8px; padding: 8px 10px; opacity: 0.88; }
+.ai-draft small { font-style: italic; opacity: 0.75; }
+.ai-draft p { margin: 4px 0 0; }
+.ai-draft del { opacity: 0.7; }
+.ai-draft-rationale { font-size: 0.9em; opacity: 0.8; }

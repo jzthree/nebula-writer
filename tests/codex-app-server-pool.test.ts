@@ -2,7 +2,7 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeCodexAppServers, runCodexAppServer, type CodexAppServerRun, TurnDeltaTracker } from "../server/codex-app-server";
+import { closeCodexAppServers, runCodexAppServer, type CodexAppServerRun, SuggestionObjectScanner, TurnDeltaTracker } from "../server/codex-app-server";
 import { CodexStreamParser } from "../server/agent-runtime";
 
 /** A `codex app-server` that logs each start and each request; a turn whose prompt says SLOW waits to be interrupted. */
@@ -108,7 +108,7 @@ describe("early signs of a Codex turn", () => {
 
   it("names each suggestion as its title completes, and ignores quoted text that looks like one", () => {
     const tracker = new TurnDeltaTracker();
-    const delta = (text: string) => tracker.consume("item/agentMessage/delta", { itemId: "m1", delta: text });
+    const delta = (text: string) => tracker.consume("item/agentMessage/delta", { itemId: "m1", delta: text }).filter((event) => event.type === "suggestion.drafted");
     expect(delta('{"message":"x","suggestions":[{"title":"Tighten')).toEqual([]);
     expect(delta(' \\"the\\" claim","original":"a \\"title\\": \\"no\\" b"')).toEqual([{ type: "suggestion.drafted", index: 1, title: 'Tighten "the" claim' }]);
     expect(delta(',"replacement":"c"},{"title":"Second"')).toEqual([{ type: "suggestion.drafted", index: 2, title: "Second" }]);
@@ -121,5 +121,32 @@ describe("early signs of a Codex turn", () => {
     expect(line({ type: "item.completed", item: { id: "r1", type: "reasoning", text: "**Selecting paragraphs**" } })).toEqual([]);
     expect(line({ type: "item.completed", item: { id: "r2", type: "reasoning", text: "**Other**" } })).toEqual([{ kind: "status", stage: "thinking", detail: "Other" }]);
     expect(line({ type: "suggestion.drafted", index: 2, title: "Second" })).toEqual([{ kind: "status", stage: "writing", detail: "Writing suggestion 2: Second" }]);
+  });
+});
+
+describe("suggestions of a streaming reply", () => {
+  it("yields each suggestion object as its closing brace arrives, however the stream is split", () => {
+    const reply = JSON.stringify({
+      message: "Done {not this}",
+      suggestions: [
+        { title: "One", original: "a } b", replacement: "c \"{\" d", rationale: "r", confidence: 0.8 },
+        { title: "Table", tableAction: "replace", tableIndex: 0, tableRows: [["x", "y"], ["{", "]"]], original: "", replacement: "" }
+      ]
+    });
+    for (const size of [1, 3, 7, reply.length]) {
+      const scanner = new SuggestionObjectScanner();
+      const found: Array<Record<string, unknown>> = [];
+      for (let at = 0; at < reply.length; at += size) {
+        found.push(...scanner.push(reply.slice(at, at + size)));
+      }
+      expect(found.map((item) => item.title)).toEqual(["One", "Table"]);
+      expect(found[0].original).toBe("a } b");
+      expect(found[1].tableRows).toEqual([["x", "y"], ["{", "]"]]);
+    }
+  });
+
+  it("passes them on as drafts", () => {
+    const parser = new CodexStreamParser();
+    expect(parser.consume(JSON.stringify({ type: "suggestion.parsed", item: { title: "One" } }))).toEqual([{ kind: "draft", item: { title: "One" } }]);
   });
 });

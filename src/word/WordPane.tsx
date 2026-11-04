@@ -122,7 +122,7 @@ export interface SentSummary {
 
 export type ChatTurn =
   | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean; selectionExcerpt?: string }
-  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[] }
+  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[]; drafts?: AiSuggestion[] }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
 export interface ModelControls {
@@ -882,6 +882,7 @@ function TurnView(props: {
               {turn.activity.slice(-4).map((entry, index) => <li key={`${entry.at}-${index}`} className={entry.kind}>{entry.summary}</li>)}
             </ol>
           ) : null}
+          {turn.drafts?.length ? <DraftCards drafts={turn.drafts} /> : null}
         </>
       ) : turn.status === "error" ? (
         <p className="wp-turn-text error" role="alert">{turn.text}</p>
@@ -1309,6 +1310,25 @@ function tidy(text: string): string {
 const LONG_CHANGE_CHARS = 900;
 
 /** The proposed change itself: an inline word diff when one reads well, else the original and the revised text in full. */
+/** Suggestions finished while the turn still runs: read now, act once the turn ends and they are checked. */
+function DraftCards(props: { drafts: AiSuggestion[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  return (
+    <ol className="wp-cards drafts" aria-label="Suggestions so far">
+      {props.drafts.map((suggestion) => (
+        <li key={suggestion.id} className="wp-card draft" aria-label={`Draft suggestion: ${suggestion.title || "Suggested revision"}`}>
+          <div className="wp-card-top">
+            <h3>{suggestion.title || "Suggested revision"}</h3>
+            <span className="wp-confidence" title="Apply, Comment and the rest arrive when the turn ends and Writer has checked every suggestion">drafting…</span>
+          </div>
+          <SuggestionText suggestion={suggestion} expanded={expanded === suggestion.id} onToggle={() => setExpanded((current) => (current === suggestion.id ? null : suggestion.id))} />
+          {suggestion.rationale ? <p className="wp-rationale">{tidy(suggestion.rationale)}</p> : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; onToggle: () => void }) {
   const { suggestion } = props;
   if (suggestion.kind === "image" && suggestion.image?.action === "insert") {
