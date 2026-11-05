@@ -73,6 +73,7 @@ import {
 } from "./WordPane";
 import type { MockWordHost } from "./mockOffice";
 import { ConversationSync, type ConversationState } from "../conversationSync";
+import { loadedEntryScript, reloadPaneIfOutdated, servedEntryScript } from "./paneUpdate";
 import { fetchConversationFromSidecar, resetConversationOnSidecar, writeConversationToSidecar } from "../sidecarClient";
 
 interface ModelPreference {
@@ -213,6 +214,28 @@ function mockHost(): MockWordHost | null {
   return mock ?? null;
 }
 
+/** What a self-update reload carries over that the saved conversation does not: attachments and a half-typed message. */
+const PANE_UPDATE_CHECK_MS = 30_000;
+const PANE_CARRY_KEY = "nebula-writer:pane-update-carry";
+interface PaneCarry { attachments: AiAttachment[]; instruction: string }
+let carried: PaneCarry | null | undefined;
+function takeCarry(): PaneCarry | null {
+  if (carried === undefined) {
+    carried = null;
+    try {
+      const raw = sessionStorage.getItem(PANE_CARRY_KEY);
+      sessionStorage.removeItem(PANE_CARRY_KEY);
+      const value = raw ? JSON.parse(raw) as Partial<PaneCarry> : null;
+      if (value) {
+        carried = { attachments: Array.isArray(value.attachments) ? value.attachments : [], instruction: typeof value.instruction === "string" ? value.instruction : "" };
+      }
+    } catch {
+      // No session storage in this webview: nothing was carried.
+    }
+  }
+  return carried;
+}
+
 let turnCounter = 0;
 function turnId(): string {
   turnCounter += 1;
@@ -233,7 +256,7 @@ export function App() {
   const [catalogs, setCatalogs] = useState<AiProviderCatalog[] | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [settings, setSettings] = useState<PaneSettings>(loadSettings);
-  const [instruction, setInstruction] = useState("");
+  const [instruction, setInstruction] = useState(() => takeCarry()?.instruction ?? "");
   const [requestState, setRequestState] = useState<RequestState>("idle");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [suggestions, setSuggestions] = useState<AiSuggestion[]>([]);
@@ -242,10 +265,12 @@ export function App() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [sharedWithAgents, setSharedWithAgents] = useState(false);
-  const [attachments, setAttachments] = useState<AiAttachment[]>([]);
+  const [attachments, setAttachments] = useState<AiAttachment[]>(() => takeCarry()?.attachments ?? []);
   // Files still uploading: shown by name at once, and awaited by a send so none is left out.
   const [uploading, setUploading] = useState<Array<{ id: number; name: string }>>([]);
   const uploadsRef = useRef(new Set<Promise<unknown>>());
+  const instructionRef = useRef(instruction);
+  instructionRef.current = instruction;
   const uploadSeqRef = useRef(0);
 
   const capabilitiesRef = useRef(capabilities);
@@ -1734,6 +1759,34 @@ export function App() {
       document.querySelector<HTMLElement>(`[data-suggestion-id="${next.id}"]`)?.scrollIntoView({ block: "nearest" });
     }
   }, [activeId, locate, pendingSuggestions]);
+
+  useEffect(() => {
+    // A rebuilt Writer reaches the open pane by itself (paneUpdate.ts), between turns.
+    let stopped = false;
+    const check = () => {
+      void reloadPaneIfOutdated({
+        loaded: () => loadedEntryScript(),
+        served: () => servedEntryScript(),
+        idle: () => !stopped && !runningRef.current && !busyRef.current && !uploadsRef.current.size && conversationKeyRef.current !== null,
+        reload: () => {
+          stopped = true;
+          try {
+            sessionStorage.setItem(PANE_CARRY_KEY, JSON.stringify({ attachments: attachmentsRef.current, instruction: instructionRef.current } satisfies PaneCarry));
+          } catch {
+            // Without session storage the attachments need re-adding; the conversation is saved regardless.
+          }
+          void conversationSyncRef.current?.flush().finally(() => window.location.reload());
+        }
+      });
+    };
+    const timer = setInterval(check, PANE_UPDATE_CHECK_MS);
+    window.addEventListener("focus", check);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", check);
+    };
+  }, []);
 
   useEffect(() => {
     // Keyboard handling is deliberately minimal in a pane where people type:
