@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nebula Writer for Google Docs",
   "version": "0.1.0",
-  "description": "Writer's review pane beside your Google Doc — suggestions from the Codex and Claude CLIs running on your own machine.",
+  "description": "Writer's review pane beside your Google Doc \u2014 suggestions from the Codex and Claude CLIs running on your own machine.",
   "action": {
     "default_title": "Open Nebula Writer"
   },
@@ -14,14 +14,27 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://docs.google.com/document/*"],
-      "js": ["dist/content.js"],
+      "matches": [
+        "https://docs.google.com/document/*"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
-  "permissions": ["sidePanel", "identity", "tabs", "alarms", "scripting"],
-  "optional_host_permissions": ["https://www.googleapis.com/*"],
+  "permissions": [
+    "sidePanel",
+    "identity",
+    "identity.email",
+    "tabs",
+    "alarms",
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "https://www.googleapis.com/*"
+  ],
   "host_permissions": [
     "https://docs.googleapis.com/*",
     "https://docs.google.com/*",
@@ -30,6 +43,8 @@
   ],
   "oauth2": {
     "client_id": "__CLIENT_ID__",
-    "scopes": ["https://www.googleapis.com/auth/documents"]
+    "scopes": [
+      "https://www.googleapis.com/auth/documents"
+    ]
   }
 }

@@ -11,6 +11,7 @@ import { createDocsSelectionReader } from "./selection";
 import { googleDocId } from "./documentTab";
 import { locateDocsPassage } from "./locateUi";
 import type { DocsLocatePlan } from "./locate";
+import { accountEmailFromLabels } from "./docsAccess";
 
 const selectionReader = createDocsSelectionReader(document);
 let locating = false;
@@ -19,6 +20,11 @@ let disposed = false;
 chrome.runtime.onMessage.addListener((message: { type?: string; docId?: string; plan?: DocsLocatePlan }, _sender, respond) => {
   if (message?.type === "nebula-selection") {
     respond({ text: selectionReader.read(), url: location.href });
+    return true;
+  }
+  if (message?.type === "nebula-account") {
+    const labels = Array.from(document.querySelectorAll("[aria-label]"), (element) => element.getAttribute("aria-label"));
+    respond({ email: accountEmailFromLabels(labels) });
     return true;
   }
   if (message?.type === "nebula-locate") {

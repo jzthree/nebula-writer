@@ -12,6 +12,7 @@ import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
 import { openCommentPicker } from "./commentPicker";
+import { docsAccessDeniedMessage } from "./docsAccess";
 import { planDocsLocate } from "./locate";
 import { locateInDocumentTab } from "./locateBridge";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
@@ -142,6 +143,10 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     await chrome.identity.removeCachedAuthToken({ token: bearer });
     return api<T>(path, init, false);
   }
+  if (response.status === 403 || response.status === 404) {
+    // Usually the profile's account cannot see a doc opened as another account.
+    throw new Error(await accessDenied(init.method === "POST"));
+  }
   if (!response.ok) {
     let detail = `${response.status}`;
     try {
@@ -153,6 +158,15 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     throw new Error(`Google Docs API: ${detail}`);
   }
   return response.json() as Promise<T>;
+}
+
+async function accessDenied(editing: boolean): Promise<string> {
+  const profileEmail = await chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY })
+    .then((info) => info.email || null).catch(() => null);
+  const docEmail = await activeDoc()
+    .then(({ tabId }) => chrome.tabs.sendMessage(tabId, { type: "nebula-account" }) as Promise<{ email?: string | null } | undefined>)
+    .then((reply) => reply?.email ?? null).catch(() => null);
+  return docsAccessDeniedMessage(profileEmail, docEmail, editing);
 }
 
 /* ------------------------------------------------------------------------- */
