@@ -243,7 +243,10 @@ export function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [sharedWithAgents, setSharedWithAgents] = useState(false);
   const [attachments, setAttachments] = useState<AiAttachment[]>([]);
-  const [uploading, setUploading] = useState(0);
+  // Files still uploading: shown by name at once, and awaited by a send so none is left out.
+  const [uploading, setUploading] = useState<Array<{ id: number; name: string }>>([]);
+  const uploadsRef = useRef(new Set<Promise<unknown>>());
+  const uploadSeqRef = useRef(0);
 
   const capabilitiesRef = useRef(capabilities);
   const snapshotRef = useRef<WordDocumentSnapshot | null>(null);
@@ -955,6 +958,9 @@ export function App() {
       const resolved = resolveScope(settingsRef.current.scope, snap, currentFocus);
       const hostContext = buildHostContext(snap, currentFocus, trailRef.current);
       const documentImages = await syncDocumentImages(snap);
+      if (uploadsRef.current.size) {
+        await Promise.allSettled([...uploadsRef.current]);
+      }
       const sessionKey = `${provider}:${snap.documentName ?? "untitled"}`;
       const agentSessionId = agentSessionsRef.current[sessionKey] ?? null;
       const conversation = buildConversationDigest(turnsRef.current, suggestionsRef.current, cardsRef.current);
@@ -1670,7 +1676,7 @@ export function App() {
   /* ------------------------------------------------------------------ */
 
   const addFiles = useCallback((files: File[]) => {
-    const room = AI_ATTACHMENT_LIMIT - attachmentsRef.current.length;
+    const room = AI_ATTACHMENT_LIMIT - attachmentsRef.current.length - uploadsRef.current.size;
     if (room <= 0) {
       showNotice("error", `At most ${AI_ATTACHMENT_LIMIT} reference files can be attached — remove one first.`);
       return;
@@ -1679,16 +1685,22 @@ export function App() {
     if (accepted.length < files.length) {
       showNotice("info", `Only ${accepted.length} of ${files.length} files attached (limit ${AI_ATTACHMENT_LIMIT}).`);
     }
-    setUploading((count) => count + accepted.length);
     for (const file of accepted) {
-      uploadAttachment(file).then((attachment) => {
-        setAttachments((current) => [...current.filter((item) => item.name !== attachment.name), attachment]);
+      const id = (uploadSeqRef.current += 1);
+      setUploading((current) => [...current, { id, name: file.name }]);
+      const upload = uploadAttachment(file).then((attachment) => {
+        const next = [...attachmentsRef.current.filter((item) => item.name !== attachment.name), attachment];
+        // The ref moves now, not at the next render: a send waiting on this upload reads it straight after.
+        attachmentsRef.current = next;
+        setAttachments(next);
         showNotice("success", `Attached ${attachment.name}${attachment.text.length ? ` (${(attachment.chars ?? attachment.text.length).toLocaleString()} characters extracted${attachment.truncated && !attachment.textPath ? ", truncated" : ""})` : " — no text could be extracted"}.`);
       }).catch((error) => {
         showNotice("error", `Could not attach ${file.name}: ${errorMessage(error)}`);
       }).finally(() => {
-        setUploading((count) => Math.max(0, count - 1));
+        uploadsRef.current.delete(upload);
+        setUploading((current) => current.filter((item) => item.id !== id));
       });
+      uploadsRef.current.add(upload);
     }
   }, [showNotice]);
 

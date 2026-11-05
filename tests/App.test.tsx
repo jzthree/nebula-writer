@@ -4945,7 +4945,7 @@ describe("App suggestion review", () => {
       target: { files: [new File(["reviewer notes"], "notes.md", { type: "text/markdown" })] }
     });
 
-    expect(await screen.findByText("notes.md")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Remove attachment notes.md from context" })).toBeInTheDocument();
     expect(uploadAiAttachment).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByLabelText("AI instruction"), {

@@ -759,7 +759,12 @@ export function App() {
   // sidecar (the machine the CLI runs on); the chip here holds the returned
   // { name, path, text } and clears once the request is sent.
   const [pendingAttachments, setPendingAttachments] = useState<AiAttachment[]>([]);
-  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  // Files still uploading: shown by name at once, and awaited by a send so none is left out.
+  const [attachmentUploads, setAttachmentUploads] = useState<Array<{ id: number; name: string }>>([]);
+  const attachmentUploadsRef = useRef(new Set<Promise<unknown>>());
+  const attachmentUploadSeqRef = useRef(0);
+  const pendingAttachmentsRef = useRef<AiAttachment[]>([]);
+  pendingAttachmentsRef.current = pendingAttachments;
   const [agentTerminalBusy, setAgentTerminalBusy] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -4309,25 +4314,29 @@ export function App() {
       setSetupGuideOpen(true);
       return;
     }
-    const room = AI_ATTACHMENT_LIMIT - pendingAttachments.length;
+    const room = AI_ATTACHMENT_LIMIT - pendingAttachmentsRef.current.length - attachmentUploadsRef.current.size;
     if (room <= 0) {
       setError(`AI requests support at most ${AI_ATTACHMENT_LIMIT} attachments; remove one first.`);
       return;
     }
-    setAttachmentBusy(true);
     setError(null);
-    try {
-      for (const file of list.slice(0, room)) {
-        const attachment = await uploadAiAttachment(file, localAiActiveRef.current ? "local" : "sidecar");
-        setPendingAttachments((current) => [...current, attachment]);
-      }
-      if (list.length > room) {
-        setError(`Attached the first ${room} file${room === 1 ? "" : "s"}; AI requests support at most ${AI_ATTACHMENT_LIMIT} attachments.`);
-      }
-    } catch (uploadError) {
-      setError(describeError("Attaching the file failed", uploadError, "the Writer sidecar did not accept the upload"));
-    } finally {
-      setAttachmentBusy(false);
+    if (list.length > room) {
+      setError(`Attached the first ${room} file${room === 1 ? "" : "s"}; AI requests support at most ${AI_ATTACHMENT_LIMIT} attachments.`);
+    }
+    for (const file of list.slice(0, room)) {
+      const id = (attachmentUploadSeqRef.current += 1);
+      setAttachmentUploads((current) => [...current, { id, name: file.name }]);
+      const upload = uploadAiAttachment(file, localAiActiveRef.current ? "local" : "sidecar").then((attachment) => {
+        // The ref moves now, not at the next render: a send waiting on this upload reads it straight after.
+        pendingAttachmentsRef.current = [...pendingAttachmentsRef.current, attachment];
+        setPendingAttachments(pendingAttachmentsRef.current);
+      }).catch((uploadError) => {
+        setError(describeError(`Attaching ${file.name} failed`, uploadError, "the Writer sidecar did not accept the upload"));
+      }).finally(() => {
+        attachmentUploadsRef.current.delete(upload);
+        setAttachmentUploads((current) => current.filter((item) => item.id !== id));
+      });
+      attachmentUploadsRef.current.add(upload);
     }
   }
 
@@ -4383,7 +4392,10 @@ export function App() {
     // Attachments are STICKY context: they stay attached across turns (and
     // across a failed request) until the user removes them, so a file never
     // needs re-attaching and is included with every message in the thread.
-    const requestAttachments = pendingAttachments;
+    if (attachmentUploadsRef.current.size) {
+      await Promise.allSettled([...attachmentUploadsRef.current]);
+    }
+    const requestAttachments = pendingAttachmentsRef.current;
     appendMessage("user", `${activeScope === "selection" ? "Selection" : "Document"}: ${trimmedInstruction}${requestAttachments.length ? `\n📎 ${requestAttachments.map((attachment) => attachment.name).join(", ")}` : ""}`);
     if (activeScope === "global" && currentDocumentText.length > AI_CONTEXT_CHAR_LIMIT) {
       appendMessage("system", "Document exceeds one AI request budget; using complete-document coverage passes.");
@@ -6974,7 +6986,7 @@ export function App() {
               </div>
             ) : null}
 
-            {pendingAttachments.length || attachmentBusy ? (
+            {pendingAttachments.length || attachmentUploads.length ? (
               <div className="attachment-row" aria-label="Reference files in this chat's context">
                 {pendingAttachments.length ? (
                   <span className="attachment-context-label" title="These files stay attached to every message in this chat until you remove them — no need to re-attach.">
@@ -7001,11 +7013,11 @@ export function App() {
                     </button>
                   </span>
                 ))}
-                {attachmentBusy ? (
-                  <span className="attachment-chip pending">
-                    <Loader2 size={12} aria-hidden="true" /> attaching...
+                {attachmentUploads.map((upload) => (
+                  <span key={`upload-${upload.id}`} className="attachment-chip pending" title="Uploading — a message sent now waits for it">
+                    <Loader2 size={12} aria-hidden="true" /> {upload.name} <em>reading…</em>
                   </span>
-                ) : null}
+                ))}
               </div>
             ) : null}
 
@@ -7020,7 +7032,7 @@ export function App() {
                 type="button"
                 className="attach-button"
                 onClick={() => attachmentInputRef.current?.click()}
-                disabled={attachmentBusy || (cloudMode && !localAiActive)}
+                disabled={cloudMode && !localAiActive}
                 aria-label="Attach a reference file"
                 title={cloudMode && !localAiActive
                   ? "Attachments run through your local Writer — see 'Set up AI'"

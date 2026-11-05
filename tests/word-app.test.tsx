@@ -12,6 +12,7 @@ const captured: {
   imageUploads: Array<Record<string, unknown>>;
   steers: Array<{ runId: string; text: string }>;
   steerOk: boolean;
+  releaseUpload?: () => void;
 } = {
   requests: [],
   contextPushes: [],
@@ -242,7 +243,12 @@ vi.mock("../src/word/writerClient", () => ({
     sessionFetch.onProgress = handlers.onAiProgress ?? null;
     return () => undefined;
   },
-  uploadAttachment: async (file: File) => ({ name: file.name, path: `/tmp/attachments/${file.name}`, text: "Reference text extracted from the file.", truncated: false })
+  uploadAttachment: async (file: File) => {
+    if (file.name.startsWith("slow-")) {
+      await new Promise<void>((resolve) => { captured.releaseUpload = resolve; });
+    }
+    return { name: file.name, path: `/tmp/attachments/${file.name}`, text: "Reference text extracted from the file.", truncated: false };
+  }
 }));
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -838,6 +844,23 @@ describe("Word task pane", () => {
     // Text dragged from the document is not a file drop.
     fireEvent.dragEnter(shell, { dataTransfer: { types: ["text/plain"], files: [] } });
     expect(screen.queryByText("Drop to attach as reference files")).toBeNull();
+  });
+
+  it("shows a dropped file at once and a send made while it uploads still includes it", async () => {
+    await renderPane();
+    const input = screen.getByLabelText("Attach reference files", { selector: "input" });
+    fireEvent.change(input, { target: { files: [new File(["big"], "slow-paper.pdf", { type: "application/pdf" })] } });
+    // The chip is there before the sidecar has answered.
+    expect(screen.getByText("slow-paper.pdf")).toBeInTheDocument();
+    expect(screen.getByText("reading…")).toBeInTheDocument();
+
+    send("Use the paper.");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(captured.requests.length).toBe(0);
+    captured.releaseUpload?.();
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0].attachments?.map((attachment) => attachment.name)).toEqual(["slow-paper.pdf"]);
+    expect(screen.queryByText("reading…")).toBeNull();
   });
 
   it("attaches reference files and sends them with every request", async () => {

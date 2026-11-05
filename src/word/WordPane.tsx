@@ -138,7 +138,8 @@ export interface ModelControls {
 export interface WordPaneProps {
   activeSuggestionId: string | null;
   attachments: AiAttachment[];
-  uploading: number;
+  /** Files still uploading, shown at once so a drop never looks ignored. */
+  uploading: Array<{ id: number; name: string }>;
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (name: string) => void;
   busyLabel: string | null;
@@ -382,7 +383,7 @@ export function WordPane(props: WordPaneProps) {
         </div>
         <div className="wp-composer-row">
           <label className="wp-icon-button wp-attach" title="Attach reference files (PDF, DOCX, text) for this conversation" aria-label="Attach reference files">
-            {props.uploading ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Paperclip size={14} aria-hidden="true" />}
+            {props.uploading.length ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Paperclip size={14} aria-hidden="true" />}
             <input
               type="file"
               multiple
@@ -415,7 +416,7 @@ export function WordPane(props: WordPaneProps) {
             </select>
           </label>
         </div>
-        {props.attachments.length ? (
+        {props.attachments.length || props.uploading.length ? (
           <ul className="wp-attachments" aria-label="Attached reference files">
             {props.attachments.map((attachment) => (
               <li key={attachment.name} title={`${(attachment.chars ?? attachment.text.length).toLocaleString()} characters extracted${attachment.truncated && !attachment.textPath ? " (truncated)" : ""} · sent with every request until removed`}>
@@ -423,6 +424,13 @@ export function WordPane(props: WordPaneProps) {
                 <span>{attachment.name}</span>
                 <small>{formatChars(attachment.text.length)}{attachment.truncated ? "+" : ""}</small>
                 <button type="button" onClick={() => props.onRemoveAttachment(attachment.name)} aria-label={`Remove ${attachment.name}`} disabled={running}><X size={11} aria-hidden="true" /></button>
+              </li>
+            ))}
+            {props.uploading.map((upload) => (
+              <li key={`upload-${upload.id}`} className="uploading" title="Uploading — a message sent now waits for it">
+                <Loader2 size={11} className="spin" aria-hidden="true" />
+                <span>{upload.name}</span>
+                <small>reading…</small>
               </li>
             ))}
           </ul>
