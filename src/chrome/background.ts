@@ -27,6 +27,10 @@ chrome.runtime.onStartup.addListener(() => {
 
 /* Keep the extension current with the sidecar's build (extensionUpdate.ts). */
 
+const LOADED_BUILD_KEY = "loadedBuild";
+// Record the build as soon as this copy starts, before any rebuild can change the file.
+void loadedBuild().catch(() => undefined);
+
 function scheduleUpdateChecks(): void {
   chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
 }
@@ -37,9 +41,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+/**
+ * The build this copy of the extension was loaded from. The extension runs
+ * from the repository folder, so dist/build.json on disk is already the NEW
+ * build once Writer rebuilds — comparing it with the sidecar's (which reads
+ * the same file) never finds a difference. The id is therefore recorded the
+ * first time it is read after a load: session storage starts empty on every
+ * extension reload and browser start, exactly when the code is reread.
+ */
+async function loadedBuild(): Promise<string | null> {
+  const stored = (await chrome.storage.session.get(LOADED_BUILD_KEY))[LOADED_BUILD_KEY];
+  if (typeof stored === "string") {
+    return stored;
+  }
+  const build = readBuildId(await (await fetch(chrome.runtime.getURL("dist/build.json"), { cache: "no-store" })).json());
+  if (build) {
+    await chrome.storage.session.set({ [LOADED_BUILD_KEY]: build });
+  }
+  return build;
+}
+
 async function checkForUpdate(): Promise<boolean> {
   return reloadIfOutdated({
-    ownBuild: async () => readBuildId(await (await fetch(chrome.runtime.getURL("dist/build.json"), { cache: "no-store" })).json()),
+    ownBuild: loadedBuild,
     servedBuild: async () => readBuildId(await (await fetch(`${__PANE_ORIGIN__}/api/chrome-extension/build`, { cache: "no-store" })).json()),
     panelOpen: async () => (await chrome.runtime.getContexts({ contextTypes: [chrome.runtime.ContextType.SIDE_PANEL] })).length > 0,
     reload: () => chrome.runtime.reload()

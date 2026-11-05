@@ -1,9 +1,9 @@
 /**
  * The extension keeps itself current. It is loaded unpacked from the Writer
  * repository, and Chrome only picks up a rebuild when someone presses reload
- * on chrome://extensions; instead, the service worker compares its own build
- * id (dist/build.json, written by scripts/chrome-build.mjs) with the one the
- * sidecar serves, and reloads itself when they differ — but never while a
+ * on chrome://extensions; instead, the service worker compares the build id
+ * it was loaded with (recorded from dist/build.json at load, see background.ts)
+ * with the one the sidecar serves, and reloads itself when they differ — but never while a
  * Writer panel is open, so an update never closes the panel in use.
  */
 

@@ -30,7 +30,8 @@
     "identity.email",
     "tabs",
     "alarms",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "optional_host_permissions": [
     "https://www.googleapis.com/*"
