@@ -264,6 +264,10 @@ export interface AiProgressSnapshot {
   timeoutMs: number | null;
   /** Suggestions finished while the turn still runs (previews; the reply carries the checked ones). */
   drafts?: AiSuggestion[];
+  /** Who asked for the run. */
+  requestedBy?: string | null;
+  /** The client run id the progress belongs to: a pane shows only its own run's. */
+  runId?: string | null;
 }
 
 export async function getAiProgressFromSidecar(apiBase = ""): Promise<{ progress: AiProgressSnapshot | null }> {

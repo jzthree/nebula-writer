@@ -1848,7 +1848,10 @@ export function App() {
           liveAiProgressRef.current = live && live.stage
             ? { stage: live.stage, passIndex: live.passIndex ?? null, passTotal: live.passTotal ?? null, startedAt: live.startedAt ?? new Date().toISOString() }
             : null;
-          const liveDrafts = (payload.progress as { drafts?: AiSuggestion[] } | null)?.drafts;
+          // Drafts preview this tab's own turn only: another request's never show as ours.
+          const liveRun = payload.progress as { drafts?: AiSuggestion[]; runId?: string | null } | null;
+          const ownRun = aiRunRef.current?.runId ?? null;
+          const liveDrafts = liveRun && (!liveRun.runId || !ownRun || liveRun.runId === ownRun) ? liveRun.drafts : undefined;
           setAiDrafts(Array.isArray(liveDrafts) ? liveDrafts : []);
           const queue = (payload as { queue?: Array<{ provider?: string; requestedBy?: string | null }> }).queue;
           setRemoteAiQueue(Array.isArray(queue)
@@ -2306,7 +2309,8 @@ export function App() {
         liveAiProgressRef.current = progress
           ? { stage: progress.stage, passIndex: progress.passIndex, passTotal: progress.passTotal, startedAt: progress.startedAt }
           : null;
-        setAiDrafts(progress?.drafts ?? []);
+        const ownRun = aiRunRef.current?.runId ?? null;
+        setAiDrafts(progress && (!progress.runId || !ownRun || progress.runId === ownRun) ? progress.drafts ?? [] : []);
         render();
       } catch {
         // Sidecar unreachable mid-request; keep the plain busy label.
@@ -7022,7 +7026,7 @@ export function App() {
             ) : null}
 
             <form
-              className={`composer ${instruction.trim() ? "has-input" : ""}`}
+              className={`composer ${instruction.trim() ? "has-input" : ""}${isAskingAi ? " is-running" : ""}`}
               onSubmit={(event) => {
                 event.preventDefault();
                 void handleSend();

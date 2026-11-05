@@ -2898,6 +2898,11 @@ button:disabled {
   color: var(--muted);
 }
 
+/* While a turn runs, Stop and Queue join Send on the same row. */
+.composer.is-running {
+  grid-template-columns: 30px 1fr 38px 38px 38px;
+}
+
 .composer.has-input {
   background: var(--surface-soft);
 }

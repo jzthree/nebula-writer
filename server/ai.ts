@@ -102,6 +102,8 @@ export interface AiProgressSnapshot {
   timeoutMs: number | null;
   /** Suggestions the model has finished while the turn still runs: previews, checked like the final ones. */
   drafts?: AiSuggestion[];
+  /** The client run id of the request this is about, so each pane shows only its own run. */
+  runId?: string | null;
 }
 
 // Single-slot progress tracker for the local single-user sidecar. The UI polls
@@ -112,7 +114,11 @@ let currentAiProgress: AiProgressSnapshot | null = null;
 export interface QueuedAiRequest {
   provider: string;
   requestedBy: string | null;
+  runId?: string | null;
 }
+
+// The run whose progress the slot holds (runs are serialized, so one at a time).
+let activeRunId: string | null = null;
 
 // CLI executions are serialized: two collaborators sending at once would race
 // the progress display and contend for CPU; instead the second waits with an
@@ -143,9 +149,15 @@ async function runQueuedAiRequest<T>(entry: QueuedAiRequest, run: () => Promise<
   try {
     await previous;
     aiQueue = aiQueue.filter((candidate) => candidate !== entry);
+    // A fresh slot: nothing from the previous run (its drafts, its start time) carries over.
+    activeRunId = entry.runId ?? null;
+    currentAiProgress = null;
     publishAiState();
     return await run();
   } finally {
+    if (activeRunId === (entry.runId ?? null)) {
+      activeRunId = null;
+    }
     aiQueue = aiQueue.filter((candidate) => candidate !== entry);
     release();
     publishAiState();
@@ -164,7 +176,8 @@ function setAiProgress(provider: string, stage: string, pass?: { index: number; 
     startedAt: currentAiProgress?.startedAt ?? now,
     updatedAt: now,
     timeoutMs: cliTimeoutMs() || null,
-    ...(currentAiProgress?.drafts?.length ? { drafts: currentAiProgress.drafts } : {})
+    ...(currentAiProgress?.drafts?.length ? { drafts: currentAiProgress.drafts } : {}),
+    runId: activeRunId
   };
   publishAiState();
 }
@@ -276,7 +289,7 @@ export async function proposeChanges(request: AiRequest, options: AiRunOptions =
 
   const provider = request.provider as CliProviderName;
   return linkRevision(request, await runQueuedAiRequest(
-    { provider, requestedBy: request.requestedBy ?? null },
+    { provider, requestedBy: request.requestedBy ?? null, runId: request.runId ?? options.runId ?? null },
     () => {
       // The wait in the queue may outlive the requester (Stop button or a
       // closed tab aborts the HTTP request) — don't burn a CLI run for them.

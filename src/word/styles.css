@@ -287,7 +287,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: var(--blue);
   color: #fff;
 }
-.wp-send.stop { background: var(--red); }
+.wp-send.stop { background: var(--red); right: 75px; }
+/* While a turn runs, Stop, Queue and Send sit side by side, never on top of each other. */
+.wp-form.running textarea { padding-right: 110px; }
 
 .wp-statusline {
   margin: 0;
@@ -676,7 +678,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-change u { text-decoration-thickness: 1px; text-underline-offset: 2px; }
 
 /* Mid-turn steering */
-.wp-send.queue { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line-strong); }
+.wp-send.queue { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line-strong); right: 41px; }
 .wp-turn-steered { margin: 2px 0 0; font-size: 11px; color: var(--ink-soft); font-style: italic; }
 
 .wp-show-earlier {

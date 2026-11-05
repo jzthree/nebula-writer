@@ -514,6 +514,25 @@ describe("Word task pane", () => {
     expect(screen.queryByLabelText("Draft suggestion: Draft title here")).not.toBeInTheDocument();
   });
 
+  it("never shows another request's progress or drafts as this turn's, and says when it waits behind one", async () => {
+    await renderPane();
+    send("Slow: review the document.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    const ownRun = captured.requests[0].runId;
+    const now = new Date().toISOString();
+    const other = { id: "x-1", ref: "S1", title: "Someone else's draft", original: ORIGINAL, replacement: REPLACEMENT, rationale: "Elsewhere.", confidence: 0.8, target: "global", status: "pending" };
+    act(() => sessionFetch.onProgress?.({ provider: "claude", stage: "Writing suggestion 1: Someone else's draft", requestedBy: "Terminal", runId: "another-run", passIndex: null, passTotal: null, startedAt: now, updatedAt: now, timeoutMs: null, drafts: [other] }, [{ provider: "codex", requestedBy: "Word", runId: ownRun }]));
+    expect(document.querySelector(".wp-turn-text.quiet")?.textContent).toContain("Waiting for another Writer request (from Terminal) to finish");
+    expect(screen.queryByLabelText("Draft suggestion: Someone else's draft")).not.toBeInTheDocument();
+
+    const own = { ...other, id: "d-1", title: "Own draft" };
+    act(() => sessionFetch.onProgress?.({ provider: "codex", stage: "Writing suggestion 1: Own draft", runId: ownRun, passIndex: null, passTotal: null, startedAt: now, updatedAt: now, timeoutMs: null, drafts: [own] }, []));
+    expect(await screen.findByLabelText("Draft suggestion: Own draft")).toBeInTheDocument();
+    // A later update without drafts clears them rather than keeping stale ones.
+    act(() => sessionFetch.onProgress?.({ provider: "codex", stage: "Thinking", runId: ownRun, passIndex: null, passTotal: null, startedAt: now, updatedAt: now, timeoutMs: null }, []));
+    await waitFor(() => expect(screen.queryByLabelText("Draft suggestion: Own draft")).not.toBeInTheDocument());
+  });
+
   it("passes the chosen model and reasoning level to the request", async () => {
     await renderPane();
     fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "codex" } });

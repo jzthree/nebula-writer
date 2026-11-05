@@ -443,7 +443,7 @@ export function WordPane(props: WordPaneProps) {
           </div>
         ) : null}
         <form
-          className="wp-form"
+          className={`wp-form${running ? " running" : ""}`}
           onSubmit={(event) => {
             event.preventDefault();
             props.onAsk();
