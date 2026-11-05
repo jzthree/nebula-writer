@@ -753,9 +753,10 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
             "<<<selection",
             selectionText,
             ">>>",
+            ...selectionParagraphLines(request),
             READ_BEYOND_SELECTION
           ]
-        : ["The user selected a passage (read it with writer_get_selection) — it is where they are working. Decide from the instruction whether the request is about that passage or about the document as a whole, and act accordingly: edits may land anywhere in the document (say so when they do).", READ_BEYOND_SELECTION]
+        : ["The user selected a passage (read it with writer_get_selection) — it is where they are working. Decide from the instruction whether the request is about that passage or about the document as a whole, and act accordingly: edits may land anywhere in the document (say so when they do).", FIT_THE_PARAGRAPH, READ_BEYOND_SELECTION]
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request, reportedDecisions),
@@ -1019,6 +1020,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
         : "This continues the earlier conversation in this thread. The Text and Document context blocks below are the CURRENT document, which may have changed since your earlier turns; rely on them, not on earlier copies."
       : null,
     ...buildSelectionContextLines(request, options),
+    ...(options.coveragePass ? [] : selectionParagraphLines(request)),
     options.coveragePass
       ? `Complete-document coverage pass ${options.coveragePass.index} of ${options.coveragePass.total}. The Text block is a contiguous chunk covering characters ${options.coveragePass.start + 1}-${options.coveragePass.end} of ${options.coveragePass.totalLength}. Across all passes, the sidecar covers the full document. Use only exact source text visible in this chunk.`
       : null,
@@ -1055,6 +1057,40 @@ export function fullDocumentInPrompt(request: AiRequest): string | null {
   }
   const budget = AI_CONTEXT_CHAR_LIMIT - Math.min(selectionText.length, AI_CONTEXT_CHAR_LIMIT);
   return budget >= 1_000 && document.length <= budget ? renderEmphasis(document, request.documentEmphasis) : null;
+}
+
+const SELECTION_PARAGRAPH_LIMIT = 6_000;
+const FIT_THE_PARAGRAPH = "A rewrite of the selection must read well where it sits: keep it consistent with the sentences around it and do not repeat words, phrases or ideas the rest of its paragraph already has.";
+
+/**
+ * The current paragraph(s) a selection sits in, quoted in full. A resumed
+ * thread may only get a diff of the document, and the model's copy of the
+ * earlier full text can be many turns old (or compacted away); the
+ * paragraph is what a rewrite has to fit, so it always travels with the selection.
+ */
+export function selectionParagraphLines(request: AiRequest): string[] {
+  if (request.mode !== "selection") {
+    return [];
+  }
+  const text = request.selection?.text ?? "";
+  const offset = selectionOffsetInDocument(request);
+  if (!text.trim() || offset === null) {
+    return [FIT_THE_PARAGRAPH];
+  }
+  const document = request.documentText;
+  const start = document.lastIndexOf("\n", offset - 1) + 1;
+  const endBreak = document.indexOf("\n", offset + text.length);
+  const end = endBreak === -1 ? document.length : endBreak;
+  if (end - start > SELECTION_PARAGRAPH_LIMIT || document.slice(start, end).trim() === text.trim()) {
+    return [FIT_THE_PARAGRAPH];
+  }
+  return [
+    "The selection sits in this paragraph (its current text, in full):",
+    "<<<paragraph",
+    renderEmphasis(document.slice(start, end), request.documentEmphasis, start),
+    ">>>",
+    FIT_THE_PARAGRAPH
+  ];
 }
 
 export function buildSelectionContextLines(request: AiRequest, options: CliPromptOptions = {}): string[] {
