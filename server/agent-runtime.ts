@@ -456,6 +456,21 @@ function stripMcpPrefix(toolName: string): string {
   return toolName.replace(/^mcp__writer__/, "").replace(/^mcp__[^_]+__/, "");
 }
 
+/** A command line as the user would type it: Codex wraps each in `/bin/zsh -lc "…"` (or passes argv), which says nothing. */
+export function shellCommandText(value: unknown): string {
+  const raw = Array.isArray(value) ? value.filter((part): part is string => typeof part === "string") : typeof value === "string" ? [value] : [];
+  let parts = raw;
+  if (parts.length >= 3 && /(^|\/)(ba|z|fi)?sh$/.test(parts[0]) && /^-l?c$|^-lc$/.test(parts[1])) {
+    parts = [parts.slice(2).join(" ")];
+  }
+  let text = parts.join(" ").replace(/\s+/g, " ").trim();
+  const wrapped = text.match(/^(?:\S*\/)?(?:ba|z|fi)?sh -l?c (['"])([\s\S]*)\1$/);
+  if (wrapped) {
+    text = wrapped[2].trim();
+  }
+  return text;
+}
+
 function summarizeToolInput(toolName: string, input: unknown): string {
   const bare = stripMcpPrefix(toolName);
   if (toolName === "ToolSearch") {
@@ -491,6 +506,15 @@ function summarizeToolInput(toolName: string, input: unknown): string {
         : "";
     const noun = what === "page" ? "the pages on screen" : what === "selection" ? "the selection" : what === "outline" ? "the outline" : what === "document" ? "the document structure" : `the ${what} at the caret`;
     return `reading ${noun}${anchor}`;
+  }
+  // A shell command (Codex's command_execution, Claude's Bash): show what ran.
+  const command = shellCommandText(record.command);
+  if (command) {
+    // Claude describes its commands in words; Codex gives only the command line.
+    if (typeof record.description === "string" && record.description.trim()) {
+      return `${bare}: ${record.description.trim().slice(0, 80)}`;
+    }
+    return `ran ${command.length > 100 ? `${command.slice(0, 99)}…` : command}`;
   }
   // Any other tool: its own title/description when the caller gave one (computer-use steps do).
   const label = typeof record.title === "string" ? record.title : typeof record.description === "string" ? record.description : "";

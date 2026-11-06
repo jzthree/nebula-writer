@@ -353,6 +353,16 @@ describe("stream parsers", () => {
     expect(parser.outcome()).toMatchObject({ ok: true, sawResult: true, sessionId: "thread-7", text: "Staged one edit." });
   });
 
+  it("says which command Codex ran, without its shell wrapper", () => {
+    const parser = new CodexStreamParser();
+    const events = [
+      ...parser.consume(JSON.stringify({ type: "item.started", item: { id: "c1", type: "command_execution", command: "/bin/zsh -lc 'rg -n \"broad potential\" notes.md'", status: "in_progress" } })),
+      ...parser.consume(JSON.stringify({ type: "item.started", item: { id: "c2", type: "command_execution", command: ["/bin/zsh", "-lc", "sed -n 1,80p notes.md"], status: "in_progress" } }))
+    ];
+    const summaries = events.map((event) => (event.kind === "tool" ? event.summary : ""));
+    expect(summaries).toEqual(['ran rg -n "broad potential" notes.md', "ran sed -n 1,80p notes.md"]);
+  });
+
   it("reports Codex turn failures", () => {
     const parser = new CodexStreamParser();
     parser.consume(JSON.stringify({ type: "turn.failed", message: "model overloaded" }));
