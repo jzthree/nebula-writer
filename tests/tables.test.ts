@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { applyTableSteps, cleanGrid, documentTableLabel, findEditTarget, gridForPrompt, planTableMorph, sameGrid } from "../src/tables";
+import { applyTableSteps, cleanGrid, documentTableLabel, findEditTarget, gridForPrompt, parseDocumentTables, planTableMorph, sameGrid } from "../src/tables";
 
 const BUDGET = [
   ["Item", "Year 1", "Year 2"],
@@ -79,5 +79,20 @@ describe("table helpers", () => {
   it("labels and renders tables for prompts", () => {
     expect(documentTableLabel({ index: 1, rows: BUDGET, context: "Table 2. Budget" })).toBe('[Table 2] 4×3 after "Table 2. Budget"');
     expect(gridForPrompt([["a|b", "two\nlines"]])).toBe("| a\\|b | two / lines |");
+  });
+});
+
+describe("table size limits", () => {
+  it("never refuses the document's own tables for their size", () => {
+    const longCell = "x".repeat(5_000);
+    const rows = Array.from({ length: 300 }, (_, row) => [row === 3 ? longCell : `r${row}`, "b"]);
+    const parsed = parseDocumentTables([{ index: 3, rows }]);
+    expect("error" in parsed).toBe(false);
+    expect("value" in parsed && parsed.value?.[0].rows[3][0]).toBe(longCell);
+  });
+
+  it("still caps a proposed grid, but not the length of a cell", () => {
+    expect(cleanGrid([["a".repeat(5_000)]])).toEqual({ rows: [["a".repeat(5_000)]] });
+    expect(cleanGrid(Array.from({ length: 300 }, () => ["a"]))).toHaveProperty("error");
   });
 });

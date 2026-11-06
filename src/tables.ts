@@ -37,8 +37,9 @@ export interface AiTableEdit {
   header?: boolean;
 }
 
-export const TABLE_LIMIT = 40;
-export const TABLE_CELL_LIMIT = 2_000;
+// Caps on a grid the AI PROPOSES (a guard against runaway output). The
+// document's own tables are never refused for their size: their text is
+// already in the document, and refusing them would fail the whole request.
 export const TABLE_MAX_ROWS = 200;
 export const TABLE_MAX_COLUMNS = 30;
 
@@ -270,12 +271,12 @@ export function gridForPrompt(rows: string[][]): string {
   return lines.join("\n");
 }
 
-/** Validate a proposed grid: non-empty, rectangular after padding, within limits. Returns the cleaned grid or a reason. */
-export function cleanGrid(value: unknown): { rows: string[][] } | { error: string } {
+/** Validate a grid: non-empty and rectangular after padding; a proposed one also within the row/column caps. Returns the cleaned grid or a reason. */
+export function cleanGrid(value: unknown, { proposed = true }: { proposed?: boolean } = {}): { rows: string[][] } | { error: string } {
   if (!Array.isArray(value) || !value.length) {
     return { error: "rows must be a non-empty array of rows, each an array of cell strings." };
   }
-  if (value.length > TABLE_MAX_ROWS) {
+  if (proposed && value.length > TABLE_MAX_ROWS) {
     return { error: `A table may have at most ${TABLE_MAX_ROWS} rows.` };
   }
   const rows: string[][] = [];
@@ -283,7 +284,7 @@ export function cleanGrid(value: unknown): { rows: string[][] } | { error: strin
     if (!Array.isArray(row) || !row.length) {
       return { error: "Every row must be a non-empty array of cell strings." };
     }
-    if (row.length > TABLE_MAX_COLUMNS) {
+    if (proposed && row.length > TABLE_MAX_COLUMNS) {
       return { error: `A table may have at most ${TABLE_MAX_COLUMNS} columns.` };
     }
     const cells: string[] = [];
@@ -291,11 +292,7 @@ export function cleanGrid(value: unknown): { rows: string[][] } | { error: strin
       if (typeof cell !== "string" && typeof cell !== "number") {
         return { error: "Cells must be strings." };
       }
-      const text = String(cell).replace(/\r\n?/g, "\n");
-      if (text.length > TABLE_CELL_LIMIT) {
-        return { error: `A cell may hold at most ${TABLE_CELL_LIMIT} characters.` };
-      }
-      cells.push(text);
+      cells.push(String(cell).replace(/\r\n?/g, "\n"));
     }
     rows.push(cells);
   }
@@ -307,8 +304,8 @@ export function parseDocumentTables(value: unknown): { value: DocumentTable[] | 
   if (value === undefined || value === null) {
     return { value: undefined };
   }
-  if (!Array.isArray(value) || value.length > TABLE_LIMIT) {
-    return { error: `documentTables must be a list of at most ${TABLE_LIMIT} tables.` };
+  if (!Array.isArray(value)) {
+    return { error: "documentTables must be a list of tables." };
   }
   const tables: DocumentTable[] = [];
   for (const entry of value) {
@@ -319,7 +316,7 @@ export function parseDocumentTables(value: unknown): { value: DocumentTable[] | 
     if (!Number.isInteger(table.index) || (table.index as number) < 0) {
       return { error: "documentTables entries need a non-negative integer index." };
     }
-    const grid = Array.isArray(table.rows) && !table.rows.length ? { rows: [] } : cleanGrid(table.rows);
+    const grid = Array.isArray(table.rows) && !table.rows.length ? { rows: [] } : cleanGrid(table.rows, { proposed: false });
     if ("error" in grid) {
       return { error: `documentTables[${table.index}].rows: ${grid.error}` };
     }
