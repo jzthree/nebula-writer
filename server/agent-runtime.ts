@@ -142,7 +142,11 @@ const READ_ONLY_CLAUDE_TOOLS = "WebSearch WebFetch Read Glob Grep";
 function claudeToolArgs(toolAccess: AiToolAccess): string[] {
   switch (toolAccess) {
     case "full":
-      return ["--allowedTools", "mcp__writer ToolSearch"];
+      // Full access is the CLI as the user runs it. A background run cannot show
+      // a permission prompt, so without a mode every Bash call and every read
+      // outside the workspace was silently denied; auto mode lets Claude's own
+      // safety checks approve or refuse each action, as in the user's terminals.
+      return ["--permission-mode", "auto", "--allowedTools", "mcp__writer ToolSearch"];
     case "read":
       return ["--strict-mcp-config", "--tools", `ToolSearch ${READ_ONLY_CLAUDE_TOOLS}`, "--allowedTools", `mcp__writer ToolSearch ${READ_ONLY_CLAUDE_TOOLS}`];
     default:

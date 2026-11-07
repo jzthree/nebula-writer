@@ -273,6 +273,9 @@ describe("agent CLI arguments", () => {
     expect(full).not.toContain("--strict-mcp-config");
     expect(full).not.toContain("--tools");
     expect(full[full.indexOf("--allowedTools") + 1]).toBe("mcp__writer ToolSearch");
+    // Nothing can prompt in a background run: auto mode decides instead of a silent denial.
+    expect(full[full.indexOf("--permission-mode") + 1]).toBe("auto");
+    expect(read).not.toContain("--permission-mode");
     expect(full).toContain("--mcp-config");
   });
 

@@ -1892,11 +1892,11 @@ export function buildCliArgs(
   ];
 }
 
-/** Claude's one-shot mode: no tools, read-only helpers, or whatever the user's own settings allow. */
+/** Claude's one-shot mode: no tools, read-only helpers, or the user's own tools with auto-mode approvals (nothing can prompt here). */
 function oneShotClaudeToolArgs(toolAccess: AiToolAccess): string[] {
   switch (toolAccess) {
     case "full":
-      return [];
+      return ["--permission-mode", "auto"];
     case "read":
       return ["--tools", READ_ONLY_CLAUDE_TOOLS, "--allowedTools", READ_ONLY_CLAUDE_TOOLS];
     default:
