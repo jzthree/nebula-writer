@@ -15,7 +15,7 @@ export { elideLongPayloads } from "./cli-output";
 import { CodexAppServerUnavailable, runCodexAppServer } from "./codex-app-server";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
-import { ensureWriterCliHome, ensureWriterCodexMirrorHome } from "./cli-home";
+import { ensureWriterCliHome, ensureWriterCodexMirrorHome, resolveWriterCliHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
@@ -718,6 +718,40 @@ const READ_BEYOND_SELECTION = "Reading is NOT limited to the selection: whenever
 // the budget, otherwise a window around the selection.
 const SELECTION_CONTEXT_WINDOW_CHARS = 60_000;
 
+/**
+ * Where the user's own Codex and Claude histories live. A Writer run's
+ * CODEX_HOME / CLAUDE_CONFIG_DIR can be Writer's copy without that history
+ * (cli-home.ts), so "my sessions" would otherwise find Writer's own runs.
+ * Said only to a run that can read files, and only for when the user asks.
+ */
+export function describeUserHistoryLocations(toolAccess: AiToolAccess, home: string = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
+  if (toolAccess === "document") {
+    return [];
+  }
+  const places: string[] = [];
+  const codexSource = resolveWriterCliHome("codex", env, home)?.sourceDir ?? join(home, ".codex");
+  for (const leaf of ["sessions", "archived_sessions"]) {
+    if (existsSync(join(codexSource, leaf))) {
+      places.push(join(codexSource, leaf));
+    }
+  }
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(home).filter((name) => /^\.claude[\w.-]*$/.test(name)).sort();
+  } catch {
+    entries = [];
+  }
+  const claudeHomes = [...entries.map((name) => join(home, name)), ...(env.CLAUDE_CONFIG_DIR?.trim() ? [env.CLAUDE_CONFIG_DIR.trim()] : [])];
+  for (const dir of new Set(claudeHomes)) {
+    if (existsSync(join(dir, "projects")) && !places.includes(join(dir, "projects"))) {
+      places.push(join(dir, "projects"));
+    }
+  }
+  return places.length
+    ? [`The user's own Codex and Claude session histories (all projects, not Writer's runs) are in ${places.join(", ")}. Look there only when the user asks about earlier sessions or work; your CLI's own home in this run may be Writer's copy without that history.`]
+    : [];
+}
+
 function describeToolAccessForAgent(toolAccess: AiToolAccess): string {
   switch (toolAccess) {
     case "full":
@@ -743,6 +777,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
   return [
     "You are the editing agent embedded in Nebula Writer, revising the user's document.",
     describeToolAccessForAgent(resolveToolAccess(request)),
+    ...describeUserHistoryLocations(resolveToolAccess(request)),
     "",
     `The document is ${request.documentText.length.toLocaleString()} characters long.`,
     EMPHASIS_NOTATION_NOTE,
@@ -997,6 +1032,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "Change only what the instruction asks for: every other token of original — markers, numbers, labels, links, formulas — must appear unchanged in replacement.",
     "If you cannot find safe exact source text, return an empty suggestions array.",
     "Do not include unrelated commentary outside JSON.",
+    ...(options.coveragePass ? [] : describeUserHistoryLocations(resolveToolAccess(request))),
     "In message, you may organize the suggestions into sections: a line starting with `## ` is a section heading and a line `[S3]` places the third suggestion of your array (1-based) under it; reference each suggestion once. Keep the rest to 1-2 sentences per section.",
     "Response shape:",
     "{",

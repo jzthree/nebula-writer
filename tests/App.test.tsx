@@ -255,9 +255,9 @@ describe("App suggestion review", () => {
       currentFilter: "Latest export",
       detail: "3 latest-export edits available in the latest run. 1 Word-comment edit, 12 missing-target edits, and 7 conflicting edits need triage before another broad pass.",
       headline: "Backlog: 101 pending edits",
-      latestArtifactPath: "/Users/jianzhou/Downloads/review.docx",
+      latestArtifactPath: "/Users/example/Downloads/review.docx",
       latestRunLabel: "Aim 3B figure language"
-    })).toContain("Latest artifact: /Users/jianzhou/Downloads/review.docx");
+    })).toContain("Latest artifact: /Users/example/Downloads/review.docx");
   });
 
   it("warns when Word comments share the same source text", () => {
