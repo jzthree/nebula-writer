@@ -30,21 +30,35 @@ function position(body: string, query: string, offset: number, foldCase: boolean
   return { index, count };
 }
 
+function nearestOccurrence(body: string, text: string, near: number): number | null {
+  if (!text) return null;
+  let best: number | null = null;
+  for (let at = body.indexOf(text); at >= 0; at = body.indexOf(text, at + 1)) {
+    if (best === null || Math.abs(at - near) < Math.abs(best - near)) best = at;
+  }
+  return best;
+}
+
 /** Build a literal, single-line Find query; verify the source before moving the UI. */
 export function planDocsLocate(paragraphs: readonly { text: string }[], range: DocsLocateRequest): DocsLocatePlan {
   if (!range || typeof range.expected !== "string" || ![range.paragraphIndex, range.endParagraphIndex, range.start, range.end].every(Number.isInteger)
-    || range.paragraphIndex < 0 || range.endParagraphIndex < range.paragraphIndex || range.endParagraphIndex >= paragraphs.length
-    || range.start < 0 || range.start > paragraphs[range.paragraphIndex].text.length
-    || range.end < 0 || range.end > paragraphs[range.endParagraphIndex].text.length) {
+    || range.paragraphIndex < 0 || range.endParagraphIndex < range.paragraphIndex || range.start < 0 || range.end < 0) {
     throw new Error("Invalid Google Docs Locate range. Refresh Writer and try again.");
   }
   const body = paragraphs.map((paragraph) => paragraph.text).join("\n");
   let from = range.start;
   let to = range.end;
-  for (let i = 0; i < range.paragraphIndex; i++) from += paragraphs[i].text.length + 1;
-  for (let i = 0; i < range.endParagraphIndex; i++) to += paragraphs[i].text.length + 1;
+  for (let i = 0; i < range.paragraphIndex; i++) from += (paragraphs[i]?.text.length ?? 0) + 1;
+  for (let i = 0; i < range.endParagraphIndex; i++) to += (paragraphs[i]?.text.length ?? 0) + 1;
   if (to <= from || body.slice(from, to) !== range.expected) {
-    throw new Error("The passage changed since Writer read it. Refresh Writer before locating it.");
+    // The document moved since the snapshot (an edit, a collaborator): find the
+    // passage in the text as it is now, at the occurrence nearest where it was.
+    const moved = nearestOccurrence(body, range.expected, from);
+    if (moved === null) {
+      throw new Error("The passage changed since Writer read it, and is no longer in the document as written.");
+    }
+    from = moved;
+    to = moved + range.expected.length;
   }
   let start = from;
   while (start < to && /\s/.test(body[start])) start++;

@@ -1340,7 +1340,8 @@ export function App() {
       // Once applied, the original is gone from Word: jump to the revised text.
       void runBusy("Locating in the document…", async () => {
         try {
-          await locateSuggestion(snap, { original: suggestion.replacement }, 0);
+          const latest = (await refreshSnapshot()) ?? snap;
+          await locateSuggestion(latest, { original: suggestion.replacement }, 0);
           patchCard(suggestion.id, { error: null });
         } catch (error) {
           patchCard(suggestion.id, { error: errorMessage(error) });
@@ -1350,11 +1351,12 @@ export function App() {
     }
     void runBusy("Locating in the document…", async () => {
       try {
-        const state = await ensureMatches(suggestion, snap);
+        const latest = (await refreshSnapshot()) ?? snap;
+        const state = await ensureMatches(suggestion, latest);
         if (!state.matches) {
           return;
         }
-        await locateSuggestion(snap, suggestion, state.matchIndex);
+        await locateSuggestion(latest, suggestion, state.matchIndex);
         patchCard(suggestion.id, { error: null });
       } catch (error) {
         patchCard(suggestion.id, { error: errorMessage(error) });

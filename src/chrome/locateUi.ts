@@ -1,8 +1,22 @@
 import { isDocsLocatePlan, type DocsLocatePlan } from "./locate";
 
+/**
+ * Actually on screen. Docs keeps a closed Find dialog in the page, still laid
+ * out but hidden by CSS or moved away, so having a box is not enough.
+ */
 function visible(element: Element): element is HTMLElement {
-  return element instanceof element.ownerDocument.defaultView!.HTMLElement && element.getClientRects().length > 0;
+  const win = element.ownerDocument.defaultView!;
+  if (!(element instanceof win.HTMLElement) || !element.getClientRects().length) return false;
+  if (element.closest('[aria-hidden="true"]')) return false;
+  if (element.checkVisibility && !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+  const style = win.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 && rect.left < win.innerWidth && rect.top < win.innerHeight;
 }
+
+/** Find dialogs Locate itself closed: whatever their state looks like, they are not the author's open search. */
+const closedByLocate = new WeakSet<Element>();
 
 function click(element: HTMLElement): void {
   const win = element.ownerDocument.defaultView!;
@@ -46,7 +60,8 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
   }
   const findDialog = () => Array.from(doc.querySelectorAll('[role="dialog"]')).filter(visible)
     .find((item) => item.className.includes("Findandreplacedialog") || item.querySelector('input[aria-label="Find"]')) ?? null;
-  if (findDialog()) throw new Error("Close Google Docs' Find and replace dialog, then click Locate again.");
+  const alreadyOpen = findDialog();
+  if (alreadyOpen && !closedByLocate.has(alreadyOpen)) throw new Error("Close Google Docs' Find and replace dialog, then click Locate again.");
   doc.addEventListener("pointerdown", cancel, true);
   doc.addEventListener("keydown", cancel, true);
   let dialog: HTMLElement | null = null;
@@ -97,8 +112,13 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
     guard();
     const close = dialog.querySelector<HTMLElement>('button[aria-label="Close"]');
     if (!close || !visible(close)) throw new Error("Google Docs' Find dialog could not close safely.");
+    closedByLocate.add(dialog);
     click(close);
-    await waitFor(() => !dialog?.isConnected || !visible(dialog) ? true : null, "Google Docs did not finish selecting this passage.");
+    // The passage is selected already: a dialog slow to go away is not a failed Locate.
+    const until = Date.now() + 1_000;
+    while (Date.now() < until && dialog.isConnected && visible(dialog)) {
+      await new Promise((resolve) => win.setTimeout(resolve, 40));
+    }
     complete = true;
     return plan.query;
   } finally {
@@ -106,7 +126,10 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
     doc.removeEventListener("keydown", cancel, true);
     if (!complete && !cancelled && dialog?.isConnected && visible(dialog)) {
       const close = dialog.querySelector<HTMLElement>('button[aria-label="Close"]');
-      if (close && visible(close)) click(close);
+      if (close && visible(close)) {
+        closedByLocate.add(dialog);
+        click(close);
+      }
     }
   }
 }

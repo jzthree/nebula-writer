@@ -39,10 +39,19 @@ describe("Chrome Locate planning", () => {
     expect(result.query.length).toBeLessThanOrEqual(300);
   });
 
+  it("finds a passage that moved since the snapshot, at the occurrence nearest where it was", () => {
+    const now = [{ text: "A new opening paragraph was added." }, { text: "Same words here." }, { text: "Middle." }, { text: "Same words here." }];
+    // Read when "Same words here." was the first paragraph's text, offset 0 of paragraph 0, and later the third.
+    const result = planDocsLocate(now, { paragraphIndex: 2, endParagraphIndex: 2, start: 0, end: 16, expected: "Same words here." });
+    expect(result.query).toBe("Same words here.");
+    expect(result.positions.exact).toEqual({ index: 1, count: 2 });
+  });
+
   it("rejects stale, invalid, empty, or unbounded Locate requests", () => {
     const paragraphs = [{ text: "Actual text" }];
     expect(() => planDocsLocate(paragraphs, { paragraphIndex: 0, endParagraphIndex: 0, start: 0, end: 6, expected: "Stale!" })).toThrow("changed");
-    expect(() => planDocsLocate(paragraphs, { paragraphIndex: 5, endParagraphIndex: 5, start: 0, end: 2, expected: "xx" })).toThrow("Invalid");
+    expect(() => planDocsLocate(paragraphs, { paragraphIndex: 5, endParagraphIndex: 5, start: 0, end: 2, expected: "xx" })).toThrow("changed");
+    expect(() => planDocsLocate(paragraphs, { paragraphIndex: -1, endParagraphIndex: 0, start: 0, end: 2, expected: "Ac" })).toThrow("Invalid");
     expect(isDocsLocatePlan({ ...plan, query: "" })).toBe(false);
     expect(isDocsLocatePlan({ ...plan, query: "x".repeat(513) })).toBe(false);
     expect(isDocsLocatePlan({ ...plan, positions: { ...plan.positions, exact: { index: -1, count: 1 } } })).toBe(false);
@@ -146,6 +155,29 @@ describe("Google Docs Locate UI", () => {
     document.body.innerHTML = '<div id="docs-edit-menu">Edit</div>';
     installFind(1, 0, true);
     await expect(locateDocsPassage(document, plan)).rejects.toThrow("regular expressions");
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("treats a closed Find dialog left in the page as closed, however Docs hid it", async () => {
+    for (const hidden of ['style="display:none"', 'style="visibility:hidden"', 'style="opacity:0"', 'aria-hidden="true"']) {
+      document.body.innerHTML = `<div id="docs-edit-menu" role="menuitem">Edit</div><div role="dialog" ${hidden}><input aria-label="Find" value="old"></div>`;
+      installFind();
+      await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
+    }
+  });
+
+  it("succeeds when the dialog is slow to close, and is not blocked by it next time", async () => {
+    installFind();
+    const close = (event: Event) => {
+      // Docs animates the dialog out: it stays in the page, looking open, past Locate's wait.
+      if ((event.target as HTMLElement).getAttribute("aria-label") === "Close") event.stopImmediatePropagation();
+    };
+    document.addEventListener("click", close, true);
+    await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    // Reaches the Find controls again rather than saying "Close Google Docs' Find and replace dialog".
+    await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
+    document.removeEventListener("click", close, true);
     expect(replace).not.toHaveBeenCalled();
   });
 

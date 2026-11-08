@@ -102,6 +102,10 @@ URL). Everything else —
 emphasis, placement anchors, agents, queueing, change highlighting — is the
 same code.
 
+A Word file opened in Google Docs (still a .docx, not converted) can be read
+but not edited through the Docs API, so Apply cannot work there. The extension
+says so when the file opens; File > Save as Google Docs makes an editable copy.
+
 The Chrome extension can read reviewer comment threads after per-document
 authorization (see below). The Apps Script add-in does not read comments.
 Unavailable comments are explicitly marked as unavailable in AI context;
@@ -241,8 +245,9 @@ not edit the document or save manuscript text as test fixtures.
 Locate uses Google Docs' visible Edit > Find and replace controls to move to
 and select the passage; it never fills the replacement field or invokes a
 Replace action. It verifies the passage against a fresh Docs snapshot before
-searching, checks the native result count, and navigates to the requested
-occurrence. Short repeated phrases gain nearby text as search context;
+searching (a passage that moved since Writer read it is found at the occurrence
+nearest where it was), checks the native result count, and navigates to the
+requested occurrence. Short repeated phrases gain nearby text as search context;
 multiline or long suggestions use a bounded single-line excerpt. The verified
 located excerpt is available to Writer's selection reader until the next
 document interaction, without reading or overwriting the system clipboard.
@@ -252,7 +257,9 @@ unique focus offset, even though native Find can navigate to their occurrence.
 The English Google Docs interface is currently required. Existing Find
 preferences are preserved; if regular-expression mode is enabled, Locate asks
 you to disable it rather than treating manuscript text as a search pattern.
-An already-open Find and replace dialog is left untouched. Changed text,
+A Find and replace dialog the author has open is left untouched; one Locate
+closed itself never blocks the next Locate, since Docs keeps closed dialogs in
+the page. Changed text,
 unexpected native search results, and missing controls produce an error on
 the suggestion instead of silently doing nothing. Direct image selection is
 not supported by the Chrome host; locate nearby text or a caption instead.

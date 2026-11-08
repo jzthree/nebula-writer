@@ -31,3 +31,15 @@ export function docsAccessDeniedMessage(profileEmail: string | null, docEmail: s
   }
   return `Google won't let Writer open this doc: Writer signs in ${writerAs}, and that account has no access to it. Share the doc with that account, or open it in the Chrome profile whose main account owns it.`;
 }
+
+export const OFFICE_FILE_MESSAGE = "This is a Word file opened in Google Docs, and Google doesn't let extensions edit those: Writer can read it and answer questions, but can't apply changes. To apply them, choose File > Save as Google Docs and open Writer beside the new copy.";
+
+/** Google's refusal for an uploaded Office file, in words that say what to do; null for any other error. */
+export function describeDocsApiError(detail: string): string | null {
+  return /must not be an Office file/i.test(detail) ? OFFICE_FILE_MESSAGE : null;
+}
+
+/** Word files keep their extension as their title in Google Docs. */
+export function looksLikeOfficeFile(title: string | null | undefined): boolean {
+  return /\.(docx?|dotx?|docm|rtf|odt)$/i.test(title?.trim() ?? "");
+}

@@ -12,7 +12,7 @@ import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
 import { openCommentPicker } from "./commentPicker";
-import { docsAccessDeniedMessage } from "./docsAccess";
+import { describeDocsApiError, docsAccessDeniedMessage, looksLikeOfficeFile, OFFICE_FILE_MESSAGE } from "./docsAccess";
 import { planDocsLocate } from "./locate";
 import { locateInDocumentTab } from "./locateBridge";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
@@ -155,7 +155,7 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     } catch {
       // Keep the status.
     }
-    throw new Error(`Google Docs API: ${detail}`);
+    throw new Error(describeDocsApiError(detail) ?? `Google Docs API: ${detail}`);
   }
   return response.json() as Promise<T>;
 }
@@ -200,6 +200,20 @@ async function fetchParsed(docId: string): Promise<ParsedDocument> {
 }
 
 let selectionNotice = false;
+let officeNotice = false;
+
+/** Say up front that Apply cannot work here, before the AI spends a turn proposing changes. */
+function showOfficeFileNotice(title: string | null | undefined): void {
+  if (looksLikeOfficeFile(title)) {
+    notice.textContent = OFFICE_FILE_MESSAGE;
+    notice.className = "show";
+    officeNotice = true;
+  } else if (officeNotice) {
+    notice.textContent = "";
+    notice.className = "";
+    officeNotice = false;
+  }
+}
 
 async function selectionText(tabId: number, docId: string): Promise<string> {
   try {
@@ -226,6 +240,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
   async nebulaReadDocument() {
     const { docId } = await activeDoc();
     const parsed = await fetchParsed(docId);
+    showOfficeFileNotice(parsed.payload.documentName);
     const result = await readComments(docId, parsed.payload.paragraphs.map((paragraph) => paragraph.text).join("\n"));
     displayComments(result);
     return { ...parsed.payload, ...result, fingerprint: fingerprint(parsed.payload.fingerprint) };
