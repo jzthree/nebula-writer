@@ -9,10 +9,15 @@ interface CharFormat {
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  strikethrough: boolean;
   background: string | null;
+  foreground: string | null;
+  alignment: string;
 }
 
-const PLAIN: CharFormat = { bold: false, italic: false, underline: false, background: null };
+const PLAIN: CharFormat = { bold: false, italic: false, underline: false, strikethrough: false, background: null, foreground: null, alignment: "NORMAL" };
+
+export const TextAlignment = { NORMAL: "NORMAL", SUPERSCRIPT: "SUPERSCRIPT", SUBSCRIPT: "SUBSCRIPT" } as const;
 
 export const ElementType = {
   BODY_SECTION: "BODY_SECTION",
@@ -46,6 +51,9 @@ export interface ParagraphSeed {
   italic?: Array<[number, number]>;
   underline?: Array<[number, number]>;
   background?: Array<[number, number, string]>;
+  foreground?: Array<[number, number, string]>;
+  strikethrough?: Array<[number, number]>;
+  superscript?: Array<[number, number]>;
 }
 
 export class FakeText {
@@ -93,6 +101,18 @@ export class FakeText {
 
   isUnderline(offset: number): boolean | null {
     return this.chars[offset]?.format.underline ?? null;
+  }
+
+  isStrikethrough(offset: number): boolean | null {
+    return this.chars[offset]?.format.strikethrough ?? null;
+  }
+
+  getForegroundColor(offset: number): string | null {
+    return this.chars[offset]?.format.foreground ?? null;
+  }
+
+  getTextAlignment(offset: number): string | null {
+    return this.chars[offset]?.format.alignment ?? null;
   }
 
   getBackgroundColor(offset: number): string | null {
@@ -146,13 +166,26 @@ export class FakeText {
     return this.setFormat(start, endInclusive, { underline: value });
   }
 
+  setStrikethrough(start: number, endInclusive: number, value: boolean): this {
+    return this.setFormat(start, endInclusive, { strikethrough: value });
+  }
+
+  setForegroundColor(start: number, endInclusive: number, color: string | null): this {
+    return this.setFormat(start, endInclusive, { foreground: color });
+  }
+
+  setTextAlignment(start: number, endInclusive: number, alignment: string): this {
+    return this.setFormat(start, endInclusive, { alignment });
+  }
+
   setBackgroundColor(start: number, endInclusive: number, color: string | null): this {
     return this.setFormat(start, endInclusive, { background: color });
   }
 }
 
 function sameFormat(left: CharFormat, right: CharFormat): boolean {
-  return left.bold === right.bold && left.italic === right.italic && left.underline === right.underline && left.background === right.background;
+  return left.bold === right.bold && left.italic === right.italic && left.underline === right.underline && left.background === right.background
+    && left.strikethrough === right.strikethrough && left.foreground === right.foreground && left.alignment === right.alignment;
 }
 
 export class FakeParagraph {
@@ -171,6 +204,15 @@ export class FakeParagraph {
     }
     for (const [from, to] of seed.underline ?? []) {
       this.text.setUnderline(from, to - 1, true);
+    }
+    for (const [from, to, color] of seed.foreground ?? []) {
+      this.text.setForegroundColor(from, to - 1, color);
+    }
+    for (const [from, to] of seed.strikethrough ?? []) {
+      this.text.setStrikethrough(from, to - 1, true);
+    }
+    for (const [from, to] of seed.superscript ?? []) {
+      this.text.setTextAlignment(from, to - 1, TextAlignment.SUPERSCRIPT);
     }
     for (const [from, to, color] of seed.background ?? []) {
       this.text.setBackgroundColor(from, to - 1, color);
@@ -600,6 +642,7 @@ export function installFakeDocumentApp(doc: FakeDocument): () => void {
     getActiveDocument: () => doc,
     ElementType,
     ParagraphHeading,
+    TextAlignment,
     getUi: () => ({ createAddonMenu: () => ({ addItem: () => ({ addToUi: () => undefined }) }), showSidebar: () => undefined })
   };
   return () => {

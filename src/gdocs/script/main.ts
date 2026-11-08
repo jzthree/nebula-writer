@@ -9,7 +9,7 @@
  * end-exclusive ranges, converted at the boundary here.
  */
 
-import { bridgeEmphasisGaps, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../../emphasis";
+import { bridgeEmphasisGaps, emphasisFromPieces, formatOf, normalizeColor, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../../emphasis";
 import {
   DOCS_CHANGE_HIGHLIGHT,
   DOCS_EMPHASIS_HIGHLIGHT,
@@ -130,15 +130,22 @@ function textEmphasis(text: Text): EmphasisSpan[] {
     if (end <= start) {
       continue;
     }
-    const background = text.getBackgroundColor(start);
+    const background = normalizeColor(text.getBackgroundColor(start));
+    const foreground = normalizeColor(text.getForegroundColor(start));
+    const alignment = text.getTextAlignment(start);
     pieces.push({
       text: full.slice(start, end),
-      format: {
+      format: formatOf({
         ...(text.isBold(start) ? { bold: true } : {}),
         ...(text.isItalic(start) ? { italic: true } : {}),
         ...(text.isUnderline(start) ? { underline: true } : {}),
-        ...(background && background !== DOCS_CHANGE_HIGHLIGHT ? { highlight: true } : {})
-      }
+        ...(text.isStrikethrough(start) ? { strike: true } : {}),
+        ...(alignment === DocumentApp.TextAlignment.SUPERSCRIPT ? { superscript: true } : {}),
+        ...(alignment === DocumentApp.TextAlignment.SUBSCRIPT ? { subscript: true } : {}),
+        // Writer's own change highlight is not the author's formatting; black is the default text colour.
+        ...(background && background !== normalizeColor(DOCS_CHANGE_HIGHLIGHT) ? { highlight: true, highlightColor: background } : {}),
+        ...(foreground && foreground !== "#000000" ? { color: foreground } : {})
+      })
     });
   }
   return bridgeEmphasisGaps(full, emphasisFromPieces(pieces));
@@ -529,6 +536,9 @@ function applyReplace(blocks: WalkedBlock[], op: DocsReplaceOp): void {
       text.setItalic(piece.start, piece.end - 1, false);
       text.setUnderline(piece.start, piece.end - 1, false);
       text.setBackgroundColor(piece.start, piece.end - 1, null as unknown as string);
+      text.setStrikethrough(piece.start, piece.end - 1, false);
+      text.setForegroundColor(piece.start, piece.end - 1, null as unknown as string);
+      text.setTextAlignment(piece.start, piece.end - 1, DocumentApp.TextAlignment.NORMAL);
       const local = op.text.slice(piece.textOffset, piece.textOffset + (piece.end - piece.start));
       let cursor = 0;
       for (const run of splitByEmphasis(local, op.emphasis.map((span) => ({ ...span, start: span.start - piece.textOffset, end: span.end - piece.textOffset })))) {
@@ -544,7 +554,16 @@ function applyReplace(blocks: WalkedBlock[], op: DocsReplaceOp): void {
           text.setUnderline(from, to, true);
         }
         if (run.format.highlight) {
-          text.setBackgroundColor(from, to, DOCS_EMPHASIS_HIGHLIGHT);
+          text.setBackgroundColor(from, to, run.format.highlightColor ?? DOCS_EMPHASIS_HIGHLIGHT);
+        }
+        if (run.format.strike) {
+          text.setStrikethrough(from, to, true);
+        }
+        if (run.format.color) {
+          text.setForegroundColor(from, to, run.format.color);
+        }
+        if (run.format.superscript || run.format.subscript) {
+          text.setTextAlignment(from, to, run.format.superscript ? DocumentApp.TextAlignment.SUPERSCRIPT : DocumentApp.TextAlignment.SUBSCRIPT);
         }
         cursor += run.text.length;
       }

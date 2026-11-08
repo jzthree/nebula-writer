@@ -6,6 +6,8 @@ import Link from "@tiptap/extension-link";
 import Paragraph from "@tiptap/extension-paragraph";
 import Placeholder from "@tiptap/extension-placeholder";
 import Subscript from "@tiptap/extension-subscript";
+import TextStyle from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
 import Superscript from "@tiptap/extension-superscript";
 import Table from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
@@ -1357,7 +1359,10 @@ export function App() {
       TableHeader,
       TableCell,
       Underline,
-      Highlight,
+      // Colours are formatting the author sees, so the editor keeps them (and the AI reads them).
+      Highlight.configure({ multicolor: true }),
+      TextStyle,
+      Color,
       Subscript,
       Superscript,
       Placeholder.configure({

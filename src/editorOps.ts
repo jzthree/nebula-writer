@@ -1,7 +1,7 @@
 import type { Editor } from "@tiptap/react";
 
 import { SUGGESTION_ANCHOR_CONTEXT_CHARS, chooseAnchoredCandidate } from "./shared";
-import { carryEmphasis, emphasisFromPieces, sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
+import { carryEmphasis, DEFAULT_HIGHLIGHT_COLOR, emphasisFromPieces, formatOf, normalizeColor, sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
 import type { AiSuggestion, SelectionContext, SourceTrackedChangePreview } from "./shared";
 import { suggestingRouterKey } from "./suggesting";
 import { findEditTarget, rectangular, sameGrid, type DocumentTable } from "./tables";
@@ -884,47 +884,38 @@ export function replacementToContent(value: string, emphasis?: EmphasisSpan[] | 
 }
 
 function wrapEmphasisHtml(html: string, format: EmphasisFormat): string {
+  const clean = formatOf(format);
   let wrapped = html;
-  if (format.highlight) {
-    wrapped = `<mark>${wrapped}</mark>`;
+  if (clean.highlight) {
+    const color = clean.highlightColor ?? DEFAULT_HIGHLIGHT_COLOR;
+    wrapped = `<mark data-color="${color}" style="background-color: ${color}">${wrapped}</mark>`;
   }
-  if (format.underline) {
+  if (clean.color) {
+    wrapped = `<span style="color: ${clean.color}">${wrapped}</span>`;
+  }
+  if (clean.superscript) {
+    wrapped = `<sup>${wrapped}</sup>`;
+  }
+  if (clean.subscript) {
+    wrapped = `<sub>${wrapped}</sub>`;
+  }
+  if (clean.strike) {
+    wrapped = `<s>${wrapped}</s>`;
+  }
+  if (clean.underline) {
     wrapped = `<u>${wrapped}</u>`;
   }
-  if (format.italic) {
+  if (clean.italic) {
     wrapped = `<em>${wrapped}</em>`;
   }
-  if (format.bold) {
+  if (clean.bold) {
     wrapped = `<strong>${wrapped}</strong>`;
   }
   return wrapped;
 }
 
-/** Bold/italic/underline/highlight as a text node's marks declare them. */
-export function marksEmphasis(marks: ReadonlyArray<{ type: { name: string } }>): EmphasisFormat {
-  const format: EmphasisFormat = {};
-  for (const mark of marks) {
-    switch (mark.type.name) {
-      case "bold":
-      case "strong":
-        format.bold = true;
-        break;
-      case "italic":
-      case "em":
-        format.italic = true;
-        break;
-      case "underline":
-        format.underline = true;
-        break;
-      case "highlight":
-        format.highlight = true;
-        break;
-      default:
-        break;
-    }
-  }
-  return format;
-}
+export { marksEmphasis } from "./emphasisMarks";
+import { marksEmphasis } from "./emphasisMarks";
 
 /**
  * Emphasis spans over the editor's plain text — offsets line up with

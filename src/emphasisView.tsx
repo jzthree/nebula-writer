@@ -20,8 +20,9 @@ export function markedSides(suggestion: Pick<AiSuggestion, "original" | "replace
 }
 
 /**
- * Marker text as React nodes: **bold**, *italic*, __underline__ and
- * ==highlight== become strong, em, u and mark. `plain` renders each
+ * Marker text as React nodes: **bold**, *italic*, __underline__, ~~strike~~,
+ * ==highlight== and the colour and sup/sub tags become strong, em, u, s,
+ * mark, coloured spans, sup and sub. `plain` renders each
  * unformatted piece (so a caller can turn line breaks into ¶ marks).
  */
 export function renderMarked(text: string, plain: (piece: string) => ReactNode = (piece) => piece): ReactNode {
@@ -37,7 +38,19 @@ export function renderMarked(text: string, plain: (piece: string) => ReactNode =
     }
     let node: ReactNode = plain(content.slice(span.start, span.end));
     if (span.highlight) {
-      node = <mark>{node}</mark>;
+      node = span.highlightColor ? <mark style={{ backgroundColor: span.highlightColor }}>{node}</mark> : <mark>{node}</mark>;
+    }
+    if (span.color) {
+      node = <span style={{ color: span.color }}>{node}</span>;
+    }
+    if (span.superscript) {
+      node = <sup>{node}</sup>;
+    }
+    if (span.subscript) {
+      node = <sub>{node}</sub>;
+    }
+    if (span.strike) {
+      node = <s>{node}</s>;
     }
     if (span.underline) {
       node = <u>{node}</u>;

@@ -14,6 +14,7 @@
 
 import type { IncomingMessage, Server } from "node:http";
 import { emphasisFromPieces, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
+import { marksEmphasis } from "../src/emphasisMarks";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type * as Y from "yjs";
@@ -142,8 +143,8 @@ export function collabFragmentText(fragment: { forEach: (cb: (node: unknown) => 
 }
 
 /**
- * Emphasis spans over `liveCollabDocumentText`'s result: the marks (bold,
- * italic, underline, highlight) the collaborative document carries, walked
+ * Emphasis spans over `liveCollabDocumentText`'s result: the formatting marks
+ * (bold … highlight and text colours) the collaborative document carries, walked
  * the same way and trimmed/collapsed in step with the text.
  */
 export function liveCollabDocumentEmphasis(expectedSourceDocumentId: string): EmphasisSpan[] {
@@ -206,12 +207,11 @@ function xmlNodeChars(node: unknown, out: Array<{ char: string; format: Emphasis
         continue;
       }
       const attributes = op.attributes ?? {};
-      const format: EmphasisFormat = {
-        ...(attributes.bold ? { bold: true } : {}),
-        ...(attributes.italic ? { italic: true } : {}),
-        ...(attributes.underline ? { underline: true } : {}),
-        ...(attributes.highlight ? { highlight: true } : {})
-      };
+      // Each attribute is a mark: its name, and its attributes (a highlight's or textStyle's colour).
+      const format: EmphasisFormat = marksEmphasis(Object.entries(attributes).map(([name, value]) => ({
+        type: { name },
+        attrs: value && typeof value === "object" ? value as Record<string, unknown> : {}
+      })));
       for (const char of op.insert) {
         out.push({ char, format });
       }

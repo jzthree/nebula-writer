@@ -41,7 +41,54 @@ var NebulaDocs = (() => {
   });
 
   // src/emphasis.ts
-  var EMPHASIS_KINDS = ["bold", "italic", "underline", "highlight"];
+  var EMPHASIS_KINDS = ["bold", "italic", "underline", "strike", "superscript", "subscript", "highlight"];
+  var EMPHASIS_VALUE_KEYS = ["color", "highlightColor"];
+  var DEFAULT_HIGHLIGHT_COLOR = "#FFFF00";
+  function normalizeColor(value) {
+    if (typeof value !== "string") {
+      return null;
+    }
+    const raw = value.trim();
+    const named = NAMED_COLORS[raw.toLowerCase().replace(/[\s_-]/g, "")];
+    if (named) {
+      return named;
+    }
+    const hex = raw.replace(/^#/, "").toUpperCase();
+    if (/^[0-9A-F]{3}$/.test(hex)) {
+      return `#${hex.split("").map((digit) => digit + digit).join("")}`;
+    }
+    return /^[0-9A-F]{6}$/.test(hex) ? `#${hex}` : null;
+  }
+  var NAMED_COLORS = {
+    yellow: "#FFFF00",
+    brightgreen: "#00FF00",
+    green: "#00FF00",
+    turquoise: "#00FFFF",
+    cyan: "#00FFFF",
+    pink: "#FF00FF",
+    magenta: "#FF00FF",
+    blue: "#0000FF",
+    red: "#FF0000",
+    darkblue: "#000080",
+    navy: "#000080",
+    teal: "#008080",
+    darkgreen: "#008000",
+    violet: "#800080",
+    purple: "#800080",
+    darkred: "#800000",
+    maroon: "#800000",
+    darkyellow: "#808000",
+    olive: "#808000",
+    gray50: "#808080",
+    darkgray: "#808080",
+    gray: "#808080",
+    gray25: "#C0C0C0",
+    lightgray: "#C0C0C0",
+    silver: "#C0C0C0",
+    black: "#000000",
+    white: "#FFFFFF",
+    orange: "#FFA500"
+  };
   function formatOf(span) {
     const format = {};
     for (const kind of EMPHASIS_KINDS) {
@@ -49,13 +96,43 @@ var NebulaDocs = (() => {
         format[kind] = true;
       }
     }
+    const color = normalizeColor(span?.color);
+    if (color) {
+      format.color = color;
+    }
+    const highlightColor = normalizeColor(span?.highlightColor);
+    if (highlightColor && (span?.highlight || span?.highlightColor)) {
+      format.highlight = true;
+      if (highlightColor !== DEFAULT_HIGHLIGHT_COLOR) {
+        format.highlightColor = highlightColor;
+      }
+    }
     return format;
   }
   function hasEmphasis(format) {
-    return EMPHASIS_KINDS.some((kind) => Boolean(format?.[kind]));
+    return EMPHASIS_KINDS.some((kind) => Boolean(format?.[kind])) || EMPHASIS_VALUE_KEYS.some((key) => Boolean(normalizeColor(format?.[key])));
   }
   function sameFormat(left, right) {
-    return EMPHASIS_KINDS.every((kind) => Boolean(left?.[kind]) === Boolean(right?.[kind]));
+    const a = formatOf(left);
+    const b = formatOf(right);
+    return EMPHASIS_KINDS.every((kind) => Boolean(a[kind]) === Boolean(b[kind])) && EMPHASIS_VALUE_KEYS.every((key) => (a[key] ?? null) === (b[key] ?? null));
+  }
+  function mergeFormats(formats) {
+    const merged = {};
+    for (const format of formats) {
+      const clean = formatOf(format);
+      for (const kind of EMPHASIS_KINDS) {
+        if (clean[kind]) {
+          merged[kind] = true;
+        }
+      }
+      for (const key of EMPHASIS_VALUE_KEYS) {
+        if (clean[key]) {
+          merged[key] = clean[key];
+        }
+      }
+    }
+    return merged;
   }
   function sliceEmphasis(spans, start, end) {
     const result = [];
@@ -83,16 +160,7 @@ var NebulaDocs = (() => {
     for (let index = 0; index + 1 < points.length; index += 1) {
       const start = points[index];
       const end = points[index + 1];
-      const format = {};
-      for (const span of list) {
-        if (span.start <= start && end <= span.end) {
-          for (const kind of EMPHASIS_KINDS) {
-            if (span[kind]) {
-              format[kind] = true;
-            }
-          }
-        }
-      }
+      const format = mergeFormats(list.filter((span) => span.start <= start && end <= span.end));
       if (!hasEmphasis(format)) {
         continue;
       }
@@ -356,15 +424,22 @@ var NebulaDocs = (() => {
       if (end <= start) {
         continue;
       }
-      const background = text.getBackgroundColor(start);
+      const background = normalizeColor(text.getBackgroundColor(start));
+      const foreground = normalizeColor(text.getForegroundColor(start));
+      const alignment = text.getTextAlignment(start);
       pieces.push({
         text: full.slice(start, end),
-        format: {
+        format: formatOf({
           ...text.isBold(start) ? { bold: true } : {},
           ...text.isItalic(start) ? { italic: true } : {},
           ...text.isUnderline(start) ? { underline: true } : {},
-          ...background && background !== DOCS_CHANGE_HIGHLIGHT ? { highlight: true } : {}
-        }
+          ...text.isStrikethrough(start) ? { strike: true } : {},
+          ...alignment === DocumentApp.TextAlignment.SUPERSCRIPT ? { superscript: true } : {},
+          ...alignment === DocumentApp.TextAlignment.SUBSCRIPT ? { subscript: true } : {},
+          // Writer's own change highlight is not the author's formatting; black is the default text colour.
+          ...background && background !== normalizeColor(DOCS_CHANGE_HIGHLIGHT) ? { highlight: true, highlightColor: background } : {},
+          ...foreground && foreground !== "#000000" ? { color: foreground } : {}
+        })
       });
     }
     return bridgeEmphasisGaps(full, emphasisFromPieces(pieces));
@@ -697,6 +772,9 @@ var NebulaDocs = (() => {
         text.setItalic(piece.start, piece.end - 1, false);
         text.setUnderline(piece.start, piece.end - 1, false);
         text.setBackgroundColor(piece.start, piece.end - 1, null);
+        text.setStrikethrough(piece.start, piece.end - 1, false);
+        text.setForegroundColor(piece.start, piece.end - 1, null);
+        text.setTextAlignment(piece.start, piece.end - 1, DocumentApp.TextAlignment.NORMAL);
         const local = op.text.slice(piece.textOffset, piece.textOffset + (piece.end - piece.start));
         let cursor = 0;
         for (const run of splitByEmphasis(local, op.emphasis.map((span) => ({ ...span, start: span.start - piece.textOffset, end: span.end - piece.textOffset })))) {
@@ -712,7 +790,16 @@ var NebulaDocs = (() => {
             text.setUnderline(from, to, true);
           }
           if (run.format.highlight) {
-            text.setBackgroundColor(from, to, DOCS_EMPHASIS_HIGHLIGHT);
+            text.setBackgroundColor(from, to, run.format.highlightColor ?? DOCS_EMPHASIS_HIGHLIGHT);
+          }
+          if (run.format.strike) {
+            text.setStrikethrough(from, to, true);
+          }
+          if (run.format.color) {
+            text.setForegroundColor(from, to, run.format.color);
+          }
+          if (run.format.superscript || run.format.subscript) {
+            text.setTextAlignment(from, to, run.format.superscript ? DocumentApp.TextAlignment.SUPERSCRIPT : DocumentApp.TextAlignment.SUBSCRIPT);
           }
           cursor += run.text.length;
         }

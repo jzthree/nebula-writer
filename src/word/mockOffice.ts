@@ -9,7 +9,7 @@
  * *OrNullObject) so the real facade code runs unchanged against it.
  */
 
-import { emphasisAt, hasEmphasis, normalizeEmphasis, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisKind, type EmphasisSpan } from "../emphasis";
+import { emphasisAt, formatOf, hasEmphasis, normalizeColor, normalizeEmphasis, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisKind, type EmphasisSpan } from "../emphasis";
 
 export interface MockParagraphSeed {
   text: string;
@@ -306,13 +306,39 @@ export class MockWordHost {
 
   /** Turn one kind of emphasis on or off over [from, to), like setting Word's font.bold on a range. */
   setEmphasis(from: number, to: number, kind: EmphasisKind, on: boolean): void {
+    this.setFormat(from, to, (format) => {
+      const next = { ...format };
+      if (on) {
+        next[kind] = true;
+      } else {
+        delete next[kind];
+        if (kind === "highlight") {
+          delete next.highlightColor;
+        }
+      }
+      return next;
+    });
+  }
+
+  /** One value over [from, to) as Word reports it: the uniform value, or `mixed`. */
+  valueOver<T>(from: number, to: number, pick: (format: EmphasisFormat) => T): { mixed: boolean; value: T } {
+    const first = pick(emphasisAt(this.emphasis, from));
+    for (let offset = from + 1; offset < to; offset += 1) {
+      if (pick(emphasisAt(this.emphasis, offset)) !== first) {
+        return { mixed: true, value: first };
+      }
+    }
+    return { mixed: false, value: first };
+  }
+
+  /** Rewrite the format of every character in [from, to), like setting a font property on a range. */
+  setFormat(from: number, to: number, patch: (format: EmphasisFormat) => EmphasisFormat): void {
     if (to <= from) {
       return;
     }
-    const spans: EmphasisSpan[] = [];
+    const spans: EmphasisSpan[] = this.emphasis.filter((span) => span.end <= from || span.start >= to);
     for (const span of this.emphasis) {
       if (span.end <= from || span.start >= to) {
-        spans.push(span);
         continue;
       }
       if (span.start < from) {
@@ -321,16 +347,13 @@ export class MockWordHost {
       if (span.end > to) {
         spans.push({ ...span, start: to });
       }
-      const inner = { ...span, start: Math.max(span.start, from), end: Math.min(span.end, to) };
-      if (on) {
-        inner[kind] = true;
-      } else {
-        delete inner[kind];
-      }
-      spans.push(inner);
     }
-    if (on) {
-      spans.push({ start: from, end: to, [kind]: true });
+    // Character by character: the new format of each, from the old.
+    for (let offset = from; offset < to; offset += 1) {
+      const next = formatOf(patch(emphasisAt(this.emphasis, offset)));
+      if (hasEmphasis(next)) {
+        spans.push({ ...next, start: offset, end: offset + 1 });
+      }
     }
     this.emphasis = normalizeEmphasis(spans);
     this.edits.push({ from, to, original: this.text.slice(from, to), replacement: this.text.slice(from, to) });
@@ -523,7 +546,19 @@ export class MockWordHost {
 
   /* ----------------------------- search ----------------------------- */
 
-  search(query: string, options: { matchCase?: boolean; ignoreSpace?: boolean } = {}, within: { from: number; to: number } | null = null): Array<{ from: number; to: number }> {
+  search(query: string, options: { matchCase?: boolean; ignoreSpace?: boolean; matchWildcards?: boolean } = {}, within: { from: number; to: number } | null = null): Array<{ from: number; to: number }> {
+    // Word's wildcard "?" is any one character: every character of the range, paragraph marks aside.
+    if (options.matchWildcards && query === "?") {
+      const from = within?.from ?? 0;
+      const to = within?.to ?? this.text.length;
+      const hits: Array<{ from: number; to: number }> = [];
+      for (let offset = from; offset < to; offset += 1) {
+        if (this.text[offset] !== "\n") {
+          hits.push({ from: offset, to: offset + 1 });
+        }
+      }
+      return hits;
+    }
     // Like Word: a search string never matches across a paragraph mark, and a
     // literal "^p" finds nothing (Office.js search has no paragraph-mark code).
     if (/\^p/.test(query)) {
@@ -794,7 +829,7 @@ export class MockRange {
     return new MockRange(this.host, this.from, this.to);
   }
 
-  search(query: string, options?: { matchCase?: boolean; ignoreSpace?: boolean }): { items: MockRange[]; load: () => void } {
+  search(query: string, options?: { matchCase?: boolean; ignoreSpace?: boolean; matchWildcards?: boolean }): { items: MockRange[]; load: () => void } {
     const items = this.host.search(query, options, { from: this.from, to: this.to }).map((match) => new MockRange(this.host, match.from, match.to));
     return { items, load: () => undefined };
   }
@@ -1009,12 +1044,54 @@ export class MockFont {
   }
 
   get highlightColor(): string | null {
-    const on = this.host.emphasisKindOver(this.from, this.to, "highlight");
-    return on === null ? "" : on ? "#FFFF00" : null;
+    const read = this.host.valueOver(this.from, this.to, (format) => (format.highlight ? format.highlightColor ?? "#FFFF00" : null));
+    return read.mixed ? "" : read.value;
   }
 
   set highlightColor(value: string | null) {
-    this.host.setEmphasis(this.from, this.to, "highlight", Boolean(value));
+    const color = normalizeColor(value);
+    this.host.setFormat(this.from, this.to, (format) => {
+      const { highlight: _h, highlightColor: _c, ...rest } = format;
+      return color ? { ...rest, highlight: true, highlightColor: color } : rest;
+    });
+  }
+
+  /** Automatic colour reads as black, as in Word. */
+  get color(): string | null {
+    const read = this.host.valueOver(this.from, this.to, (format) => format.color ?? "#000000");
+    return read.mixed ? null : read.value;
+  }
+
+  set color(value: string) {
+    const color = normalizeColor(value);
+    this.host.setFormat(this.from, this.to, (format) => {
+      const { color: _c, ...rest } = format;
+      return color && color !== "#000000" ? { ...rest, color } : rest;
+    });
+  }
+
+  get strikeThrough(): boolean | null {
+    return this.host.emphasisKindOver(this.from, this.to, "strike");
+  }
+
+  set strikeThrough(value: boolean) {
+    this.host.setEmphasis(this.from, this.to, "strike", Boolean(value));
+  }
+
+  get superscript(): boolean | null {
+    return this.host.emphasisKindOver(this.from, this.to, "superscript");
+  }
+
+  set superscript(value: boolean) {
+    this.host.setEmphasis(this.from, this.to, "superscript", Boolean(value));
+  }
+
+  get subscript(): boolean | null {
+    return this.host.emphasisKindOver(this.from, this.to, "subscript");
+  }
+
+  set subscript(value: boolean) {
+    this.host.setEmphasis(this.from, this.to, "subscript", Boolean(value));
   }
 }
 

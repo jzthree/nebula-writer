@@ -14,13 +14,23 @@
 
 import { wordDiffSegments } from "./wordDiff";
 
-export type EmphasisKind = "bold" | "italic" | "underline" | "highlight";
+export type EmphasisKind = "bold" | "italic" | "underline" | "strike" | "superscript" | "subscript" | "highlight";
+/** Formatting that carries a value (a #RRGGBB colour) rather than being on or off. */
+export type EmphasisValueKey = "color" | "highlightColor";
 
 export interface EmphasisFormat {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strike?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
+  /** Any highlight; `highlightColor` says which when it is not the default yellow. */
   highlight?: boolean;
+  /** #RRGGBB of the highlight (background) when known and not yellow. */
+  highlightColor?: string;
+  /** #RRGGBB text colour when it is not the automatic/black default. */
+  color?: string;
 }
 
 /** A run of text with uniform emphasis; offsets are character offsets in the plain text. */
@@ -35,20 +45,53 @@ export interface SuggestionEmphasis {
   replacement: EmphasisSpan[];
 }
 
-export const EMPHASIS_KINDS: EmphasisKind[] = ["bold", "italic", "underline", "highlight"];
+export const EMPHASIS_KINDS: EmphasisKind[] = ["bold", "italic", "underline", "strike", "superscript", "subscript", "highlight"];
+export const EMPHASIS_VALUE_KEYS: EmphasisValueKey[] = ["color", "highlightColor"];
 
-export const EMPHASIS_MARKERS: Record<EmphasisKind, string> = {
+/** Markers for the on/off kinds written inline (superscript and subscript use tags). */
+export const EMPHASIS_MARKERS: Partial<Record<EmphasisKind, string>> = {
   bold: "**",
   italic: "*",
   underline: "__",
+  strike: "~~",
   highlight: "=="
 };
 
+export const DEFAULT_HIGHLIGHT_COLOR = "#FFFF00";
+
 /** One line for prompts and tool descriptions: how emphasis appears and how to write it. */
 export const EMPHASIS_NOTATION_NOTE =
-  "Inline emphasis in the text is shown with markers: **bold**, *italic*, __underline__, ==highlight==. "
-  + "Quote original text with the markers exactly as shown, and use the same markers in replacements to keep, add, or remove emphasis "
-  + "(a replacement without markers where the original had them removes the emphasis).";
+  "Inline formatting in the text is shown with markers: **bold**, *italic*, __underline__, ~~strikethrough~~, ==highlight==, "
+  + "{color=#C00000}coloured text{/color}, {bg=#00FFFF}text on a coloured highlight{/bg}, x{sup}2{/sup} superscript and H{sub}2{/sub}O subscript. "
+  + "Quote original text with the markers exactly as shown, and use the same markers in replacements to keep, add, or remove formatting "
+  + "(a replacement without markers where the original had them removes the formatting).";
+
+const HEX_COLOR = /^#[0-9A-F]{6}$/;
+
+/** A colour as #RRGGBB (upper case), from #RGB/#RRGGBB/RRGGBB or a common name; null when it is not one. */
+export function normalizeColor(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const raw = value.trim();
+  const named = NAMED_COLORS[raw.toLowerCase().replace(/[\s_-]/g, "")];
+  if (named) {
+    return named;
+  }
+  const hex = raw.replace(/^#/, "").toUpperCase();
+  if (/^[0-9A-F]{3}$/.test(hex)) {
+    return `#${hex.split("").map((digit) => digit + digit).join("")}`;
+  }
+  return /^[0-9A-F]{6}$/.test(hex) ? `#${hex}` : null;
+}
+
+/** Word's highlight palette and the CSS basics, by name. */
+const NAMED_COLORS: Record<string, string> = {
+  yellow: "#FFFF00", brightgreen: "#00FF00", green: "#00FF00", turquoise: "#00FFFF", cyan: "#00FFFF", pink: "#FF00FF", magenta: "#FF00FF",
+  blue: "#0000FF", red: "#FF0000", darkblue: "#000080", navy: "#000080", teal: "#008080", darkgreen: "#008000", violet: "#800080", purple: "#800080",
+  darkred: "#800000", maroon: "#800000", darkyellow: "#808000", olive: "#808000", gray50: "#808080", darkgray: "#808080", gray: "#808080",
+  gray25: "#C0C0C0", lightgray: "#C0C0C0", silver: "#C0C0C0", black: "#000000", white: "#FFFFFF", orange: "#FFA500"
+};
 
 export function isEmphasisSpan(value: unknown): value is EmphasisSpan {
   if (!value || typeof value !== "object") {
@@ -56,7 +99,8 @@ export function isEmphasisSpan(value: unknown): value is EmphasisSpan {
   }
   const span = value as Partial<EmphasisSpan>;
   return Number.isInteger(span.start) && Number.isInteger(span.end) && (span.start as number) >= 0 && (span.end as number) >= (span.start as number)
-    && EMPHASIS_KINDS.every((kind) => span[kind] === undefined || typeof span[kind] === "boolean");
+    && EMPHASIS_KINDS.every((kind) => span[kind] === undefined || typeof span[kind] === "boolean")
+    && EMPHASIS_VALUE_KEYS.every((key) => span[key] === undefined || (typeof span[key] === "string" && HEX_COLOR.test(span[key] as string)));
 }
 
 export function isEmphasisSpanList(value: unknown): value is EmphasisSpan[] {
@@ -78,30 +122,52 @@ export function formatOf(span: EmphasisFormat | null | undefined): EmphasisForma
       format[kind] = true;
     }
   }
+  const color = normalizeColor(span?.color);
+  if (color) {
+    format.color = color;
+  }
+  const highlightColor = normalizeColor(span?.highlightColor);
+  if (highlightColor && (span?.highlight || span?.highlightColor)) {
+    format.highlight = true;
+    if (highlightColor !== DEFAULT_HIGHLIGHT_COLOR) {
+      format.highlightColor = highlightColor;
+    }
+  }
   return format;
 }
 
 export function hasEmphasis(format: EmphasisFormat | null | undefined): boolean {
-  return EMPHASIS_KINDS.some((kind) => Boolean(format?.[kind]));
+  return EMPHASIS_KINDS.some((kind) => Boolean(format?.[kind])) || EMPHASIS_VALUE_KEYS.some((key) => Boolean(normalizeColor(format?.[key])));
 }
 
 export function sameFormat(left: EmphasisFormat | null | undefined, right: EmphasisFormat | null | undefined): boolean {
-  return EMPHASIS_KINDS.every((kind) => Boolean(left?.[kind]) === Boolean(right?.[kind]));
+  const a = formatOf(left);
+  const b = formatOf(right);
+  return EMPHASIS_KINDS.every((kind) => Boolean(a[kind]) === Boolean(b[kind])) && EMPHASIS_VALUE_KEYS.every((key) => (a[key] ?? null) === (b[key] ?? null));
+}
+
+/** Combine formats that apply to the same text: on/off kinds add up, a later colour wins. */
+export function mergeFormats(formats: Array<EmphasisFormat | null | undefined>): EmphasisFormat {
+  const merged: EmphasisFormat = {};
+  for (const format of formats) {
+    const clean = formatOf(format);
+    for (const kind of EMPHASIS_KINDS) {
+      if (clean[kind]) {
+        merged[kind] = true;
+      }
+    }
+    for (const key of EMPHASIS_VALUE_KEYS) {
+      if (clean[key]) {
+        merged[key] = clean[key];
+      }
+    }
+  }
+  return merged;
 }
 
 /** The emphasis at one character offset. */
 export function emphasisAt(spans: EmphasisSpan[] | null | undefined, offset: number): EmphasisFormat {
-  const format: EmphasisFormat = {};
-  for (const span of spans ?? []) {
-    if (span.start <= offset && offset < span.end) {
-      for (const kind of EMPHASIS_KINDS) {
-        if (span[kind]) {
-          format[kind] = true;
-        }
-      }
-    }
-  }
-  return format;
+  return mergeFormats((spans ?? []).filter((span) => span.start <= offset && offset < span.end));
 }
 
 /** Spans clipped to [start, end) and rebased so `start` becomes 0. */
@@ -138,16 +204,7 @@ export function normalizeEmphasis(spans: EmphasisSpan[] | null | undefined): Emp
   for (let index = 0; index + 1 < points.length; index += 1) {
     const start = points[index];
     const end = points[index + 1];
-    const format: EmphasisFormat = {};
-    for (const span of list) {
-      if (span.start <= start && end <= span.end) {
-        for (const kind of EMPHASIS_KINDS) {
-          if (span[kind]) {
-            format[kind] = true;
-          }
-        }
-      }
-    }
+    const format = mergeFormats(list.filter((span) => span.start <= start && end <= span.end));
     if (!hasEmphasis(format)) {
       continue;
     }
@@ -196,12 +253,38 @@ export function uniformEmphasis(spans: EmphasisSpan[] | null | undefined, start:
 /* Rendering: plain text + spans -> marked text                              */
 /* ------------------------------------------------------------------------- */
 
+/** Opening markers outermost first: colour tags, then sup/sub tags, then the inline markers. */
+function markerSequence(format: EmphasisFormat): string[][] {
+  const clean = formatOf(format);
+  const pairs: string[][] = [];
+  if (clean.color) {
+    pairs.push([`{color=${clean.color}}`, "{/color}"]);
+  }
+  if (clean.highlightColor) {
+    pairs.push([`{bg=${clean.highlightColor}}`, "{/bg}"]);
+  }
+  if (clean.superscript) {
+    pairs.push(["{sup}", "{/sup}"]);
+  }
+  if (clean.subscript) {
+    pairs.push(["{sub}", "{/sub}"]);
+  }
+  for (const kind of EMPHASIS_KINDS) {
+    const marker = EMPHASIS_MARKERS[kind];
+    // A coloured highlight is written as its {bg} tag, not ==.
+    if (marker && clean[kind] && !(kind === "highlight" && clean.highlightColor)) {
+      pairs.push([marker, marker]);
+    }
+  }
+  return pairs;
+}
+
 function openMarkers(format: EmphasisFormat): string {
-  return EMPHASIS_KINDS.filter((kind) => format[kind]).map((kind) => EMPHASIS_MARKERS[kind]).join("");
+  return markerSequence(format).map(([open]) => open).join("");
 }
 
 function closeMarkers(format: EmphasisFormat): string {
-  return EMPHASIS_KINDS.filter((kind) => format[kind]).map((kind) => EMPHASIS_MARKERS[kind]).reverse().join("");
+  return markerSequence(format).map(([, close]) => close).reverse().join("");
 }
 
 interface FormatRun {
@@ -291,12 +374,18 @@ export function renderEmphasisPerWord(text: string, spans: EmphasisSpan[] | null
 /* Parsing: marked text -> plain text + spans                                */
 /* ------------------------------------------------------------------------- */
 
+type TagKind = "color" | "bg" | "sup" | "sub";
+
 interface MarkerToken {
   index: number;
   kind: EmphasisKind;
   length: number;
   role: "open" | "close" | "literal";
+  /** Explicit tags ({color=#…}…{/color}) pair by name, not by spacing. */
+  tag?: { name: TagKind; closing: boolean; value: string | null };
 }
+
+const TAG = /^\{(\/?)(color|bg|sup|sub)(?:=(#?[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?))?\}/;
 
 function tokenizeMarkers(marked: string): MarkerToken[] {
   const tokens: MarkerToken[] = [];
@@ -304,6 +393,19 @@ function tokenizeMarkers(marked: string): MarkerToken[] {
   while (index < marked.length) {
     const char = marked[index];
     const next = marked[index + 1];
+    if (char === "{") {
+      const tag = TAG.exec(marked.slice(index, index + 20));
+      const closing = tag?.[1] === "/";
+      const name = tag?.[2] as TagKind | undefined;
+      const value = tag?.[3] ? normalizeColor(tag[3]) : null;
+      // An opening colour tag needs its colour; a closing tag takes none.
+      if (tag && name && (closing ? !tag[3] : (name === "color" || name === "bg") === Boolean(value))) {
+        const kind: EmphasisKind = name === "sup" ? "superscript" : name === "sub" ? "subscript" : "highlight";
+        tokens.push({ index, kind, length: tag[0].length, role: "literal", tag: { name, closing, value } });
+        index += tag[0].length;
+        continue;
+      }
+    }
     if (char === "*" && next === "*") {
       tokens.push({ index, kind: "bold", length: 2, role: "literal" });
       index += 2;
@@ -316,6 +418,11 @@ function tokenizeMarkers(marked: string): MarkerToken[] {
     }
     if (char === "_" && next === "_") {
       tokens.push({ index, kind: "underline", length: 2, role: "literal" });
+      index += 2;
+      continue;
+    }
+    if (char === "~" && next === "~") {
+      tokens.push({ index, kind: "strike", length: 2, role: "literal" });
       index += 2;
       continue;
     }
@@ -333,12 +440,24 @@ function isSpace(char: string | undefined): boolean {
   return char === undefined || /\s/.test(char);
 }
 
+/** The format one paired token contributes. */
+function tokenFormat(token: MarkerToken): EmphasisFormat {
+  if (token.tag?.name === "color") {
+    return { color: token.tag.value ?? undefined };
+  }
+  if (token.tag?.name === "bg") {
+    return { highlight: true, highlightColor: token.tag.value ?? undefined };
+  }
+  return { [token.kind]: true };
+}
+
 /**
  * Strip emphasis markers and return the plain text with the spans they
- * described. Markers pair per kind in order; a marker that cannot open (no
- * text follows it), cannot close (space before it), or never finds its
+ * described. Inline markers pair per kind in order; a marker that cannot open
+ * (no text follows it), cannot close (space before it), or never finds its
  * partner is left in the text as literal characters, so stray asterisks in
- * prose survive untouched.
+ * prose survive untouched. Tags ({color=#…}, {bg=#…}, {sup}, {sub}) pair with
+ * their closing tag; an unpaired tag stays literal too.
  */
 export function parseEmphasis(marked: string): { text: string; spans: EmphasisSpan[] } {
   const tokens = tokenizeMarkers(marked);
@@ -346,7 +465,23 @@ export function parseEmphasis(marked: string): { text: string; spans: EmphasisSp
     return { text: marked, spans: [] };
   }
   const open: Partial<Record<EmphasisKind, MarkerToken>> = {};
+  const openTags: Partial<Record<TagKind, MarkerToken[]>> = {};
+  const partner = new Map<MarkerToken, MarkerToken>();
   for (const token of tokens) {
+    if (token.tag) {
+      const stack = (openTags[token.tag.name] ??= []);
+      if (!token.tag.closing) {
+        stack.push(token);
+      } else {
+        const opener = stack.pop();
+        if (opener) {
+          opener.role = "open";
+          token.role = "close";
+          partner.set(token, opener);
+        }
+      }
+      continue;
+    }
     const before = marked[token.index - 1];
     const after = marked[token.index + token.length];
     const nextTokenAdjacent = tokens.some((other) => other !== token && other.index === token.index + token.length);
@@ -357,6 +492,7 @@ export function parseEmphasis(marked: string): { text: string; spans: EmphasisSp
       if (!isSpace(before) || previousTokenAdjacent) {
         token.role = "close";
         opener.role = "open";
+        partner.set(token, opener);
         delete open[token.kind];
         continue;
       }
@@ -366,18 +502,10 @@ export function parseEmphasis(marked: string): { text: string; spans: EmphasisSp
       continue;
     }
   }
-  // Openers that never closed stay literal.
-  for (const kind of EMPHASIS_KINDS) {
-    const dangling = open[kind];
-    if (dangling) {
-      dangling.role = "literal";
-    }
-  }
 
   let text = "";
   const spans: EmphasisSpan[] = [];
-  const state: EmphasisFormat = {};
-  const starts: Partial<Record<EmphasisKind, number>> = {};
+  const starts = new Map<MarkerToken, number>();
   let cursor = 0;
   for (const token of tokens) {
     text += marked.slice(cursor, token.index);
@@ -387,15 +515,13 @@ export function parseEmphasis(marked: string): { text: string; spans: EmphasisSp
       continue;
     }
     if (token.role === "open") {
-      state[token.kind] = true;
-      starts[token.kind] = text.length;
-    } else {
-      const start = starts[token.kind] ?? text.length;
-      if (text.length > start) {
-        spans.push({ start, end: text.length, [token.kind]: true });
-      }
-      state[token.kind] = false;
-      delete starts[token.kind];
+      starts.set(token, text.length);
+      continue;
+    }
+    const opener = partner.get(token);
+    const start = opener ? starts.get(opener) ?? text.length : text.length;
+    if (opener && text.length > start) {
+      spans.push({ ...formatOf(tokenFormat(opener)), start, end: text.length });
     }
   }
   text += marked.slice(cursor);

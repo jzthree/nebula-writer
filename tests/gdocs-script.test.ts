@@ -114,6 +114,21 @@ describe("google docs script: applying", () => {
     expect(paragraph?.formatAt(0)).toMatchObject({ bold: false, background: null });
   });
 
+  it("reads and writes text colour, highlight colour, strikethrough and superscript", () => {
+    const doc = install(buildFakeDocument([{ text: "Red cyan x2 old text.", foreground: [[0, 3, "#c00000"], [12, 15, "#000000"]], background: [[4, 8, "#00ffff"]], superscript: [[10, 11]], strikethrough: [[12, 15]] }]));
+    expect(nebulaReadDocument().paragraphs[0].emphasis).toEqual([
+      { start: 0, end: 3, color: "#C00000" },
+      { start: 4, end: 8, highlight: true, highlightColor: "#00FFFF" },
+      { start: 10, end: 11, superscript: true },
+      { start: 12, end: 15, strike: true }
+    ]);
+    const outcomes = nebulaApply([op({ paragraphIndex: 0, start: 16, end: 21, expected: "text.", text: "H2O.", emphasis: [{ start: 1, end: 2, subscript: true }, { start: 0, end: 3, color: "#0000FF" }] })]);
+    expect(outcomes).toEqual([{ id: "op", ok: true }]);
+    const at = doc.paragraph(0).getText().indexOf("H2O");
+    expect(doc.paragraph(0).formatAt(at + 1)).toMatchObject({ alignment: "SUBSCRIPT", foreground: "#0000FF" });
+    expect(doc.paragraph(0).formatAt(at)).toMatchObject({ alignment: "NORMAL", foreground: "#0000FF" });
+  });
+
   it("splits a paragraph for a multi-line replacement, keeping the rest of the paragraph after the last line", () => {
     const doc = install(buildFakeDocument([{ text: "Alpha beta gamma." }, { text: "Delta." }]));
     const outcomes = nebulaApply([op({ paragraphIndex: 0, start: 6, end: 10, expected: "beta", text: "one\ntwo", highlight: true })]);

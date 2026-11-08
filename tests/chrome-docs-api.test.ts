@@ -139,12 +139,54 @@ describe("chrome extension: batchUpdate plans", () => {
     expect(plan.accepted).toEqual(["emph", "span"]);
     // Formatting only: no delete/insert, clear then set the run; the change highlight is not applied to unchanged text.
     expect(plan.requests.slice(0, 2)).toEqual([
-      { updateTextStyle: { range: { startIndex: 94, endIndex: 103 }, textStyle: { bold: false, italic: false, underline: false, backgroundColor: {} }, fields: "bold,italic,underline,backgroundColor" } },
+      { updateTextStyle: { range: { startIndex: 94, endIndex: 103 }, textStyle: { bold: false, italic: false, underline: false, strikethrough: false, baselineOffset: "NONE", backgroundColor: {}, foregroundColor: {} }, fields: "bold,italic,underline,strikethrough,baselineOffset,backgroundColor,foregroundColor" } },
       { updateTextStyle: { range: { startIndex: 94, endIndex: 98 }, textStyle: { bold: true, underline: true }, fields: "bold,underline" } }
     ]);
     expect(plan.requests.slice(2)).toEqual([
       { deleteContentRange: { range: { startIndex: 62, endIndex: 79 } } },
       { insertText: { location: { index: 62 }, text: "ends\nNew:" } }
     ]);
+  });
+
+  it("reads and writes text colour, highlight colour, strikethrough and superscript", () => {
+    const rgb = (red: number, green: number, blue: number) => ({ color: { rgbColor: { red, green, blue } } });
+    const doc: ApiDocument = {
+      documentId: "doc-c",
+      title: "Colours",
+      revisionId: "rev-c",
+      body: {
+        content: [{
+          startIndex: 1,
+          endIndex: 24,
+          paragraph: {
+            elements: [
+              { startIndex: 1, endIndex: 4, textRun: { content: "Red", textStyle: { foregroundColor: rgb(0.75, 0, 0) } } },
+              { startIndex: 4, endIndex: 5, textRun: { content: " ", textStyle: {} } },
+              { startIndex: 5, endIndex: 9, textRun: { content: "cyan", textStyle: { backgroundColor: rgb(0, 1, 1) } } },
+              { startIndex: 9, endIndex: 11, textRun: { content: " x", textStyle: {} } },
+              { startIndex: 11, endIndex: 12, textRun: { content: "2", textStyle: { baselineOffset: "SUPERSCRIPT" } } },
+              { startIndex: 12, endIndex: 13, textRun: { content: " ", textStyle: {} } },
+              { startIndex: 13, endIndex: 16, textRun: { content: "old", textStyle: { strikethrough: true, foregroundColor: rgb(0, 0, 0) } } },
+              { startIndex: 16, endIndex: 24, textRun: { content: " text.\n", textStyle: {} } }
+            ],
+            paragraphStyle: { namedStyleType: "NORMAL_TEXT" }
+          }
+        }]
+      }
+    } as unknown as ApiDocument;
+    const parsed = parseDocument(doc);
+    expect(parsed.payload.paragraphs[0].emphasis).toEqual([
+      { start: 0, end: 3, color: "#BF0000" },
+      { start: 4, end: 8, highlight: true, highlightColor: "#00FFFF" },
+      { start: 10, end: 11, superscript: true },
+      { start: 12, end: 15, strike: true }
+    ]);
+
+    const plan = buildBatchPlan(parsed, [
+      { id: "c", paragraphIndex: 0, start: 16, endParagraphIndex: 0, end: 21, expected: "text.", text: "H2O.", emphasis: [{ start: 1, end: 2, subscript: true }, { start: 0, end: 3, color: "#0000FF" }], highlight: false }
+    ]);
+    const styles = plan.requests.filter((request) => "updateTextStyle" in request).slice(1) as Array<{ updateTextStyle: { textStyle: Record<string, unknown>; fields: string } }>;
+    expect(styles.map((request) => request.updateTextStyle.fields)).toEqual(["foregroundColor", "baselineOffset,foregroundColor", "foregroundColor"]);
+    expect(styles[1].updateTextStyle.textStyle.baselineOffset).toBe("SUBSCRIPT");
   });
 });

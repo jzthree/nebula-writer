@@ -16,7 +16,7 @@
 import { wordDiffSegments } from "../wordDiff";
 import { findEditTarget, planTableMorph, rectangular, type DocumentTable } from "../tables";
 import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../shared";
-import { bridgeEmphasisGaps, emphasisAt, emphasisFromPieces, hasEmphasis, normalizeEmphasis, sameFormat, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
+import { bridgeEmphasisGaps, DEFAULT_HIGHLIGHT_COLOR, emphasisAt, emphasisFromPieces, formatOf, hasEmphasis, normalizeColor, normalizeEmphasis, sameFormat, shiftEmphasis, uniformEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
 
 import { chooseAnchoredCandidate, type SuggestionAnchor } from "../shared";
 import type { AiSuggestion, SelectionContext } from "../shared";
@@ -358,13 +358,18 @@ function dateString(target: object, key: string): string | null {
   }
 }
 
-const PARAGRAPH_FONT_PROPERTIES = "items/font/bold,items/font/italic,items/font/underline,items/font/highlightColor";
-const PIECE_FONT_PROPERTIES = "items/text,items/font/bold,items/font/italic,items/font/underline,items/font/highlightColor";
+const FONT_FIELDS = ["bold", "italic", "underline", "highlightColor", "color", "strikeThrough", "superscript", "subscript"];
+const PARAGRAPH_FONT_PROPERTIES = FONT_FIELDS.map((field) => `items/font/${field}`).join(",");
+const PIECE_FONT_PROPERTIES = `items/text,${PARAGRAPH_FONT_PROPERTIES}`;
+/** Word reports automatic text colour as black: only other colours are formatting the reader notices. */
+const AUTOMATIC_TEXT_COLOR = "#000000";
+/** Words with formatting inside them read character by character per snapshot. */
+const MIXED_WORD_LIMIT = 2_000;
 /** Mixed-format paragraphs read word by word per snapshot; beyond this, emphasis is reported for uniform paragraphs only. */
 const EMPHASIS_MIXED_PARAGRAPH_LIMIT = 400;
 const WORD_ENDING_MARKS = [" ", "\t", "\u00a0"];
 
-/** A Word font's emphasis; `mixed` when Word reports null (or "" for highlight) because the range is not uniform. */
+/** A Word font's emphasis; `mixed` when Word reports null (or "" for a colour) because the range is not uniform. */
 function fontEmphasis(font: unknown): { format: EmphasisFormat; mixed: boolean } {
   const read = (key: string): unknown => {
     try {
@@ -377,15 +382,26 @@ function fontEmphasis(font: unknown): { format: EmphasisFormat; mixed: boolean }
   const italic = read("italic");
   const underline = read("underline");
   const highlight = read("highlightColor");
-  const mixed = bold === null || italic === null || underline === null || highlight === "";
+  const color = read("color");
+  const strike = read("strikeThrough");
+  const superscript = read("superscript");
+  const subscript = read("subscript");
+  const mixed = bold === null || italic === null || underline === null || highlight === "" || color === null || color === ""
+    || strike === null || superscript === null || subscript === null;
+  const textColor = normalizeColor(color);
+  const highlightColor = normalizeColor(highlight);
   return {
     mixed,
-    format: {
+    format: formatOf({
       ...(bold === true ? { bold: true } : {}),
       ...(italic === true ? { italic: true } : {}),
       ...(typeof underline === "string" && underline !== "None" && underline !== "" ? { underline: true } : {}),
-      ...(typeof highlight === "string" && highlight ? { highlight: true } : {})
-    }
+      ...(typeof highlight === "string" && highlight ? { highlight: true, ...(highlightColor ? { highlightColor } : {}) } : {}),
+      ...(textColor && textColor !== AUTOMATIC_TEXT_COLOR ? { color: textColor } : {}),
+      ...(strike === true ? { strike: true } : {}),
+      ...(superscript === true ? { superscript: true } : {}),
+      ...(subscript === true ? { subscript: true } : {})
+    })
   };
 }
 
@@ -417,6 +433,20 @@ async function readParagraphEmphasis(context: Word.RequestContext, items: Word.P
   });
   if (mixed.length) {
     await context.sync();
+    // A word whose own formatting is mixed (x², H₂O, a coloured letter) is read character by character.
+    const characters = new Map<Word.Range, Word.RangeCollection>();
+    for (const entry of mixed) {
+      for (const piece of entry.pieces.items ?? []) {
+        if (fontEmphasis(piece.font).mixed && characters.size < MIXED_WORD_LIMIT) {
+          const chars = piece.search("?", { matchWildcards: true });
+          chars.load(PIECE_FONT_PROPERTIES);
+          characters.set(piece, chars);
+        }
+      }
+    }
+    if (characters.size) {
+      await context.sync();
+    }
     for (const entry of mixed) {
       let cursor = 0;
       const pieces: Array<{ text: string; format: EmphasisFormat | null }> = [];
@@ -431,7 +461,15 @@ async function readParagraphEmphasis(context: Word.RequestContext, items: Word.P
           pieces.push({ text: entry.info.text.slice(cursor, start), format: null });
         }
         const font = fontEmphasis(piece.font);
-        pieces.push({ text, format: font.mixed ? null : font.format });
+        const chars = characters.get(piece)?.items ?? [];
+        if (font.mixed && chars.length === text.length) {
+          for (const char of chars) {
+            const charFont = fontEmphasis(char.font);
+            pieces.push({ text: normalizeWordText(char.text ?? "") || " ", format: charFont.mixed ? null : charFont.format });
+          }
+        } else {
+          pieces.push({ text, format: font.mixed ? null : font.format });
+        }
         cursor = start + text.length;
       }
       // Words were read without their trailing spaces (a phrase's last space
@@ -1174,6 +1212,7 @@ async function applyRequestedEmphasis(
   }));
   await context.sync();
   let changed = false;
+  const characterEdits: Array<{ word: Word.Range; from: number; length: number; spans: EmphasisSpan[] }> = [];
   for (const entry of loaded) {
     const spans = entry.suggestion.emphasis?.replacement ?? [];
     // The replacement line by line: spans count from its start, Word's text is per paragraph.
@@ -1200,6 +1239,7 @@ async function applyRequestedEmphasis(
       const wide = paragraph.wide.items ?? [];
       const aligned = wide.length === words.length;
       let cursor = 0;
+      const mixedWords: Array<{ word: Word.Range; from: number; length: number }> = [];
       const desiredByIndex: Array<EmphasisFormat | null> = words.map((piece) => {
         const text = normalizeWordText(piece.text ?? "");
         if (!text) {
@@ -1214,7 +1254,12 @@ async function applyRequestedEmphasis(
           return null;
         }
         const from = coreStart - at + line.offset;
-        return uniformEmphasis(spans, from, coreEnd - at + line.offset) ?? emphasisAt(spans, from);
+        const uniform = uniformEmphasis(spans, from, coreEnd - at + line.offset);
+        if (!uniform) {
+          // Formatting inside the word: set it character by character (below).
+          mixedWords.push({ word: piece, from, length: coreEnd - coreStart });
+        }
+        return uniform ?? emphasisAt(spans, from);
       });
       desiredByIndex.forEach((desired, index) => {
         if (!desired) {
@@ -1226,9 +1271,31 @@ async function applyRequestedEmphasis(
           changed = true;
         }
       });
+      characterEdits.push(...mixedWords.map((entry) => ({ ...entry, spans })));
     }
     if (located < lines.length) {
       entry.onUnlocated();
+    }
+  }
+  if (characterEdits.length) {
+    // The word-level pass above gave each mixed word its first character's format; now each character gets its own.
+    await context.sync();
+    const loadedChars = characterEdits.map((entry) => {
+      const chars = entry.word.search("?", { matchWildcards: true });
+      chars.load(PIECE_FONT_PROPERTIES);
+      return { ...entry, chars };
+    });
+    await context.sync();
+    for (const entry of loadedChars) {
+      const chars = entry.chars.items ?? [];
+      if (chars.length !== entry.length) {
+        continue;
+      }
+      chars.forEach((char, index) => {
+        if (setFontEmphasis(char.font, emphasisAt(entry.spans, entry.from + index), null)) {
+          changed = true;
+        }
+      });
     }
   }
   if (changed) {
@@ -1259,10 +1326,30 @@ function setFontEmphasis(font: Word.Font, desired: EmphasisFormat, throughSpace:
     }
     changed = true;
   };
+  // A colour is "on" when set; turning it off (or changing it) is a change like any other.
+  const writeValue = (mixed: boolean, have: string | null, wanted: string | null, apply: (target: Word.Font) => void) => {
+    if (!mixed && have === wanted) {
+      return;
+    }
+    apply(font);
+    if (throughSpace || wanted === null) {
+      if (throughSpace) {
+        apply(throughSpace);
+      }
+    }
+    changed = true;
+  };
   write(read("bold") === null, Boolean(current.format.bold), Boolean(desired.bold), (target) => { target.bold = Boolean(desired.bold); });
   write(read("italic") === null, Boolean(current.format.italic), Boolean(desired.italic), (target) => { target.italic = Boolean(desired.italic); });
   write(read("underline") === null, Boolean(current.format.underline), Boolean(desired.underline), (target) => { target.underline = desired.underline ? "Single" : "None"; });
-  write(read("highlightColor") === "", Boolean(current.format.highlight), Boolean(desired.highlight), (target) => { target.highlightColor = desired.highlight ? "#FFFF00" : (null as unknown as string); });
+  const want = formatOf(desired);
+  const highlightWanted = want.highlight ? want.highlightColor ?? DEFAULT_HIGHLIGHT_COLOR : null;
+  const highlightHave = current.format.highlight ? current.format.highlightColor ?? DEFAULT_HIGHLIGHT_COLOR : null;
+  writeValue(read("highlightColor") === "", highlightHave, highlightWanted, (target) => { target.highlightColor = (highlightWanted ?? null) as unknown as string; });
+  writeValue(read("color") === null || read("color") === "", current.format.color ?? null, want.color ?? null, (target) => { target.color = want.color ?? AUTOMATIC_TEXT_COLOR; });
+  write(read("strikeThrough") === null, Boolean(current.format.strike), Boolean(want.strike), (target) => { target.strikeThrough = Boolean(want.strike); });
+  write(read("superscript") === null, Boolean(current.format.superscript), Boolean(want.superscript), (target) => { target.superscript = Boolean(want.superscript); });
+  write(read("subscript") === null, Boolean(current.format.subscript), Boolean(want.subscript), (target) => { target.subscript = Boolean(want.subscript); });
   return changed;
 }
 

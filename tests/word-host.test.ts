@@ -570,6 +570,43 @@ describe("word host: inline emphasis", () => {
     expect(mock.emphasisOver(mock.text.indexOf("Plain closing"), start - 1)).toEqual({});
   });
 
+  it("reads and writes text colour, coloured highlight, strikethrough, superscript and subscript", async () => {
+    mock.uninstall();
+    mock = new MockWordHost({
+      paragraphs: [
+        { text: "Specific Aims", style: "Heading 1", styleBuiltIn: "Heading1", outlineLevel: 1 },
+        { text: "Red warning, cyan note and old text with x2 here.", emphasis: [{ start: 0, end: 3, color: "#C00000" }, { start: 13, end: 22, highlight: true, highlightColor: "#00FFFF" }, { start: 27, end: 35, strike: true }, { start: 42, end: 43, superscript: true }] },
+        { text: "Plain closing paragraph." }
+      ],
+      documentName: "Colours.docx",
+      viewport: { pageChars: 600, visibleChars: 500 }
+    }).install();
+    const { snapshot } = await boot();
+    const at = snapshot.paragraphs[1].offset;
+    expect(snapshot.emphasis).toEqual([
+      { start: at, end: at + 3, color: "#C00000" },
+      { start: at + 13, end: at + 22, highlight: true, highlightColor: "#00FFFF" },
+      { start: at + 27, end: at + 35, strike: true },
+      { start: at + 42, end: at + 43, superscript: true }
+    ]);
+
+    const outcomes = await applySuggestions(snapshot, [{
+      id: "c1",
+      suggestion: {
+        original: "Plain closing paragraph.",
+        replacement: "Plain closing paragraph with H2O in blue.",
+        emphasis: { original: [], replacement: [{ start: 30, end: 31, subscript: true }, { start: 36, end: 40, color: "#0000FF" }] }
+      },
+      matchIndex: 0
+    }], { trackChanges: "word" });
+    expect(outcomes[0]).toMatchObject({ id: "c1", ok: true });
+    const h2o = mock.text.indexOf("H2O");
+    expect(mock.emphasisOver(h2o + 1, h2o + 2)).toEqual({ subscript: true });
+    expect(mock.emphasisOver(h2o, h2o + 1)).toEqual({});
+    const blue = mock.text.indexOf("blue.");
+    expect(mock.emphasisOver(blue, blue + 4)).toEqual({ color: "#0000FF" });
+  });
+
   it("removes emphasis the replacement leaves out, and applies emphasis-only edits without touching the text", async () => {
     const { snapshot } = await bootEmphasis();
     const outcomes = await applySuggestions(snapshot, [{

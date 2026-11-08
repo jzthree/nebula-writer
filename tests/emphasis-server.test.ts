@@ -18,7 +18,7 @@ describe("emphasis: what the model reads", () => {
   it("renders the document with markers and explains the notation in one-shot prompts", () => {
     const prompt = buildCliPrompt(request());
     expect(prompt).toContain("**Aim 1.** Map *dynamics*.");
-    expect(prompt).toContain("Inline emphasis in the text is shown with markers");
+    expect(prompt).toContain("Inline formatting in the text is shown with markers");
   });
 
   it("renders a selection with the emphasis it carries in the document", () => {

@@ -11,7 +11,7 @@
  * without contributing text.
  */
 
-import { bridgeEmphasisGaps, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
+import { bridgeEmphasisGaps, emphasisFromPieces, formatOf as toFormat, normalizeColor, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../emphasis";
 import { DOCS_CHANGE_HIGHLIGHT, DOCS_EMPHASIS_HIGHLIGHT, type DocsDocumentPayload, type DocsImagePayload, type DocsOpOutcome, type DocsParagraphPayload, type DocsReplaceOp, type DocsTableOp } from "../gdocs/protocol";
 import { columnCount, findEditTarget, planTableMorph, type DocumentTable, type TableStep } from "../tables";
 
@@ -27,7 +27,10 @@ export interface ApiTextStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strikethrough?: boolean;
+  baselineOffset?: string;
   backgroundColor?: ApiColor;
+  foregroundColor?: ApiColor;
 }
 
 export interface ApiParagraphElement {
@@ -135,23 +138,32 @@ const HEADING_LEVELS: Record<string, { level: number | null; style: string }> = 
   HEADING_6: { level: 6, style: "Heading 6" }
 };
 
-function backgroundHex(style: ApiTextStyle | undefined): string | null {
-  const rgb = style?.backgroundColor?.color?.rgbColor;
+function colorHex(color: ApiColor | undefined): string | null {
+  const rgb = color?.color?.rgbColor;
   if (!rgb) {
     return null;
   }
   const channel = (value: number | undefined) => Math.round((value ?? 0) * 255).toString(16).padStart(2, "0");
-  return `#${channel(rgb.red)}${channel(rgb.green)}${channel(rgb.blue)}`;
+  return normalizeColor(`#${channel(rgb.red)}${channel(rgb.green)}${channel(rgb.blue)}`);
 }
 
+/** Black is Docs' default text colour; only other colours are formatting the reader notices. */
+const DEFAULT_TEXT_COLOR = "#000000";
+
 function formatOf(style: ApiTextStyle | undefined): EmphasisFormat {
-  const background = backgroundHex(style);
-  return {
+  const background = colorHex(style?.backgroundColor);
+  const foreground = colorHex(style?.foregroundColor);
+  return toFormat({
     ...(style?.bold ? { bold: true } : {}),
     ...(style?.italic ? { italic: true } : {}),
     ...(style?.underline ? { underline: true } : {}),
-    ...(background && background.toLowerCase() !== DOCS_CHANGE_HIGHLIGHT ? { highlight: true } : {})
-  };
+    ...(style?.strikethrough ? { strike: true } : {}),
+    ...(style?.baselineOffset === "SUPERSCRIPT" ? { superscript: true } : {}),
+    ...(style?.baselineOffset === "SUBSCRIPT" ? { subscript: true } : {}),
+    // Writer's own change highlight is not the author's formatting.
+    ...(background && background !== normalizeColor(DOCS_CHANGE_HIGHLIGHT) ? { highlight: true, highlightColor: background } : {}),
+    ...(foreground && foreground !== DEFAULT_TEXT_COLOR ? { color: foreground } : {})
+  });
 }
 
 /** How many paragraphs `parseDocument` reads from an element (tables and contents lists included). */
@@ -425,7 +437,7 @@ export function buildBatchPlan(parsed: ParsedDocument, ops: DocsReplaceOp[]): Ba
     if (op.text) {
       if (op.emphasis) {
         // Exactly the requested emphasis: clear, then set each run. Newlines are skipped (paragraph marks take no style).
-        requests.push(styleRequest(startIndex, insertedEnd, { bold: false, italic: false, underline: false, backgroundColor: {} }, "bold,italic,underline,backgroundColor"));
+        requests.push(styleRequest(startIndex, insertedEnd, { bold: false, italic: false, underline: false, strikethrough: false, baselineOffset: "NONE", backgroundColor: {}, foregroundColor: {} }, "bold,italic,underline,strikethrough,baselineOffset,backgroundColor,foregroundColor"));
         let cursor = 0;
         for (const run of splitByEmphasis(op.text, op.emphasis)) {
           const from = startIndex + cursor;
@@ -436,7 +448,10 @@ export function buildBatchPlan(parsed: ParsedDocument, ops: DocsReplaceOp[]): Ba
           if (run.format.bold) { style.bold = true; fields.push("bold"); }
           if (run.format.italic) { style.italic = true; fields.push("italic"); }
           if (run.format.underline) { style.underline = true; fields.push("underline"); }
-          if (run.format.highlight) { style.backgroundColor = rgb(DOCS_EMPHASIS_HIGHLIGHT); fields.push("backgroundColor"); }
+          if (run.format.strike) { style.strikethrough = true; fields.push("strikethrough"); }
+          if (run.format.superscript || run.format.subscript) { style.baselineOffset = run.format.superscript ? "SUPERSCRIPT" : "SUBSCRIPT"; fields.push("baselineOffset"); }
+          if (run.format.highlight) { style.backgroundColor = rgb(run.format.highlightColor ?? DOCS_EMPHASIS_HIGHLIGHT); fields.push("backgroundColor"); }
+          if (run.format.color) { style.foregroundColor = rgb(run.format.color); fields.push("foregroundColor"); }
           if (fields.length && run.text.trim()) {
             requests.push(styleRequest(from, to, style, fields.join(",")));
           }

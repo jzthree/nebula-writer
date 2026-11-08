@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
 import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../src/shared";
 import { chooseAnchoredCandidate } from "../src/shared";
-import { carryEmphasis, emphasisFromPieces, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
+import { carryEmphasis, emphasisFromPieces, formatOf as toFormat, normalizeColor, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
 
 const WORD_STORY_PART_PATTERN = /^word\/(?:document|footnotes|endnotes|comments|header\d+|footer\d+)\.xml$/i;
 const BROWSER_IMAGE_CONTENT_TYPES = new Set([
@@ -2927,28 +2927,86 @@ function formattedInsertedXml(text: string, id: number, author: string, runPrope
   return `<w:ins w:id="${id}" w:author="${escapeXml(author)}" w:date="${revisionDate()}">${runs}</w:ins>`;
 }
 
-/** Bold/italic/underline/highlight as a run's properties declare them. */
-function runEmphasis(runProperties: string): EmphasisFormat {
+/** Word's highlight palette (w:highlight takes only these names). */
+const WORD_HIGHLIGHTS: Record<string, string> = {
+  yellow: "#FFFF00", green: "#00FF00", cyan: "#00FFFF", magenta: "#FF00FF", blue: "#0000FF", red: "#FF0000",
+  darkBlue: "#000080", darkCyan: "#008080", darkGreen: "#008000", darkMagenta: "#800080", darkRed: "#800000",
+  darkYellow: "#808000", darkGray: "#808080", lightGray: "#C0C0C0", black: "#000000", white: "#FFFFFF"
+};
+
+/** The Word highlight name nearest a colour. */
+function nearestWordHighlight(hex: string): string {
+  const rgb = (value: string) => [1, 3, 5].map((at) => parseInt(value.slice(at, at + 2), 16));
+  const target = rgb(hex);
+  let best = "yellow";
+  let bestDistance = Infinity;
+  for (const [name, value] of Object.entries(WORD_HIGHLIGHTS)) {
+    const distance = rgb(value).reduce((sum, channel, index) => sum + (channel - target[index]) ** 2, 0);
+    if (distance < bestDistance) {
+      best = name;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+const RUN_EMPHASIS_TAGS = "b|bCs|i|iCs|u|highlight|strike|vertAlign|color|shd";
+
+/** The formatting a run's properties declare. */
+export function runEmphasis(runProperties: string): EmphasisFormat {
   const on = (tag: string) => new RegExp(`<w:${tag}\\b(?:\\s[^>]*)?/?>`).test(runProperties)
     && !new RegExp(`<w:${tag}\\b[^>]*w:val="(?:0|false|none)"`).test(runProperties);
-  return {
+  const attr = (tag: string, name: string) => runProperties.match(new RegExp(`<w:${tag}\\b[^>]*\\bw:${name}="([^"]*)"`))?.[1] ?? null;
+  const highlightName = on("highlight") ? attr("highlight", "val") : null;
+  const shading = attr("shd", "fill");
+  const background = highlightName ? WORD_HIGHLIGHTS[highlightName] ?? null : shading && shading !== "auto" ? normalizeColor(shading) : null;
+  const color = attr("color", "val");
+  const vertAlign = attr("vertAlign", "val");
+  return toFormat({
     ...(on("b") ? { bold: true } : {}),
     ...(on("i") ? { italic: true } : {}),
     ...(on("u") ? { underline: true } : {}),
-    ...(on("highlight") ? { highlight: true } : {})
-  };
+    ...(on("strike") ? { strike: true } : {}),
+    ...(vertAlign === "superscript" ? { superscript: true } : {}),
+    ...(vertAlign === "subscript" ? { subscript: true } : {}),
+    ...(highlightName || background ? { highlight: true, ...(background ? { highlightColor: background } : {}) } : {}),
+    ...(color && color !== "auto" && normalizeColor(color) !== "#000000" ? { color: normalizeColor(color) ?? undefined } : {})
+  });
 }
 
-/** The run properties with their emphasis replaced by `format` (everything else — fonts, size, colour — kept). */
-function withRunEmphasis(runProperties: string, format: EmphasisFormat): string {
-  const inner = (runProperties.match(/<w:rPr\b[^>]*>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "")
-    .replace(/<w:(?:b|bCs|i|iCs|u|highlight)\b(?:\s[^>]*)?\/>/g, "")
-    .replace(/<w:(?:b|bCs|i|iCs|u|highlight)\b(?:\s[^>]*)?>[\s\S]*?<\/w:(?:b|bCs|i|iCs|u|highlight)>/g, "");
-  const lead = `${format.bold ? "<w:b/><w:bCs/>" : ""}${format.italic ? "<w:i/><w:iCs/>" : ""}`;
-  const tail = `${format.highlight ? "<w:highlight w:val=\"yellow\"/>" : ""}${format.underline ? "<w:u w:val=\"single\"/>" : ""}`;
-  // Schema order: style and fonts first, then b/i; highlight and u come late.
-  const head = inner.match(/^(?:\s*<w:rStyle\b[^>]*\/>)?(?:\s*<w:rFonts\b[^>]*\/>)?/)?.[0] ?? "";
-  const content = `${head}${lead}${inner.slice(head.length)}${tail}`;
+/** w:rPr children in the order the schema requires (CT_RPr); Word rejects a file whose run properties are out of order. */
+const RUN_PROPERTY_ORDER = [
+  "rStyle", "rFonts", "b", "bCs", "i", "iCs", "caps", "smallCaps", "strike", "dstrike", "outline", "shadow", "emboss", "imprint",
+  "noProof", "snapToGrid", "vanish", "webHidden", "color", "spacing", "w", "kern", "position", "sz", "szCs", "highlight", "u",
+  "effect", "bdr", "shd", "fitText", "vertAlign", "rtl", "cs", "em", "lang", "eastAsianLayout", "specVanish", "oMath"
+];
+
+/** The run properties with their emphasis replaced by `format` (everything else — fonts, size, language — kept, in schema order). */
+export function withRunEmphasis(runProperties: string, format: EmphasisFormat): string {
+  const clean = toFormat(format);
+  const inner = runProperties.match(/<w:rPr\b[^>]*>([\s\S]*?)<\/w:rPr>/)?.[1] ?? "";
+  const emphasisTags = new Set(RUN_EMPHASIS_TAGS.split("|"));
+  const kept = [...inner.matchAll(/<w:([A-Za-z]+)\b(?:[^>]*?\/>|[^>]*>[\s\S]*?<\/w:\1>)/g)]
+    .filter((match) => !emphasisTags.has(match[1]))
+    .map((match) => ({ name: match[1], xml: match[0] }));
+  const added: Array<{ name: string; xml: string }> = [
+    ...(clean.bold ? [{ name: "b", xml: "<w:b/>" }, { name: "bCs", xml: "<w:bCs/>" }] : []),
+    ...(clean.italic ? [{ name: "i", xml: "<w:i/>" }, { name: "iCs", xml: "<w:iCs/>" }] : []),
+    ...(clean.strike ? [{ name: "strike", xml: "<w:strike/>" }] : []),
+    ...(clean.color ? [{ name: "color", xml: `<w:color w:val="${clean.color.slice(1)}"/>` }] : []),
+    ...(clean.highlight ? [{ name: "highlight", xml: `<w:highlight w:val="${nearestWordHighlight(clean.highlightColor ?? "#FFFF00")}"/>` }] : []),
+    ...(clean.underline ? [{ name: "u", xml: "<w:u w:val=\"single\"/>" }] : []),
+    ...(clean.superscript || clean.subscript ? [{ name: "vertAlign", xml: `<w:vertAlign w:val="${clean.superscript ? "superscript" : "subscript"}"/>` }] : [])
+  ];
+  const rank = (name: string) => {
+    const at = RUN_PROPERTY_ORDER.indexOf(name);
+    return at < 0 ? RUN_PROPERTY_ORDER.length : at;
+  };
+  const content = [...kept, ...added]
+    .map((element, index) => ({ ...element, index }))
+    .sort((left, right) => rank(left.name) - rank(right.name) || left.index - right.index)
+    .map((element) => element.xml)
+    .join("");
   return content ? `<w:rPr>${content}</w:rPr>` : "";
 }
 

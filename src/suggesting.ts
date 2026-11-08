@@ -1,5 +1,6 @@
 import { Extension, Mark, mergeAttributes } from "@tiptap/core";
 import { sliceEmphasis, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "./emphasis";
+import { emphasisMarks } from "./emphasisMarks";
 import type { Mark as ProseMirrorMark } from "@tiptap/pm/model";
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
@@ -137,19 +138,14 @@ export function applyReplacementAsSuggestionMarks(
   tr.setMeta(suggestingRouterKey, true);
   const paragraphType = state.schema.nodes.paragraph;
   // Inserted text wears the insertion mark plus the emphasis marks its spans ask for.
-  const emphasisMarks = (format: EmphasisFormat) => [
-    format.bold ? state.schema.marks.bold : null,
-    format.italic ? state.schema.marks.italic : null,
-    format.underline ? state.schema.marks.underline : null,
-    format.highlight ? state.schema.marks.highlight : null
-  ].flatMap((type) => (type ? [type.create()] : []));
+  const marksFor = (format: EmphasisFormat) => emphasisMarks(state.schema, format);
   let searchCursor = 0;
   const textNodes = (text: string) => {
     const at = replacement.indexOf(text, searchCursor);
     const offset = at >= 0 ? at : searchCursor;
     searchCursor = offset + text.length;
     return splitByEmphasis(text, sliceEmphasis(emphasis, offset, offset + text.length))
-      .map((piece) => state.schema.text(piece.text, [...emphasisMarks(piece.format), insertionType.create(attrs)]));
+      .map((piece) => state.schema.text(piece.text, [...marksFor(piece.format), insertionType.create(attrs)]));
   };
   const segments = replacement.split(/\s*\n+\s*/).map((part) => part.trim()).filter(Boolean);
   if (segments.length > 1 && paragraphType) {
