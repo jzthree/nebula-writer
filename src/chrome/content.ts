@@ -14,11 +14,32 @@ import { commentOnSelection } from "./commentUi";
 import type { DocsLocatePlan } from "./locate";
 import { accountEmailFromLabels } from "./docsAccess";
 
+/** Replaced with this script's code id at build (scripts/chrome-build.mjs). */
+const CODE_ID = "__NEBULA_CONTENT_CODE__";
+
+/**
+ * The side panel injects a newer copy when Writer is rebuilt; every copy
+ * shares this isolated world, and only the newest answers.
+ */
+interface ContentRegistry { __nebulaWriterContent?: { owner: symbol; dispose: () => void } }
+const registry = globalThis as ContentRegistry;
+const self = Symbol(CODE_ID);
+registry.__nebulaWriterContent?.dispose();
+
 const selectionReader = createDocsSelectionReader(document);
 let locating = false;
 let disposed = false;
+registry.__nebulaWriterContent = { owner: self, dispose: () => { disposed = true; selectionReader.dispose(); } };
+const superseded = () => registry.__nebulaWriterContent?.owner !== self;
 
 chrome.runtime.onMessage.addListener((message: { type?: string; docId?: string; plan?: DocsLocatePlan; text?: string }, _sender, respond) => {
+  if (superseded()) {
+    return false;
+  }
+  if (message?.type === "nebula-ping") {
+    respond({ code: CODE_ID, url: location.href });
+    return true;
+  }
   if (message?.type === "nebula-selection") {
     respond({ text: selectionReader.read(), url: location.href });
     return true;

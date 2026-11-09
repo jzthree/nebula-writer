@@ -42,6 +42,11 @@ function listen(): void {
       }
       hostOrigin = event.origin;
       hostWindow = event.source as Window;
+      hostSelfUpdating = (data as { selfUpdating?: unknown }).selfUpdating === true;
+      return;
+    }
+    if (data.nebula === "host-outdated" && event.origin === hostOrigin) {
+      hostOutdated = true;
       return;
     }
     if (data.nebula === "script-result" && event.origin === hostOrigin && typeof data.id === "string") {
@@ -60,6 +65,30 @@ function listen(): void {
 }
 
 let listening = false;
+let hostSelfUpdating = false;
+let hostOutdated = false;
+
+const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/i;
+
+/**
+ * The Chrome extension's panel says whether it keeps itself current while
+ * open; one that does not is an old version, which only reloading the
+ * extension (closing every Writer panel) replaces.
+ */
+export function extensionHostIsOutdated(): boolean {
+  return !!hostOrigin && EXTENSION_ORIGIN.test(hostOrigin) && !hostSelfUpdating;
+}
+
+/** The embedding panel has newer code on disk and asked to be reloaded when Writer is idle. */
+export function hostWantsReload(): boolean {
+  return hostOutdated && !!hostWindow && !!hostOrigin;
+}
+
+export function reloadHost(): void {
+  if (hostWindow && hostOrigin) {
+    hostWindow.postMessage({ nebula: "reload-host" }, hostOrigin);
+  }
+}
 
 /** Resolve true once the embedding sidebar has announced itself (or a transport is installed). */
 export function waitForScriptHost(timeoutMs = 8_000): Promise<boolean> {

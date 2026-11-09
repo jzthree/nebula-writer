@@ -74,6 +74,7 @@ import {
 import type { MockWordHost } from "./mockOffice";
 import { ConversationSync, type ConversationState } from "../conversationSync";
 import { loadedEntryScript, reloadPaneIfOutdated, servedEntryScript } from "./paneUpdate";
+import { extensionHostIsOutdated, hostWantsReload, reloadHost } from "../gdocs/scriptBridge";
 import { fetchConversationFromSidecar, resetConversationOnSidecar, writeConversationToSidecar } from "../sidecarClient";
 
 interface ModelPreference {
@@ -621,6 +622,9 @@ export function App() {
         return;
       }
       setHostStatus("ready");
+      if (extensionHostIsOutdated()) {
+        showNotice("error", "Writer's Chrome extension is out of date, so recent fixes are not running yet. Close this Writer panel and open it again to update it.");
+      }
       await refreshSnapshot({ full: true });
       if (cancelled) {
         return;
@@ -1776,21 +1780,30 @@ export function App() {
   useEffect(() => {
     // A rebuilt Writer reaches the open pane by itself (paneUpdate.ts), between turns.
     let stopped = false;
+    const idle = () => !stopped && !runningRef.current && !busyRef.current && !uploadsRef.current.size && conversationKeyRef.current !== null;
+    const reloadWith = (reload: () => void) => {
+      stopped = true;
+      try {
+        sessionStorage.setItem(PANE_CARRY_KEY, JSON.stringify({ attachments: attachmentsRef.current, instruction: instructionRef.current } satisfies PaneCarry));
+      } catch {
+        // Without session storage the attachments need re-adding; the conversation is saved regardless.
+      }
+      void conversationSyncRef.current?.flush().finally(reload);
+    };
     const check = () => {
+      if (stopped) {
+        return;
+      }
       void reloadPaneIfOutdated({
         loaded: () => loadedEntryScript(),
         served: () => servedEntryScript(),
-        idle: () => !stopped && !runningRef.current && !busyRef.current && !uploadsRef.current.size && conversationKeyRef.current !== null,
-        reload: () => {
-          stopped = true;
-          try {
-            sessionStorage.setItem(PANE_CARRY_KEY, JSON.stringify({ attachments: attachmentsRef.current, instruction: instructionRef.current } satisfies PaneCarry));
-          } catch {
-            // Without session storage the attachments need re-adding; the conversation is saved regardless.
-          }
-          void conversationSyncRef.current?.flush().finally(() => window.location.reload());
-        }
+        idle,
+        reload: () => reloadWith(() => window.location.reload())
       });
+      // The Chrome extension's panel has newer code: reload it (and this pane with it) between turns.
+      if (hostWantsReload() && idle()) {
+        reloadWith(reloadHost);
+      }
     };
     const timer = setInterval(check, PANE_UPDATE_CHECK_MS);
     window.addEventListener("focus", check);

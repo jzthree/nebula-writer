@@ -40,6 +40,18 @@ await build({
   logLevel: "warning"
 });
 
+// Each page script knows its own code id (a hash of its output), so the side
+// panel can tell whether the code running in the panel and in each Docs tab
+// is what is on disk now, and replace it without reloading the extension.
+const codeIds = {};
+for (const [name, placeholder] of [["sidepanel", "__NEBULA_SIDEPANEL_CODE__"], ["content", "__NEBULA_CONTENT_CODE__"]]) {
+  const path = resolve(dir, "dist", `${name}.js`);
+  const source = readFileSync(path, "utf8");
+  const id = createHash("sha256").update(source).digest("hex").slice(0, 16);
+  writeFileSync(path, source.split(placeholder).join(id));
+  codeIds[name] = id;
+}
+
 const template = JSON.parse(readFileSync(resolve(dir, "manifest.template.json"), "utf8"));
 template.host_permissions = template.host_permissions.map((entry) => entry.replace("__PANE_ORIGIN__", paneOrigin));
 template.oauth2.client_id = local.clientId || "CLIENT_ID_NOT_SET.apps.googleusercontent.com";
@@ -72,5 +84,5 @@ for (const file of files) {
   hash.update(file.slice(dir.length)).update("\0").update(readFileSync(file)).update("\0");
 }
 const buildId = hash.digest("hex").slice(0, 16);
-writeFileSync(resolve(dir, "dist", "build.json"), `${JSON.stringify({ build: buildId })}\n`);
+writeFileSync(resolve(dir, "dist", "build.json"), `${JSON.stringify({ build: buildId, ...codeIds })}\n`);
 console.log(`chrome: wrote chrome-extension/dist/*.js and manifest.json (pane ${paneOrigin}, build ${buildId})${warnings.length ? ` — ${warnings.join("; ")}` : ""}`);

@@ -259,9 +259,10 @@ unique focus offset, even though native Find can navigate to their occurrence.
 The English Google Docs interface is currently required. Existing Find
 preferences are preserved; if regular-expression mode is enabled, Locate asks
 you to disable it rather than treating manuscript text as a search pattern.
-A Find and replace dialog the author has open is left untouched; one Locate
-closed itself never blocks the next Locate, since Docs keeps closed dialogs in
-the page. Changed text,
+Locate always opens Find through the Edit menu and works in the dialog Docs
+puts the cursor in: Docs keeps closed copies of the dialog in the page, and
+they can look open. A Find dialog the author already has open is reused, so
+its search text is replaced. Changed text,
 unexpected native search results, and missing controls produce an error on
 the suggestion instead of silently doing nothing. Direct image selection is
 not supported by the Chrome host; locate nearby text or a caption instead.
@@ -280,7 +281,23 @@ runs, and reports which step failed; if Docs leaves the comment box open
 with the note in it, the error says to post or cancel it there. Tests in
 `tests/chrome-comment.test.ts` drive a stand-in for the Docs page.
 
-After installing an extension build with Locate support, reload the extension
-and refresh the Google Doc so its new content script is injected. Tests in
+### Updates
+
+The extension is loaded unpacked from the repository, and a rebuild reaches
+it without a trip to `chrome://extensions`:
+
+- With no Writer panel open, the service worker reloads the extension when
+  the sidecar serves a different build (`src/chrome/extensionUpdate.ts`).
+- With a panel open, the panel never closes itself. The build stamps the
+  panel script and the content script with code ids (`dist/build.json`).
+  Before each message to the Docs tab, the panel checks the copy answering
+  there and injects the current content script when it is stale. The
+  newest copy in a tab takes over and older copies stop answering. When the
+  panel's own code is stale it tells the pane, which reloads the panel
+  between turns, carrying a half-typed message and attachments.
+- A panel from before this mechanism cannot update itself while open; the
+  pane says so and asks the author to close and reopen Writer once.
+
+Tests: `tests/chrome-update.test.ts`, `tests/chrome-content-handover.test.ts`. Tests in
 `tests/chrome-locate.test.ts` cover planning, message routing, Find-only UI
 interaction, repeated matches, and invalidation of located selection context.

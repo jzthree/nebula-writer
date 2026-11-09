@@ -84,7 +84,8 @@ describe("Google Docs Locate UI", () => {
   });
   afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
-  function installFind(count = 1, initial = 0, regex = false): void {
+  /** Docs' Find: opening it focuses the Find box, reusing a dialog already in the page unless `fresh`. */
+  function installFind(count = 1, initial = 0, regex = false, fresh = false): void {
     document.getElementById("docs-edit-menu")!.addEventListener("mousedown", (opening) => {
       const command = document.createElement("div");
       command.setAttribute("role", "menuitem");
@@ -96,6 +97,13 @@ describe("Google Docs Locate UI", () => {
         openingCoords = null;
         if (oldCoords?.x === event.clientX && oldCoords.y === event.clientY) return;
         command.remove();
+        const existing = fresh ? null : document.querySelector<HTMLElement>('[role="dialog"]');
+        if (existing) {
+          existing.removeAttribute("style");
+          existing.removeAttribute("aria-hidden");
+          existing.querySelector<HTMLInputElement>('input[aria-label="Find"]')!.focus();
+          return;
+        }
         const dialog = document.createElement("div");
         dialog.setAttribute("role", "dialog");
         dialog.innerHTML = `<input aria-label="Find"><span class="FindInputCounter"></span>
@@ -112,6 +120,7 @@ describe("Google Docs Locate UI", () => {
           else dialog.remove();
         });
         document.body.append(dialog);
+        dialog.querySelector("input")!.focus();
       });
       document.body.append(command);
     });
@@ -158,15 +167,22 @@ describe("Google Docs Locate UI", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("treats a closed Find dialog left in the page as closed, however Docs hid it", async () => {
+  it("is not blocked by a closed Find dialog left in the page, however Docs hid it", async () => {
     for (const hidden of ['style="display:none"', 'style="visibility:hidden"', 'style="opacity:0"', 'aria-hidden="true"']) {
       document.body.innerHTML = `<div id="docs-edit-menu" role="menuitem">Edit</div><div role="dialog" ${hidden}><input aria-label="Find" value="old"></div>`;
-      installFind();
+      installFind(1, 0, false, true);
       await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
     }
   });
 
-  it("succeeds when the dialog is slow to close, and is not blocked by it next time", async () => {
+  it("uses the Find dialog Docs focuses, not a stale copy that still looks open", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<div role="dialog" class="stale"><input aria-label="Find" value="old"><span class="FindInputCounter">9 of 9</span><button aria-label="Close">Close</button></div>');
+    installFind(1, 0, false, true);
+    await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
+    expect(document.querySelector<HTMLInputElement>(".stale input")!.value).toBe("old");
+  });
+
+  it("succeeds when the dialog is slow to close, and locates again next time", async () => {
     installFind();
     const close = (event: Event) => {
       // Docs animates the dialog out: it stays in the page, looking open, past Locate's wait.
@@ -175,17 +191,20 @@ describe("Google Docs Locate UI", () => {
     document.addEventListener("click", close, true);
     await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    // Reaches the Find controls again rather than saying "Close Google Docs' Find and replace dialog".
     await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
     document.removeEventListener("click", close, true);
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("does not overwrite an existing search or operate after the document changes", async () => {
-    document.body.insertAdjacentHTML("beforeend", '<div role="dialog"><input aria-label="Find" value="User query"></div>');
-    await expect(locateDocsPassage(document, plan)).rejects.toThrow("Close Google Docs");
-    expect(document.querySelector<HTMLInputElement>('input[aria-label="Find"]')!.value).toBe("User query");
-    document.querySelector('[role="dialog"]')!.remove();
+  it("reuses a Find dialog the author has open, and does not operate after the document changes", async () => {
+    installFind();
+    document.body.insertAdjacentHTML("beforeend", '<div role="dialog"><input aria-label="Find" value="User query"><span class="FindInputCounter"></span><button>Previous</button><button>Next</button><button aria-label="Close">Close</button></div>');
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Find"]')!;
+    const counter = document.querySelector<HTMLElement>(".FindInputCounter")!;
+    input.addEventListener("input", () => { counter.textContent = input.value ? "1 of 1" : ""; });
+    document.querySelector('[aria-label="Close"]')!.addEventListener("click", () => document.querySelector('[role="dialog"]')!.remove());
+    await expect(locateDocsPassage(document, plan)).resolves.toBe(plan.query);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     const clicked = vi.fn();
     document.getElementById("docs-edit-menu")!.addEventListener("click", clicked);
     await expect(locateDocsPassage(document, plan, () => false)).rejects.toThrow("interrupted");

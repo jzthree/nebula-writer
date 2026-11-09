@@ -15,6 +15,7 @@ import { openCommentPicker } from "./commentPicker";
 import { describeDocsApiError, docsAccessDeniedMessage, looksLikeOfficeFile, OFFICE_FILE_MESSAGE } from "./docsAccess";
 import { planDocsLocate } from "./locate";
 import { commentInDocumentTab, locateInDocumentTab } from "./locateBridge";
+import { ensureCurrentContent, readCodeIds, type CodeIds } from "./extensionUpdate";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
 
 declare const __PANE_ORIGIN__: string;
@@ -164,7 +165,7 @@ async function accessDenied(editing: boolean): Promise<string> {
   const profileEmail = await chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY })
     .then((info) => info.email || null).catch(() => null);
   const docEmail = await activeDoc()
-    .then(({ tabId }) => chrome.tabs.sendMessage(tabId, { type: "nebula-account" }) as Promise<{ email?: string | null } | undefined>)
+    .then(({ tabId }) => sendToTab(tabId, { type: "nebula-account" }) as Promise<{ email?: string | null } | undefined>)
     .then((reply) => reply?.email ?? null).catch(() => null);
   return docsAccessDeniedMessage(profileEmail, docEmail, editing);
 }
@@ -172,6 +173,73 @@ async function accessDenied(editing: boolean): Promise<string> {
 /* ------------------------------------------------------------------------- */
 /* The document this panel was opened beside                                */
 /* ------------------------------------------------------------------------- */
+
+/* ------------------------------------------------------------------------- */
+/* Keeping the panel and the Docs tab on the current code                    */
+/* ------------------------------------------------------------------------- */
+
+/** Replaced with this script's code id at build (scripts/chrome-build.mjs). */
+const SIDEPANEL_CODE = "__NEBULA_SIDEPANEL_CODE__";
+const CODE_CHECK_MS = 10_000;
+
+let diskCodes: { at: number; ids: Promise<CodeIds | null> } | null = null;
+
+/** Code ids of the build on disk (read afresh at most every few seconds). */
+function currentCodes(): Promise<CodeIds | null> {
+  if (!diskCodes || Date.now() - diskCodes.at > CODE_CHECK_MS) {
+    diskCodes = {
+      at: Date.now(),
+      ids: fetch(chrome.runtime.getURL("dist/build.json"), { cache: "no-store" }).then((response) => response.json()).then(readCodeIds).catch(() => null)
+    };
+  }
+  return diskCodes.ids;
+}
+
+const verifiedTabs = new Map<number, { code: string; at: number }>();
+
+/** Before talking to the Docs tab, make sure it runs the content script on disk now. */
+async function syncContent(tabId: number): Promise<void> {
+  const known = verifiedTabs.get(tabId);
+  if (known && Date.now() - known.at < CODE_CHECK_MS) return;
+  const code = await ensureCurrentContent(tabId, {
+    disk: currentCodes,
+    running: async (id) => {
+      const reply = await chrome.tabs.sendMessage(id, { type: "nebula-ping" }) as { code?: unknown } | undefined;
+      return typeof reply?.code === "string" ? reply.code : null;
+    },
+    inject: async (id) => { await chrome.scripting.executeScript({ target: { tabId: id }, files: ["dist/content.js"] }); }
+  }).catch(() => null);
+  if (code) verifiedTabs.set(tabId, { code, at: Date.now() });
+  else verifiedTabs.delete(tabId);
+}
+
+async function sendToTab(tabId: number, message: object): Promise<unknown> {
+  await syncContent(tabId);
+  return chrome.tabs.sendMessage(tabId, message);
+}
+
+let hostOutdatedSent = false;
+const RELOADED_FROM_KEY = "nebula-writer:panel-reloaded-from";
+
+/** Tell the pane this panel's own code is stale; the pane asks for a reload once Writer is idle. */
+async function checkPanelCode(): Promise<void> {
+  const disk = await currentCodes();
+  if (!disk || disk.sidepanel === SIDEPANEL_CODE || hostOutdatedSent) return;
+  let reloadedFrom: string | null = null;
+  try { reloadedFrom = sessionStorage.getItem(RELOADED_FROM_KEY); } catch { /* No session storage: no loop guard needed beyond hostOutdatedSent. */ }
+  if (reloadedFrom === SIDEPANEL_CODE) {
+    // Reloading did not load the new code: only reloading the extension will.
+    notice.textContent = "Writer's Chrome extension was updated but this panel still runs the old version. Close this panel and open Writer again.";
+    notice.className = "show";
+    hostOutdatedSent = true;
+    return;
+  }
+  if (frame.contentWindow && announced) {
+    frame.contentWindow.postMessage({ nebula: "host-outdated" }, PANE_ORIGIN);
+    hostOutdatedSent = true;
+  }
+}
+setInterval(() => { void checkPanelCode(); }, CODE_CHECK_MS);
 
 // Bound once: later focus changes never retarget the panel.
 let documentTabId: Promise<number | null> | null = null;
@@ -217,7 +285,7 @@ function showOfficeFileNotice(title: string | null | undefined): void {
 
 async function selectionText(tabId: number, docId: string): Promise<string> {
   try {
-    const text = await readDocumentSelection(tabId, docId, (id, message) => chrome.tabs.sendMessage(id, message));
+    const text = await readDocumentSelection(tabId, docId, sendToTab);
     if (selectionNotice) {
       notice.textContent = "";
       notice.className = "";
@@ -276,7 +344,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     const { tabId, docId } = await activeDoc();
     const parsed = await fetchParsed(docId);
     const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
-    await locateInDocumentTab(tabId, docId, plan, (id, message) => chrome.tabs.sendMessage(id, message));
+    await locateInDocumentTab(tabId, docId, plan, sendToTab);
     return null;
   },
 
@@ -284,7 +352,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     const { tabId, docId } = await activeDoc();
     const parsed = await fetchParsed(docId);
     const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
-    await commentInDocumentTab(tabId, docId, plan, String(text ?? ""), (id, message) => chrome.tabs.sendMessage(id, message));
+    await commentInDocumentTab(tabId, docId, plan, String(text ?? ""), sendToTab);
     commentsVersion += 1;
     return null;
   },
@@ -384,7 +452,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     }
     const text = parsed.payload.paragraphs[paragraphIndex].text;
     const plan = planDocsLocate(parsed.payload.paragraphs, { paragraphIndex, start: 0, endParagraphIndex: paragraphIndex, end: text.length, expected: text });
-    await locateInDocumentTab(tabId, docId, plan, (id, message) => chrome.tabs.sendMessage(id, message));
+    await locateInDocumentTab(tabId, docId, plan, sendToTab);
     return null;
   }
 };
@@ -397,7 +465,7 @@ let announced = false;
 
 function announce(): void {
   if (frame.contentWindow) {
-    frame.contentWindow.postMessage({ nebula: "host-ready" }, PANE_ORIGIN);
+    frame.contentWindow.postMessage({ nebula: "host-ready", selfUpdating: true }, PANE_ORIGIN);
     announced = true;
   }
 }
@@ -409,6 +477,12 @@ window.addEventListener("message", (event) => {
   const data = event.data as { nebula?: string; id?: string; fn?: string; args?: unknown[] };
   if (data.nebula === "pane-ready") {
     announce();
+    return;
+  }
+  if (data.nebula === "reload-host") {
+    // The pane saved its state and is idle: load this panel's current code.
+    try { sessionStorage.setItem(RELOADED_FROM_KEY, SIDEPANEL_CODE); } catch { /* Best effort loop guard. */ }
+    location.reload();
     return;
   }
   if (data.nebula !== "script-call" || typeof data.id !== "string" || !data.fn) {
