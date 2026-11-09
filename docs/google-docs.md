@@ -271,14 +271,17 @@ not supported by the Chrome host; locate nearby text or a caption instead.
 
 A suggestion card's Comment button, in the Chrome extension, first runs
 Locate to select the passage, then opens Docs' own **Insert > Comment**,
-types the note into that comment box and presses its Comment button, so the
+types the note into the comment box Docs puts the cursor in and presses its
+Comment button (or ⌘/Ctrl+Enter when it has none), so the
 comment is attached to the passage as if the author had written it. (The
 Drive API can create comments too, but Docs shows those detached from the
 text, under All comments.) Commenting needs the English interface and
 permission to comment. It refuses to start while a comment you are writing
 in Docs has text in it, stops if you click or type in the document while it
 runs, and reports which step failed; if Docs leaves the comment box open
-with the note in it, the error says to post or cancel it there. Tests in
+with the note in it, the error says to post or cancel it there. A failed
+step's error ends with "Details for Writer": what was focused and which
+fields and buttons Writer saw, for fixing the recognition. Tests in
 `tests/chrome-comment.test.ts` drive a stand-in for the Docs page.
 
 ### Updates
@@ -287,7 +290,8 @@ The extension is loaded unpacked from the repository, and a rebuild reaches
 it without a trip to `chrome://extensions`:
 
 - With no Writer panel open, the service worker reloads the extension when
-  the sidecar serves a different build (`src/chrome/extensionUpdate.ts`).
+  the sidecar serves a different build (`src/chrome/extensionUpdate.ts`),
+  checking every 30 s and the moment a panel closes.
 - With a panel open, the panel never closes itself. The build stamps the
   panel script and the content script with code ids (`dist/build.json`).
   Before each message to the Docs tab, the panel checks the copy answering

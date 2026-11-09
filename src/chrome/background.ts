@@ -35,6 +35,15 @@ function scheduleUpdateChecks(): void {
   chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
 }
 
+// A panel holds a port open; the moment it closes is the first chance to
+// update, before the author can reopen Writer (a 30 s tick could miss it).
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === "nebula-panel") {
+    // Give Chrome a moment to drop the closed panel from its open contexts.
+    port.onDisconnect.addListener(() => { setTimeout(() => { void checkForUpdate(); }, 1_000); });
+  }
+});
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === UPDATE_ALARM) {
     void checkForUpdate();

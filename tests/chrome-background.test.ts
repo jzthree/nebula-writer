@@ -20,7 +20,8 @@ beforeEach(async () => {
   vi.stubGlobal("chrome", {
     runtime: {
       onInstalled: { addListener: (listener: typeof installed) => { installed = listener; } },
-      onStartup: { addListener: (listener: typeof startup) => { startup = listener; } }
+      onStartup: { addListener: (listener: typeof startup) => { startup = listener; } },
+      onConnect: { addListener: vi.fn() }
     },
     sidePanel: { setPanelBehavior, setOptions },
     alarms: { create: vi.fn(), onAlarm: { addListener: vi.fn() } },

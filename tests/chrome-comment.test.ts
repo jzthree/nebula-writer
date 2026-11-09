@@ -83,6 +83,54 @@ describe("Google Docs comment UI", () => {
     expect(posted).toEqual([note]);
   });
 
+  /** A box like a newer Docs: focused on open, buttons hidden until typing, optionally only ⌘/Ctrl+Enter posts. */
+  function installFocusedBox(options: { noButton?: boolean } = {}): { posted: string[] } {
+    const posted: string[] = [];
+    document.getElementById("docs-insert-menu")!.addEventListener("mousedown", () => {
+      const command = document.createElement("div");
+      command.setAttribute("role", "menuitem");
+      command.textContent = "Comment⌘+Option+M";
+      command.addEventListener("click", () => {
+        command.remove();
+        const box = document.createElement("div");
+        box.className = "composer";
+        box.innerHTML = `<div contenteditable="true" tabindex="0" aria-label="Comment"></div>
+          <div class="buttons" style="display:none">${options.noButton ? "" : '<div role="button">Comment</div>'}<div role="button">Cancel</div></div>`;
+        const input = box.querySelector<HTMLElement>("[contenteditable]")!;
+        const post = () => { posted.push(input.textContent ?? ""); box.remove(); document.body.insertAdjacentHTML("beforeend", `<div class="thread">${input.textContent}</div>`); };
+        input.addEventListener("input", () => box.querySelector<HTMLElement>(".buttons")!.removeAttribute("style"));
+        input.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) post(); });
+        box.querySelector<HTMLElement>('[role="button"]')!.addEventListener("click", (event) => { if ((event.target as HTMLElement).textContent === "Comment") post(); });
+        document.body.append(box);
+        input.focus();
+      });
+      document.body.append(command);
+    });
+    return { posted };
+  }
+
+  it("finds the box Docs focuses even while its buttons are hidden, and posts with its button", async () => {
+    const { posted } = installFocusedBox();
+    await commentOnSelection(document, note);
+    expect(posted).toEqual([note]);
+  });
+
+  it("posts with the keyboard shortcut when the box has no Comment button", async () => {
+    const { posted } = installFocusedBox({ noButton: true });
+    await commentOnSelection(document, note);
+    expect(posted).toEqual([note]);
+  });
+
+  it("describes what was focused when no comment box can be recognised", async () => {
+    document.getElementById("docs-insert-menu")!.addEventListener("mousedown", () => {
+      document.body.insertAdjacentHTML("beforeend", '<div role="menuitem">Comment</div>');
+      document.querySelector('[role="menuitem"]:not(#docs-insert-menu)')!.addEventListener("click", () => {
+        document.body.insertAdjacentHTML("beforeend", '<div class="odd-box"><div contenteditable="true" class="mystery"></div></div>');
+      });
+    });
+    await expect(commentOnSelection(document, note)).rejects.toThrow(/Details for Writer: focus .*div\.mystery/);
+  });
+
   it("leaves a comment the author is writing alone", async () => {
     const { posted } = installComments();
     document.body.insertAdjacentHTML("beforeend", '<div class="draft"><div contenteditable="true">My own note</div><div role="button">Comment</div></div>');

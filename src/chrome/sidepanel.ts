@@ -240,6 +240,8 @@ async function checkPanelCode(): Promise<void> {
   }
 }
 setInterval(() => { void checkPanelCode(); }, CODE_CHECK_MS);
+// Lets the service worker update the extension as soon as this panel closes.
+chrome.runtime.connect({ name: "nebula-panel" });
 
 // Bound once: later focus changes never retarget the panel.
 let documentTabId: Promise<number | null> | null = null;
