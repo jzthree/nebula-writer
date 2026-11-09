@@ -24,6 +24,7 @@ var NebulaDocs = (() => {
   __export(main_exports, {
     nebulaApply: () => nebulaApply,
     nebulaApplyTable: () => nebulaApplyTable,
+    nebulaComment: () => nebulaComment,
     nebulaDeleteImage: () => nebulaDeleteImage,
     nebulaFingerprint: () => nebulaFingerprint,
     nebulaFocusKey: () => nebulaFocusKey,
@@ -618,6 +619,9 @@ var NebulaDocs = (() => {
       focus.fingerprint
     ].join("|");
   }
+  function nebulaComment(_range, _text) {
+    throw new Error("The Google Docs add-in cannot attach a comment to a passage. Use Writer's Chrome extension, which comments through Docs itself.");
+  }
   function nebulaSelect(range) {
     const doc = document();
     const blocks = walkBlocks(doc.getBody());
@@ -1083,6 +1087,7 @@ function nebulaReadFocus() { return NebulaDocs.nebulaReadFocus.apply(null, argum
 function nebulaFocusKey() { return NebulaDocs.nebulaFocusKey.apply(null, arguments); }
 function nebulaFingerprint() { return NebulaDocs.nebulaFingerprint.apply(null, arguments); }
 function nebulaSelect() { return NebulaDocs.nebulaSelect.apply(null, arguments); }
+function nebulaComment() { return NebulaDocs.nebulaComment.apply(null, arguments); }
 function nebulaApply() { return NebulaDocs.nebulaApply.apply(null, arguments); }
 function nebulaReadImage() { return NebulaDocs.nebulaReadImage.apply(null, arguments); }
 function nebulaReplaceImage() { return NebulaDocs.nebulaReplaceImage.apply(null, arguments); }

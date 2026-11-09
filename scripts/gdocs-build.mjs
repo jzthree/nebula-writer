@@ -26,6 +26,7 @@ const EXPORTED = [
   "nebulaFocusKey",
   "nebulaFingerprint",
   "nebulaSelect",
+  "nebulaComment",
   "nebulaApply",
   "nebulaReadImage",
   "nebulaReplaceImage",

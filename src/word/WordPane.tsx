@@ -1245,7 +1245,7 @@ function SuggestionCard(props: {
           </button>
         )}
         <button type="button" className={noteOpen ? "active" : ""} onClick={() => setNoteOpen((current) => !current)} disabled={props.busy} aria-expanded={noteOpen} title="Comment on this change — say what to keep or change and Writer replies with a revised suggestion"><MessageSquareText size={13} aria-hidden="true" /> Comment</button>
-        {commentable ? <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a Word comment on this passage" aria-label="Leave as a Word comment"><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
+        {commentable ? <button type="button" className="quiet" onClick={props.onComment} disabled={props.busy || !props.hostReady} title="Leave the suggestion as a comment on this passage" aria-label="Leave as a comment"><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
         <button type="button" className="quiet" onClick={props.onDismiss} disabled={props.busy} title="Dismiss (recorded as rejected)"><X size={13} aria-hidden="true" /></button>
       </div>
       {noteBox}
@@ -1264,9 +1264,9 @@ function describeActivity(activity: AiActivityEntry[]): string {
 function outcomeLabel(outcome: CardOutcome): string {
   switch (outcome) {
     case "applied":
-      return "applied in Word";
+      return "applied in the document";
     case "commented":
-      return "left as a Word comment";
+      return "left as a comment";
     case "dismissed":
       return "dismissed";
     case "decided-elsewhere":

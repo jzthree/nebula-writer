@@ -19,7 +19,7 @@ const PARAGRAPH_POLL_MS = 5_000;
 export const docsCapabilities: WordCapabilities = {
   host: true,
   hostName: "Google Docs",
-  comments: false,
+  comments: true,
   trackChanges: false,
   paragraphStyles: true,
   paragraphEvents: true,
@@ -223,8 +223,17 @@ async function applySuggestions(snapshot: WordDocumentSnapshot, items: BatchAppl
   return items.map((item) => outcomes.get(item.id) ?? { id: item.id, ok: false, error: "Not applied." });
 }
 
-async function commentSuggestion(): Promise<{ matches: number; matchIndex: number }> {
-  throw new Error("Google Docs cannot take a comment from Writer — apply the change, or copy the note into a Docs comment.");
+/** Locate the passage in Docs, then comment on it through Docs' own comment box. */
+async function commentSuggestion(snapshot: WordDocumentSnapshot, suggestion: Pick<AiSuggestion, "original">, text: string, matchIndex: number): Promise<{ matches: number; matchIndex: number }> {
+  const matches = findMatches(snapshot, suggestion.original);
+  if (!matches.length) {
+    throw new Error("The document no longer contains this suggestion's original text — the passage may have changed.");
+  }
+  const index = Math.max(0, Math.min(matchIndex, matches.length - 1));
+  const range = rangeToParagraphs(snapshot.paragraphs, matches[index].from, matches[index].to);
+  if (!range) throw new Error("This passage could not be mapped to the document. Refresh Writer and try again.");
+  await callScript("nebulaComment", { ...range, expected: snapshot.bodyText.slice(matches[index].from, matches[index].to) }, text);
+  return { matches: matches.length, matchIndex: index };
 }
 
 async function readInlinePictureBase64(index: number): Promise<{ base64: string; width: number | null; height: number | null }> {

@@ -375,7 +375,7 @@ describe("Word task pane", () => {
     await waitFor(() => expect(mock.text).toContain(REPLACEMENT));
     expect(mock.trackedChanges.length).toBeGreaterThan(0);
     expect(mock.changeTrackingMode).toBe("Off");
-    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/applied in the document/)).toBeInTheDocument());
     await waitFor(() => expect(captured.statusUpdates).toEqual([{ id: "s-1", status: "accepted", note: "Applied in Word as a tracked change" }]));
     expect(screen.getByText("Nothing pending")).toBeInTheDocument();
 
@@ -577,12 +577,12 @@ describe("Word task pane", () => {
     expect(captured.requests[0].toolAccess).toBe("full");
     expect(captured.requests[0].hostContext?.cursor).not.toBeNull();
 
-    fireEvent.click(screen.getByTitle("Leave the suggestion as a Word comment on this passage"));
+    fireEvent.click(screen.getByTitle("Leave the suggestion as a comment on this passage"));
     await waitFor(() => expect(mock.comments.length).toBe(1));
     expect(mock.comments[0].anchorText).toBe(ORIGINAL);
     expect(mock.comments[0].text).toContain("Suggested:");
     expect(mock.text).toContain(ORIGINAL);
-    await waitFor(() => expect(screen.getByText(/left as a Word comment/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/left as a comment/)).toBeInTheDocument());
 
     send("Again.");
     await waitFor(() => expect(captured.requests.length).toBe(2));
@@ -635,7 +635,7 @@ describe("Word task pane", () => {
     fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
     await waitFor(() => expect(mock.pictureReplacements).toHaveLength(1));
     expect(mock.pictureReplacements[0]).toMatchObject({ index: 0, tracked: true });
-    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/applied in the document/)).toBeInTheDocument());
 
     // A second request reuses the upload instead of reading Word again.
     send("Figure: and again");
@@ -657,12 +657,12 @@ describe("Word task pane", () => {
     const card = screen.getByLabelText("Suggestion: Add travel to the budget");
     expect(card.querySelectorAll("td.changed")).toHaveLength(2);
     expect(card.textContent).toContain("3 rows × 2 columns (was 2 rows × 2 columns)");
-    expect(card.querySelector("[aria-label='Leave as a Word comment']")).toBeNull();
+    expect(card.querySelector("[aria-label='Leave as a comment']")).toBeNull();
 
     fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
     await waitFor(() => expect(mock.tableGrid(mock.tableIds()[0])).toEqual([["Item", "Cost"], ["Personnel", "$120,000"], ["Travel", "$5,000"]]));
     expect(mock.tableEdits.every((edit) => edit.tracked)).toBe(true);
-    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/applied in the document/)).toBeInTheDocument());
   });
 
   it("shows a new-figure card and inserts the figure with its caption after the anchor", async () => {
@@ -679,7 +679,7 @@ describe("Word task pane", () => {
     expect(mock.pictureEdits).toEqual([expect.objectContaining({ action: "insert", paragraphIndex: anchor + 1, tracked: true })]);
     expect(mock.paragraphs[anchor + 2]).toMatchObject({ text: "Figure 2. Accessibility by cell type.", styleBuiltIn: "Caption" });
     expect(mock.paragraphs.some((paragraph) => paragraph.text.includes(ORIGINAL))).toBe(true);
-    await waitFor(() => expect(screen.getByText(/applied in Word/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/applied in the document/)).toBeInTheDocument());
   });
 
   it("sends a message typed while the AI works into the running turn, like the CLIs", async () => {

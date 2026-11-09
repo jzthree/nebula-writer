@@ -4,7 +4,7 @@ import { isDocsLocatePlan, type DocsLocatePlan } from "./locate";
  * Actually on screen. Docs keeps a closed Find dialog in the page, still laid
  * out but hidden by CSS or moved away, so having a box is not enough.
  */
-function visible(element: Element): element is HTMLElement {
+export function visible(element: Element): element is HTMLElement {
   const win = element.ownerDocument.defaultView!;
   if (!(element instanceof win.HTMLElement) || !element.getClientRects().length) return false;
   if (element.closest('[aria-hidden="true"]')) return false;
@@ -18,7 +18,7 @@ function visible(element: Element): element is HTMLElement {
 /** Find dialogs Locate itself closed: whatever their state looks like, they are not the author's open search. */
 const closedByLocate = new WeakSet<Element>();
 
-function click(element: HTMLElement): void {
+export function click(element: HTMLElement): void {
   const win = element.ownerDocument.defaultView!;
   const rect = element.getBoundingClientRect();
   // Closure suppresses a menu item's mouseup at the menu-opening coordinates.

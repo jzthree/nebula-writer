@@ -65,7 +65,7 @@ describe("google docs host", () => {
     installTransport();
     const boot = await googleDocsHost.waitForHost();
     expect(boot.ready).toBe(true);
-    expect(boot.capabilities).toMatchObject({ hostName: "Google Docs", trackChanges: false, comments: false });
+    expect(boot.capabilities).toMatchObject({ hostName: "Google Docs", trackChanges: false, comments: true });
     const snapshot = await googleDocsHost.readDocumentSnapshot(boot.capabilities);
     expect(snapshot.bodyText).toBe("Specific Aims\nOur central hypothesis is that chromatin state drives fate.\nClosing paragraph.");
     expect(snapshot.paragraphs[1]).toMatchObject({ offset: 14, headingLevel: null });
@@ -124,12 +124,14 @@ describe("google docs host", () => {
     expect(outcomes[2].ok).toBe(true);
   });
 
-  it("reads and replaces pictures through the script and declines comments", async () => {
+  it("reads and replaces pictures through the script and comments on the located passage", async () => {
     installTransport();
     expect(await googleDocsHost.readInlinePictureBase64(0)).toEqual({ base64: "AAAA", width: 100, height: 50 });
     await googleDocsHost.replaceInlinePicture(0, "iVBORw0KGgo=", { trackChanges: "word" });
     expect(calls.at(-1)).toEqual({ fn: "nebulaReplaceImage", args: [0, "iVBORw0KGgo=", "image/png"] });
     const snapshot = await googleDocsHost.readDocumentSnapshot(googleDocsHost.detectCapabilities(true));
-    await expect(googleDocsHost.commentSuggestion(snapshot, { original: "x" }, "note", 0)).rejects.toThrow(/cannot take a comment/);
+    await expect(googleDocsHost.commentSuggestion(snapshot, { original: "x" }, "note", 0)).rejects.toThrow(/no longer contains/);
+    await expect(googleDocsHost.commentSuggestion(snapshot, { original: "chromatin state" }, "note", 0)).resolves.toEqual({ matches: 1, matchIndex: 0 });
+    expect(calls.at(-1)).toEqual({ fn: "nebulaComment", args: [{ paragraphIndex: 1, start: 31, endParagraphIndex: 1, end: 46, expected: "chromatin state" }, "note"] });
   });
 });

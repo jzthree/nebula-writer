@@ -42,8 +42,10 @@ Google Docs ── Apps Script (gdocs/script/Code.js)
   operations (`docsPlan.ts`), and polls the caret (every 2 s) and the text
   fingerprint (every 5 s) since Docs has no events.
 - Images: Writer reads inline images through the script and swaps them in
-  place. Comments are not available (Docs comments created by an add-in do
-  not anchor to text), so the Comment button reports that.
+  place. The add-in cannot leave comments (a comment created through an API
+  shows detached from the text in Docs), so its Comment button says so; the
+  Chrome extension comments through Docs itself (see "Comments from a
+  suggestion" below).
 
 ## Setup
 
@@ -263,6 +265,20 @@ the page. Changed text,
 unexpected native search results, and missing controls produce an error on
 the suggestion instead of silently doing nothing. Direct image selection is
 not supported by the Chrome host; locate nearby text or a caption instead.
+
+### Comments from a suggestion
+
+A suggestion card's Comment button, in the Chrome extension, first runs
+Locate to select the passage, then opens Docs' own **Insert > Comment**,
+types the note into that comment box and presses its Comment button, so the
+comment is attached to the passage as if the author had written it. (The
+Drive API can create comments too, but Docs shows those detached from the
+text, under All comments.) Commenting needs the English interface and
+permission to comment. It refuses to start while a comment you are writing
+in Docs has text in it, stops if you click or type in the document while it
+runs, and reports which step failed; if Docs leaves the comment box open
+with the note in it, the error says to post or cancel it there. Tests in
+`tests/chrome-comment.test.ts` drive a stand-in for the Docs page.
 
 After installing an extension build with Locate support, reload the extension
 and refresh the Google Doc so its new content script is injected. Tests in

@@ -354,6 +354,15 @@ export function nebulaFocusKey(): string {
 /* Selecting                                                                 */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Apps Script has no way to attach a comment to text (the Drive API's
+ * comments show detached in Docs), so commenting needs the Chrome extension,
+ * which uses the document's own Insert > Comment.
+ */
+export function nebulaComment(_range: DocsTextRange, _text: string): void {
+  throw new Error("The Google Docs add-in cannot attach a comment to a passage. Use Writer's Chrome extension, which comments through Docs itself.");
+}
+
 export function nebulaSelect(range: DocsTextRange): void {
   const doc = document();
   const blocks = walkBlocks(doc.getBody() as unknown as Container);

@@ -135,6 +135,7 @@ export const DOCS_SCRIPT_FUNCTIONS = [
   "nebulaFocusKey",
   "nebulaFingerprint",
   "nebulaSelect",
+  "nebulaComment",
   "nebulaApply",
   "nebulaReadImage",
   "nebulaReplaceImage",

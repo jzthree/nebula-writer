@@ -14,7 +14,7 @@ import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComme
 import { openCommentPicker } from "./commentPicker";
 import { describeDocsApiError, docsAccessDeniedMessage, looksLikeOfficeFile, OFFICE_FILE_MESSAGE } from "./docsAccess";
 import { planDocsLocate } from "./locate";
-import { locateInDocumentTab } from "./locateBridge";
+import { commentInDocumentTab, locateInDocumentTab } from "./locateBridge";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
 
 declare const __PANE_ORIGIN__: string;
@@ -277,6 +277,15 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
     const parsed = await fetchParsed(docId);
     const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
     await locateInDocumentTab(tabId, docId, plan, (id, message) => chrome.tabs.sendMessage(id, message));
+    return null;
+  },
+
+  async nebulaComment(range, text) {
+    const { tabId, docId } = await activeDoc();
+    const parsed = await fetchParsed(docId);
+    const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
+    await commentInDocumentTab(tabId, docId, plan, String(text ?? ""), (id, message) => chrome.tabs.sendMessage(id, message));
+    commentsVersion += 1;
     return null;
   },
 

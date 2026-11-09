@@ -1560,7 +1560,8 @@ export function App() {
       return;
     }
     setActiveId(suggestion.id);
-    void runBusy("Adding a Word comment…", async () => {
+    const host = capabilities.hostName ?? "Word";
+    void runBusy(`Adding a ${host} comment…`, async () => {
       try {
         if (suggestion.kind === "image" && suggestion.image && suggestion.image.index !== null) {
           await commentInlinePicture(suggestion.image.index, buildCommentText(suggestion));
@@ -1572,14 +1573,14 @@ export function App() {
           await commentSuggestion(snap, suggestion, buildCommentText(suggestion), state.matchIndex);
         }
         patchCard(suggestion.id, { outcome: "commented", detail: null, error: null });
-        await recordDecision(suggestion, "accepted", "Left as a Word comment");
-        showNotice("success", "Comment added in Word.");
+        await recordDecision(suggestion, "accepted", `Left as a ${host} comment`);
+        showNotice("success", `Comment added in ${host}.`);
       } catch (error) {
         patchCard(suggestion.id, { error: errorMessage(error) });
         showNotice("error", errorMessage(error));
       }
     });
-  }, [ensureMatches, hostStatus, patchCard, recordDecision, runBusy, showNotice]);
+  }, [capabilities.hostName, ensureMatches, hostStatus, patchCard, recordDecision, runBusy, showNotice]);
 
   const dismiss = useCallback((suggestion: AiSuggestion) => {
     patchCard(suggestion.id, { outcome: "dismissed", detail: null, error: null });
