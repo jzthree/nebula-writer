@@ -296,7 +296,9 @@ it without a trip to `chrome://extensions`:
   panel script and the content script with code ids (`dist/build.json`).
   Before each message to the Docs tab, the panel checks the copy answering
   there and injects the current content script when it is stale. The
-  newest copy in a tab takes over and older copies stop answering. When the
+  newest copy in a tab takes over and older copies stop answering. Messages
+  use `nebula-writer:` names, which copies from before this handover do not
+  answer (they stay loaded until the tab is refreshed). When the
   panel's own code is stale it tells the pane, which reloads the panel
   between turns, carrying a half-typed message and attachments.
 - A panel from before this mechanism cannot update itself while open; the

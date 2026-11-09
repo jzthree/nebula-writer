@@ -19,7 +19,9 @@ const CODE_ID = "__NEBULA_CONTENT_CODE__";
 
 /**
  * The side panel injects a newer copy when Writer is rebuilt; every copy
- * shares this isolated world, and only the newest answers.
+ * shares this isolated world, and only the newest answers. (Copies from
+ * before this handover answer only the old "nebula-…" message names, which
+ * the panel no longer sends.)
  */
 interface ContentRegistry { __nebulaWriterContent?: { owner: symbol; dispose: () => void } }
 const registry = globalThis as ContentRegistry;
@@ -36,21 +38,21 @@ chrome.runtime.onMessage.addListener((message: { type?: string; docId?: string; 
   if (superseded()) {
     return false;
   }
-  if (message?.type === "nebula-ping") {
+  if (message?.type === "nebula-writer:ping") {
     respond({ code: CODE_ID, url: location.href });
     return true;
   }
-  if (message?.type === "nebula-selection") {
+  if (message?.type === "nebula-writer:selection") {
     respond({ text: selectionReader.read(), url: location.href });
     return true;
   }
-  if (message?.type === "nebula-account") {
+  if (message?.type === "nebula-writer:account") {
     const labels = Array.from(document.querySelectorAll("[aria-label]"), (element) => element.getAttribute("aria-label"));
     respond({ email: accountEmailFromLabels(labels) });
     return true;
   }
-  if (message?.type === "nebula-locate" || message?.type === "nebula-comment") {
-    const commenting = message.type === "nebula-comment";
+  if (message?.type === "nebula-writer:locate" || message?.type === "nebula-writer:comment") {
+    const commenting = message.type === "nebula-writer:comment";
     const current = () => !disposed && googleDocId(location.href) === message.docId;
     if (!message.docId || !current() || !message.plan || locating || (commenting && typeof message.text !== "string")) {
       respond({ ok: false, url: location.href, error: locating ? "Writer is already working in this document. Try again after it finishes." : "The document changed. Reopen Writer beside the intended Google Doc." });

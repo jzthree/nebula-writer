@@ -9,7 +9,7 @@ export async function readDocumentSelection(
 ): Promise<string> {
   let reply: unknown;
   try {
-    reply = await sendMessage(tabId, { type: "nebula-selection" });
+    reply = await sendMessage(tabId, { type: "nebula-writer:selection" });
   } catch {
     throw new Error(RECONNECT);
   }

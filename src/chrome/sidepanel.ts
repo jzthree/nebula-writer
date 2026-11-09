@@ -165,7 +165,7 @@ async function accessDenied(editing: boolean): Promise<string> {
   const profileEmail = await chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY })
     .then((info) => info.email || null).catch(() => null);
   const docEmail = await activeDoc()
-    .then(({ tabId }) => sendToTab(tabId, { type: "nebula-account" }) as Promise<{ email?: string | null } | undefined>)
+    .then(({ tabId }) => sendToTab(tabId, { type: "nebula-writer:account" }) as Promise<{ email?: string | null } | undefined>)
     .then((reply) => reply?.email ?? null).catch(() => null);
   return docsAccessDeniedMessage(profileEmail, docEmail, editing);
 }
@@ -204,7 +204,7 @@ async function syncContent(tabId: number): Promise<void> {
   const code = await ensureCurrentContent(tabId, {
     disk: currentCodes,
     running: async (id) => {
-      const reply = await chrome.tabs.sendMessage(id, { type: "nebula-ping" }) as { code?: unknown } | undefined;
+      const reply = await chrome.tabs.sendMessage(id, { type: "nebula-writer:ping" }) as { code?: unknown } | undefined;
       return typeof reply?.code === "string" ? reply.code : null;
     },
     inject: async (id) => { await chrome.scripting.executeScript({ target: { tabId: id }, files: ["dist/content.js"] }); }

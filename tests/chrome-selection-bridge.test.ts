@@ -8,7 +8,7 @@ describe("Google Docs selection bridge", () => {
   it("reads only the requested document tab and normalizes line endings", async () => {
     const send = vi.fn(async () => ({ text: "First.\r\nSecond.\rThird.", url }));
     expect(await readDocumentSelection(27, "paper-id", send)).toBe("First.\nSecond.\nThird.");
-    expect(send).toHaveBeenCalledExactlyOnceWith(27, { type: "nebula-selection" });
+    expect(send).toHaveBeenCalledExactlyOnceWith(27, { type: "nebula-writer:selection" });
   });
 
   it("distinguishes a working reader with no selection from a missing reader", async () => {

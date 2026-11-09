@@ -41,14 +41,30 @@ function composerButtons(input: HTMLElement): HTMLElement[] {
   return [];
 }
 
+/** Any buttons within a few levels of the field, for diagnostics. */
+function nearbyButtons(input: HTMLElement): HTMLElement[] {
+  const near = composerButtons(input);
+  if (near.length) return near;
+  let scope: HTMLElement | null = input;
+  for (let depth = 0; scope?.parentElement && depth < 6; depth++) scope = scope.parentElement;
+  return scope ? Array.from(scope.querySelectorAll<HTMLElement>('button, [role="button"]')).slice(0, 8) : [];
+}
+
 /** The visible button that posts the comment. */
 function postButton(input: HTMLElement): HTMLElement | null {
   return composerButtons(input).find((item) => visible(item) && POST_LABEL.test(buttonLabel(item))) ?? null;
 }
 
-/** An editable field outside the document's own text, in a box with comment buttons. */
+/**
+ * A comment field: editable, not in a dialog (Find, Gemini and the like
+ * live in dialogs or prompt boxes), and either labelled as a comment or
+ * sitting beside comment buttons. The document's own text is never a
+ * candidate: Docs takes typing for it in a separate frame.
+ */
 function isCommentField(element: Element | null): element is HTMLElement {
-  return !!element && editable(element) && element.isConnected && !element.closest('[role="dialog"], .kix-appview-editor') && composerButtons(element).length > 0;
+  if (!element || !editable(element) || !element.isConnected || element.closest('[role="dialog"]')) return false;
+  const label = `${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("placeholder") ?? ""}`;
+  return /\b(comment|reply)/i.test(label) || composerButtons(element).length > 0;
 }
 
 /** Visible comment boxes. */
@@ -67,7 +83,7 @@ function describe(element: Element | null): string {
 
 function diagnostics(doc: Document, input: HTMLElement | null): string {
   const editables = Array.from(doc.querySelectorAll('textarea, [contenteditable]')).filter((item) => editable(item));
-  const buttons = input ? composerButtons(input).map((item) => `${buttonLabel(item).slice(0, 20) || "?"}${visible(item) ? "" : " (hidden)"}${disabled(item) ? " (disabled)" : ""}`) : [];
+  const buttons = input ? nearbyButtons(input).map((item) => `${buttonLabel(item).slice(0, 20) || "?"}${visible(item) ? "" : " (hidden)"}${disabled(item) ? " (disabled)" : ""}`) : [];
   return ` [Details for Writer: focus ${describe(doc.activeElement)}; ${editables.length} editable field(s): ${editables.slice(0, 4).map(describe).join(", ") || "none"}${input ? `; box buttons: ${buttons.join(", ") || "none"}` : ""}]`;
 }
 
@@ -132,8 +148,9 @@ export async function commentOnSelection(doc: Document, text: string, isCurrentD
       const focused = doc.activeElement;
       if (focused !== focusedBefore && isCommentField(focused) && !textOf(focused).trim()) return focused;
       return commentBoxes(doc).find((box) => !before.has(box) && !textOf(box).trim()) ?? null;
-    }, "Google Docs opened no comment box Writer could recognise. If one is open in the document, type the comment there or cancel it.").catch((error: Error) => {
-      throw new Error(error.message + diagnostics(doc, null));
+    }, "Google Docs opened no comment box Writer could recognise. If one is open in the document, type the comment there or cancel it.", 8_000).catch((error: Error) => {
+      const focused = doc.activeElement;
+      throw new Error(error.message + diagnostics(doc, focused instanceof win.HTMLElement && editable(focused) ? focused : null));
     });
     guard();
     typeText(input, text);
@@ -157,7 +174,7 @@ export async function commentOnSelection(doc: Document, text: string, isCurrentD
     await waitFor(() => {
       const stillOpen = field.isConnected && visible(field) && textOf(field).trim();
       return !stillOpen && doc.body.textContent?.includes(firstLine) ? true : null;
-    }, "Writer wrote the comment but Google Docs did not post it. Click Comment in the document to post it.").catch((error: Error) => {
+    }, "Writer wrote the comment but Google Docs did not post it. Click Comment in the document to post it.", 8_000).catch((error: Error) => {
       throw new Error(error.message + diagnostics(doc, field));
     });
   } finally {

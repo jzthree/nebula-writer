@@ -2,7 +2,7 @@ import { googleDocId } from "./documentTab";
 import type { DocsLocatePlan } from "./locate";
 
 export interface DocsTabMessage {
-  type: "nebula-locate" | "nebula-comment";
+  type: "nebula-writer:locate" | "nebula-writer:comment";
   docId: string;
   plan: DocsLocatePlan;
   text?: string;
@@ -22,11 +22,11 @@ async function sendToDocumentTab(tabId: number, message: DocsTabMessage,
 
 export function locateInDocumentTab(tabId: number, docId: string, plan: DocsLocatePlan,
   sendMessage: (tabId: number, message: DocsTabMessage) => Promise<unknown>): Promise<void> {
-  return sendToDocumentTab(tabId, { type: "nebula-locate", docId, plan }, sendMessage, "Google Docs could not locate this passage.");
+  return sendToDocumentTab(tabId, { type: "nebula-writer:locate", docId, plan }, sendMessage, "Google Docs could not locate this passage.");
 }
 
 /** Select the passage, then comment on it through Docs' own comment box. */
 export function commentInDocumentTab(tabId: number, docId: string, plan: DocsLocatePlan, text: string,
   sendMessage: (tabId: number, message: DocsTabMessage) => Promise<unknown>): Promise<void> {
-  return sendToDocumentTab(tabId, { type: "nebula-comment", docId, plan, text }, sendMessage, "Google Docs could not add this comment.");
+  return sendToDocumentTab(tabId, { type: "nebula-writer:comment", docId, plan, text }, sendMessage, "Google Docs could not add this comment.");
 }

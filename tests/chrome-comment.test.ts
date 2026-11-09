@@ -14,7 +14,7 @@ describe("Chrome comment message bridge", () => {
     const url = "https://docs.google.com/document/d/paper-id/edit";
     const send = vi.fn(async () => ({ ok: true, url }));
     await expect(commentInDocumentTab(5, "paper-id", plan, note, send)).resolves.toBeUndefined();
-    expect(send).toHaveBeenCalledWith(5, { type: "nebula-comment", docId: "paper-id", plan, text: note });
+    expect(send).toHaveBeenCalledWith(5, { type: "nebula-writer:comment", docId: "paper-id", plan, text: note });
     await expect(commentInDocumentTab(5, "paper-id", plan, note, async () => ({ ok: false, url, error: "No comment box" }))).rejects.toThrow("No comment box");
     await expect(commentInDocumentTab(5, "paper-id", plan, note, async () => ({ ok: true, url: url.replace("paper-id", "other") }))).rejects.toThrow("changed");
   });
@@ -119,6 +119,30 @@ describe("Google Docs comment UI", () => {
     const { posted } = installFocusedBox({ noButton: true });
     await commentOnSelection(document, note);
     expect(posted).toEqual([note]);
+  });
+
+  it("uses Docs' focused 'Comment draft' field inside the editor area, never the Gemini prompt", async () => {
+    // The shape reported from a real Google Doc: the draft field lives in .kix-appview-editor.
+    document.body.insertAdjacentHTML("beforeend", '<div class="kix-appview-editor"><div class="docos-stream"></div></div><div class="gemini"><div contenteditable="true" role="combobox" aria-label="Write with Gemini"></div></div>');
+    const posted: string[] = [];
+    document.getElementById("docs-insert-menu")!.addEventListener("mousedown", () => {
+      document.body.insertAdjacentHTML("beforeend", '<div role="menuitem" class="cmd">Comment⌘+Option+M</div>');
+      document.querySelector(".cmd")!.addEventListener("click", () => {
+        document.querySelector(".cmd")!.remove();
+        const stream = document.querySelector(".docos-stream")!;
+        stream.innerHTML = `<div class="docos-anchoreddocoview"><div class="docos-input-textarea docos-input-contenteditable editable" contenteditable="true" tabindex="0" role="textbox" aria-label="Comment draft"></div>
+          <div class="docos-input-buttons"><div role="button" class="docos-input-post">Comment</div><div role="button" class="docos-input-cancel">Cancel</div></div></div>`;
+        const field = stream.querySelector<HTMLElement>("[contenteditable]")!;
+        stream.querySelector(".docos-input-post")!.addEventListener("click", () => {
+          posted.push(field.textContent ?? "");
+          stream.innerHTML = `<div class="docos-replyview-body">${field.textContent}</div>`;
+        });
+        field.focus();
+      });
+    });
+    await commentOnSelection(document, note);
+    expect(posted).toEqual([note]);
+    expect(document.querySelector('[aria-label="Write with Gemini"]')!.textContent).toBe("");
   });
 
   it("describes what was focused when no comment box can be recognised", async () => {

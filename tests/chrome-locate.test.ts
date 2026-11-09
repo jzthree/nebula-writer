@@ -63,7 +63,7 @@ describe("Chrome Locate message bridge", () => {
     const url = "https://docs.google.com/document/d/paper-id/edit";
     const send = vi.fn(async () => ({ ok: true, url }));
     await expect(locateInDocumentTab(17, "paper-id", plan, send)).resolves.toBeUndefined();
-    expect(send).toHaveBeenCalledWith(17, { type: "nebula-locate", docId: "paper-id", plan });
+    expect(send).toHaveBeenCalledWith(17, { type: "nebula-writer:locate", docId: "paper-id", plan });
     await expect(locateInDocumentTab(17, "paper-id", plan, async () => { throw new Error("No receiver"); })).rejects.toThrow("Reload the extension");
     await expect(locateInDocumentTab(17, "paper-id", plan, async () => ({ ok: true, url: url.replace("paper-id", "other") }))).rejects.toThrow("document");
     await expect(locateInDocumentTab(17, "paper-id", plan, async () => ({ ok: false, url, error: "Find unavailable" }))).rejects.toThrow("Find unavailable");

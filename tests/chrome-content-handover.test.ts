@@ -19,10 +19,10 @@ describe("Chrome content script handover", () => {
     expect(listeners).toHaveLength(2);
     const [older, newer] = listeners;
     const olderReply = vi.fn();
-    expect(older({ type: "nebula-ping" }, {}, olderReply)).toBe(false);
+    expect(older({ type: "nebula-writer:ping" }, {}, olderReply)).toBe(false);
     expect(olderReply).not.toHaveBeenCalled();
     const newerReply = vi.fn();
-    expect(newer({ type: "nebula-ping" }, {}, newerReply)).toBe(true);
+    expect(newer({ type: "nebula-writer:ping" }, {}, newerReply)).toBe(true);
     expect(newerReply).toHaveBeenCalledWith({ code: "__NEBULA_CONTENT_CODE__", url: location.href });
   });
 });
