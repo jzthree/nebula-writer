@@ -128,8 +128,15 @@ export interface DocsImageBytesPayload {
   height: number | null;
 }
 
+/** Which document this is, known even when its contents cannot be read. */
+export interface DocsDocumentIdentity {
+  documentId: string;
+  documentName: string | null;
+}
+
 /** Names of the script functions the sidebar may call (`google.script.run[name]`). */
 export const DOCS_SCRIPT_FUNCTIONS = [
+  "nebulaDocumentIdentity",
   "nebulaReadDocument",
   "nebulaReadFocus",
   "nebulaFocusKey",

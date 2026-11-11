@@ -58,8 +58,15 @@ export interface DocumentHost {
   deletePicture(index: number, options: { trackChanges: "always" | "word" }): Promise<{ trackedChange: boolean }>;
   /** Select a table (by its index in the snapshot) so the author sees it. */
   selectTable(snapshot: WordDocumentSnapshot, index: number): Promise<void>;
+  /** Which document this is, when that is known even though its contents cannot be read; hosts whose reads do not fail that way omit it. */
+  readDocumentIdentity?(): Promise<DocumentIdentity | null>;
   /** Reject the tracked changes an apply created (see ApplyResult.revisions); hosts without tracked changes omit it. */
   rejectTrackedRevisions?(revisions: TrackedRevision[]): Promise<"rejected" | "missing" | "ambiguous">;
+}
+
+export interface DocumentIdentity {
+  documentKey: string;
+  documentName: string | null;
 }
 
 export interface PictureInsertOptions {
@@ -128,4 +135,5 @@ export const applyTableEdit: DocumentHost["applyTableEdit"] = (snapshot, suggest
 export const selectTable: DocumentHost["selectTable"] = (snapshot, index) => active.selectTable(snapshot, index);
 export const insertPicture: DocumentHost["insertPicture"] = (snapshot, suggestion, base64, options) => active.insertPicture(snapshot, suggestion, base64, options);
 export const deletePicture: DocumentHost["deletePicture"] = (index, options) => active.deletePicture(index, options);
+export const readDocumentIdentity = (): Promise<DocumentIdentity | null> => active.readDocumentIdentity?.() ?? Promise.resolve(null);
 export const rejectTrackedRevisions = (revisions: TrackedRevision[]): Promise<"rejected" | "missing" | "ambiguous"> => active.rejectTrackedRevisions?.(revisions) ?? Promise.resolve("missing");

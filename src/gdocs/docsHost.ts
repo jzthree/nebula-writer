@@ -6,11 +6,11 @@
 
 import type { AiSuggestion } from "../shared";
 import { normalizeEmphasis, shiftEmphasis, type EmphasisSpan } from "../emphasis";
-import type { DocumentHost, PictureInsertOptions, TableApplyOptions } from "../word/hostBridge";
+import type { DocumentHost, DocumentIdentity, PictureInsertOptions, TableApplyOptions } from "../word/hostBridge";
 import { chooseMatchIndex, type BatchApplyItem, type BatchApplyOptions, type BatchApplyOutcome, type SuggestionMatchSet, type WordCapabilities, type WordHostBoot } from "../word/wordHost";
 import { indexParagraphs, type WordDocumentSnapshot, type WordFocusState } from "../word/wordContext";
 import { findMatches, planReplace, rangesOverlap, rangeToParagraphs, type PlannedEdit } from "./docsPlan";
-import type { DocsImageInsert, DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp, DocsTableOp } from "./protocol";
+import type { DocsDocumentIdentity, DocsImageInsert, DocsDocumentPayload, DocsFocusPayload, DocsImageBytesPayload, DocsOpOutcome, DocsReplaceOp, DocsTableOp } from "./protocol";
 import { callScript, waitForScriptHost } from "./scriptBridge";
 
 const SELECTION_POLL_MS = 2_000;
@@ -40,6 +40,12 @@ async function waitForHost(timeoutMs = 8_000): Promise<WordHostBoot> {
 
 function detectCapabilities(host: boolean): WordCapabilities {
   return { ...docsCapabilities, host };
+}
+
+/** Which document this is, for saving the conversation even when Google refuses its contents. */
+async function readDocumentIdentity(): Promise<DocumentIdentity | null> {
+  const identity = await callScript<DocsDocumentIdentity>("nebulaDocumentIdentity");
+  return identity?.documentId ? { documentKey: `gdocs:${identity.documentId}`, documentName: identity.documentName } : null;
 }
 
 async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?: unknown): Promise<WordDocumentSnapshot> {
@@ -338,6 +344,7 @@ function sniffImageMime(base64: string): string {
 export const googleDocsHost: DocumentHost = {
   waitForHost,
   detectCapabilities,
+  readDocumentIdentity,
   readDocumentSnapshot,
   readFocus,
   subscribeSelectionChanges,

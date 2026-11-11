@@ -75,6 +75,7 @@ import type { MockWordHost } from "./mockOffice";
 import { ConversationSync, type ConversationState } from "../conversationSync";
 import { loadedEntryScript, reloadPaneIfOutdated, servedEntryScript } from "./paneUpdate";
 import { extensionHostIsOutdated, hostWantsReload, reloadHost } from "../gdocs/scriptBridge";
+import { readDocumentIdentity, type DocumentIdentity } from "./hostBridge";
 import { fetchConversationFromSidecar, resetConversationOnSidecar, writeConversationToSidecar } from "../sidecarClient";
 
 interface ModelPreference {
@@ -247,6 +248,11 @@ function turnId(): string {
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus>("booting");
   const [hostDetail, setHostDetail] = useState("Connecting to the document…");
+  /** Why the last read of the document failed; null once one succeeds. */
+  const [readError, setReadError] = useState<string | null>(null);
+  const readErrorRef = useRef<string | null>(null);
+  /** Which document this is, when the host knows that though it cannot read the contents. */
+  const [documentIdentity, setDocumentIdentity] = useState<DocumentIdentity | null>(null);
   const [capabilities, setCapabilities] = useState<WordCapabilities>(() => detectCapabilities(false));
   const [snapshot, setSnapshot] = useState<WordDocumentSnapshot | null>(null);
   const [focus, setFocus] = useState<WordFocusState | null>(null);
@@ -513,11 +519,20 @@ export function App() {
         const next = await readDocumentSnapshot(capabilitiesRef.current, { emphasis: options.full ? "full" : "cached" });
         snapshotRef.current = next;
         setSnapshot(next);
+        readErrorRef.current = null;
+        setReadError(null);
         await refreshFocus(next);
         return next;
       } catch (error) {
-        setHostDetail(errorMessage(error));
-        showNotice("error", `Could not read the document from ${capabilitiesRef.current.hostName ?? "Word"}: ${errorMessage(error)}`);
+        const reason = errorMessage(error);
+        setHostDetail(reason);
+        // Shown in the pane until a read succeeds: this is usually not a passing problem.
+        readErrorRef.current = reason;
+        setReadError(reason);
+        if (!snapshotRef.current) {
+          // The conversation is still this document's, so it can be saved and restored.
+          void readDocumentIdentity().then((identity) => setDocumentIdentity(identity)).catch(() => undefined);
+        }
         return snapshotRef.current;
       } finally {
         snapshotInFlightRef.current = null;
@@ -839,9 +854,11 @@ export function App() {
   // Restore this document's conversation once: when the document and the
   // sidecar are both ready. An unsaved document has no key yet; once it is
   // saved, what is in the pane is saved under its new key.
-  const documentKey = snapshot?.documentKey ?? null;
+  const documentKey = snapshot?.documentKey ?? documentIdentity?.documentKey ?? null;
+  const documentLabel = snapshot?.documentName ?? documentIdentity?.documentName ?? "untitled";
+  const documentKnown = Boolean(snapshot || documentIdentity);
   useEffect(() => {
-    if (hostStatus !== "ready" || sidecarStatus !== "ok" || !snapshot) {
+    if (hostStatus !== "ready" || sidecarStatus !== "ok" || !documentKnown) {
       return;
     }
     if (!documentKey) {
@@ -853,20 +870,20 @@ export function App() {
     }
     const firstKey = conversationKeyRef.current === null;
     conversationKeyRef.current = documentKey;
-    if (!firstKey || turnsRef.current.length) {
+    if (!firstKey || (conversationReady && turnsRef.current.length)) {
       // Saved under a new name (or first saved) mid-conversation: keep what is here, under the new key.
       conversationSyncRef.current?.forget();
       setConversationReady(true);
       conversationSyncRef.current?.schedule(conversationState);
       return;
     }
-    let cancelled = false;
+    // A message sent before this loads stays, after the restored history.
+    // Not cancelled by a re-render: the key is set, so nothing would load it again.
     fetchConversationFromSidecar<ChatTurn, AiSuggestion, CardState>("", documentKey, { limit: CONVERSATION_PAGE_TURNS })
       .then((page) => {
-        if (cancelled) {
+        if (conversationKeyRef.current !== documentKey) {
           return;
         }
-        const documentLabel = snapshot.documentName ?? "untitled";
         for (const [provider, sessionId] of Object.entries(page.sessions)) {
           agentSessionsRef.current[`${provider}:${documentLabel}`] = sessionId;
         }
@@ -874,14 +891,11 @@ export function App() {
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) {
+        if (conversationKeyRef.current === documentKey) {
           setConversationReady(true);
         }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [conversationState, documentKey, hostStatus, mergeConversationPage, sidecarStatus, snapshot]);
+  }, [conversationReady, conversationState, documentKey, documentKnown, documentLabel, hostStatus, mergeConversationPage, sidecarStatus]);
 
   /* ------------------------------------------------------------------ */
   /* Share window state with the sidecar                                */
@@ -988,10 +1002,18 @@ export function App() {
     const assistantTurnId = turnId();
     runningTurnRef.current = assistantTurnId;
     setInstruction("");
+    // Into the chat before anything can fail: what was sent is always on record.
+    const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
+    appendTurn(userTurn);
+    appendTurn({ id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: "Reading the document…", origin: "pane", activity: [] });
+    let reachedAi = false;
     try {
       const snap = (await refreshSnapshot({ full: true })) ?? snapshotRef.current;
-      if (!snap || !snap.bodyText.trim()) {
-        throw new Error("The Word document is empty — type something first.");
+      if (!snap) {
+        throw new Error(`Not sent — Writer couldn't read the document. ${readErrorRef.current ?? "Try again in a moment."}`);
+      }
+      if (!snap.bodyText.trim()) {
+        throw new Error("Not sent — the document is empty. Type something first.");
       }
       const currentFocus = focusRef.current;
       const resolved = resolveScope(settingsRef.current.scope, snap, currentFocus);
@@ -1002,7 +1024,8 @@ export function App() {
       }
       const sessionKey = `${provider}:${snap.documentName ?? "untitled"}`;
       const agentSessionId = agentSessionsRef.current[sessionKey] ?? null;
-      const conversation = buildConversationDigest(turnsRef.current, suggestionsRef.current, cardsRef.current);
+      // This message goes as the instruction, so the digest is only what came before it.
+      const conversation = buildConversationDigest(turnsRef.current.filter((turn) => turn.id !== userTurn.id && turn.id !== assistantTurnId), suggestionsRef.current, cardsRef.current);
       const request: WordLiveSuggestionRequest = {
         provider,
         runId,
@@ -1026,12 +1049,12 @@ export function App() {
         ...(activeFocus ? { focus: activeFocus } : {})
       };
       const sent = summarizeSent(request, resolved.label, snap, currentFocus, hostContext.recentFocus.length, hostContext.outline.length, engine);
-      const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, sent, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
-      appendTurn(userTurn);
-      appendTurn({ id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: `Asking ${engine} · ${resolved.label}`, origin: "pane", activity: [] });
+      setTurns((current) => current.map((turn) => (turn.id === userTurn.id && turn.role === "user" ? { ...turn, sent } : turn)));
+      patchTurn(assistantTurnId, { progress: `Asking ${engine} · ${resolved.label}` });
       const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
       const userMirrored = mirrorChat([userMessage]);
 
+      reachedAi = true;
       const response = await requestWordSuggestions(request, { signal: controller.signal });
       if (response.ai.undeliveredSteers?.length) {
         // Sent during the run but no session could take them: they become the next turn.
@@ -1078,6 +1101,10 @@ export function App() {
       } else {
         patchTurn(assistantTurnId, { text: errorMessage(error), status: "error", progress: null });
         setRequestState("error");
+        if (!reachedAi) {
+          // Never reached the AI: ready to send again once the problem is fixed.
+          setInstruction((current) => current || askedText);
+        }
       }
       if (!askedText) {
         return;
@@ -1881,9 +1908,10 @@ export function App() {
       viewport: described.viewport,
       stale: Boolean(focus?.stale),
       sharedWithAgents,
-      trail: trail.slice(-3).reverse().map((entry) => excerpt(entry.excerpt, 42))
+      trail: trail.slice(-3).reverse().map((entry) => excerpt(entry.excerpt, 42)),
+      readError
     };
-  }, [focus, sharedWithAgents, snapshot, trail]);
+  }, [focus, readError, sharedWithAgents, snapshot, trail]);
 
   const capabilityRows = useMemo<CapabilityRow[]>(() => [
     { label: `${capabilities.hostName ?? "Word"} host`, ok: capabilities.host, detail: capabilities.host ? `${capabilities.platform ?? "desktop"}${capabilities.officeVersion ? ` · Office ${capabilities.officeVersion}` : ""}` : hostDetail },
@@ -1992,7 +2020,7 @@ export function App() {
       providerOptions={providerOptions}
       requestState={requestState}
       scope={settings.scope}
-      scopeLabel={scopeResolution?.label ?? "Waiting for the document…"}
+      scopeLabel={scopeResolution?.label ?? (readError ? "Document not readable" : "Waiting for the document…")}
       scopeOptions={scopeOptions}
       hostName={capabilities.hostName ?? "Word"}
       tracksChanges={capabilities.trackChanges}

@@ -29,6 +29,8 @@ function installTransport(): void {
         return focusPayload;
       case "nebulaApply":
         return (args[0] as DocsReplaceOp[]).map((op) => ({ id: op.id, ok: !op.expected.includes("fail") }));
+      case "nebulaDocumentIdentity":
+        return { documentId: "paper-id", documentName: "Paper" };
       case "nebulaSelect":
       case "nebulaSelectImage":
         return null;
@@ -122,6 +124,11 @@ describe("google docs host", () => {
     expect(outcomes[0].ok).toBe(true);
     expect(outcomes[1]).toMatchObject({ ok: false, error: expect.stringContaining("overlaps") });
     expect(outcomes[2].ok).toBe(true);
+  });
+
+  it("knows which document this is without reading its contents", async () => {
+    installTransport();
+    await expect(googleDocsHost.readDocumentIdentity!()).resolves.toEqual({ documentKey: "gdocs:paper-id", documentName: "Paper" });
   });
 
   it("reads and replaces pictures through the script and comments on the located passage", async () => {

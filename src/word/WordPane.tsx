@@ -156,6 +156,8 @@ export interface WordPaneProps {
     stale: boolean;
     sharedWithAgents: boolean;
     trail: string[];
+    /** Why the document could not be read; stays until a read succeeds. */
+    readError: string | null;
   };
   hostDetail: string;
   hostStatus: HostStatus;
@@ -311,7 +313,7 @@ export function WordPane(props: WordPaneProps) {
         </div>
       </header>
 
-      <ContextStrip {...props.contextStrip} hostStatus={props.hostStatus} />
+      <ContextStrip {...props.contextStrip} hostStatus={props.hostStatus} hostName={props.hostName} hostDetail={props.hostDetail} onRetry={props.onSync} />
 
       {props.mockControls ? (
         <div className="wp-mock-bar" aria-label="Mock Word controls">
@@ -509,11 +511,20 @@ function StatusPill(props: { tone: "ok" | "pending" | "warn"; label: string; tit
   );
 }
 
-function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostStatus }) {
+function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostStatus; hostName: string; hostDetail: string; onRetry: () => void }) {
   if (props.hostStatus !== "ready") {
     return (
-      <section className="wp-context muted" aria-label="Where you are in Word">
-        <p><FileText size={13} aria-hidden="true" /> {props.hostStatus === "booting" ? "Connecting to Word…" : "Open this pane from Word's Home tab to read the document."}</p>
+      <section className="wp-context muted" aria-label={`Where you are in ${props.hostName}`}>
+        <p><FileText size={13} aria-hidden="true" /> {props.hostStatus === "booting" ? `Connecting to ${props.hostName}…` : props.hostName === "Word" ? "Open this pane from Word's Home tab to read the document." : props.hostDetail}</p>
+      </section>
+    );
+  }
+  if (props.readError) {
+    return (
+      <section className="wp-context problem" role="alert" aria-label="Writer can't read this document">
+        <strong>Writer can't read this document</strong>
+        <p>{props.readError}</p>
+        <button type="button" className="quiet" onClick={props.onRetry}>Check again</button>
       </section>
     );
   }

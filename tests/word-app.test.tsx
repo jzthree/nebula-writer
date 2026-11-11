@@ -1065,3 +1065,64 @@ describe("Word task pane", () => {
   });
 });
 
+describe("A document Writer cannot read", () => {
+  const REASON = "Google won't let Writer open this doc: it is open as another account.";
+  let refused = true;
+
+  beforeEach(async () => {
+    refused = true;
+    const { setDocumentHost, wordDocumentHost } = await import("../src/word/hostBridge");
+    setDocumentHost({
+      ...wordDocumentHost,
+      readDocumentSnapshot: async (capabilities, options) => {
+        if (refused) throw new Error(REASON);
+        return { ...(await wordDocumentHost.readDocumentSnapshot(capabilities, options)), documentKey: "gdocs:paper" };
+      },
+      readDocumentIdentity: async () => ({ documentKey: "gdocs:paper", documentName: "Aims.docx" })
+    });
+  });
+
+  afterEach(async () => {
+    const { setDocumentHost, wordDocumentHost } = await import("../src/word/hostBridge");
+    setDocumentHost(wordDocumentHost);
+  });
+
+  async function renderRefused() {
+    const { App } = await import("../src/word/App");
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("alert", { name: "Writer can't read this document" })).toBeInTheDocument());
+    await waitFor(() => expect(captured.catalogFetches.length).toBeGreaterThan(0));
+  }
+
+  it("says why and keeps saying it, instead of waiting for the document", async () => {
+    await renderRefused();
+    expect(within(screen.getByRole("alert", { name: "Writer can't read this document" })).getByText(REASON)).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for the document/)).toBeNull();
+  });
+
+  it("keeps a message sent meanwhile in the chat, saved, and ready to send again", async () => {
+    conversations.store!.write("gdocs:paper", { turns: [{ id: "earlier", turn: { id: "earlier", role: "user", at: new Date().toISOString(), text: "An earlier question." } }] });
+    await renderRefused();
+    await waitFor(() => expect(screen.getByText("An earlier question.")).toBeInTheDocument());
+
+    send("Please keep this message.");
+    await waitFor(() => expect(screen.getByText(/Not sent — Writer couldn't read the document\./)).toBeInTheDocument());
+    expect(screen.getByText("Please keep this message.", { selector: ":not(textarea)" })).toBeInTheDocument();
+    expect(captured.requests).toEqual([]);
+    expect(screen.getByLabelText("Instruction for Writer")).toHaveValue("Please keep this message.");
+    await waitFor(() => expect(conversations.store!.read("gdocs:paper", {}).turns.map((entry) => (entry.turn as { text: string }).text)).toContain("Please keep this message."));
+    expect(conversations.store!.read("gdocs:paper", {}).turns.map((entry) => (entry.turn as { text: string }).text)).toContain("An earlier question.");
+  });
+
+  it("recovers on Check again, and does not repeat the new message in the conversation it sends", async () => {
+    await renderRefused();
+    refused = false;
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Writer can't read this document" })).toBeNull());
+    await waitFor(() => expect(screen.getByText("Aims.docx")).toBeInTheDocument());
+    send("Now it can be read.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0].instruction).toBe("Now it can be read.");
+    expect(captured.requests[0].conversation).toBeUndefined();
+  });
+});

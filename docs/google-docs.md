@@ -284,6 +284,30 @@ step's error ends with "Details for Writer": what was focused and which
 fields and buttons Writer saw, for fixing the recognition. Tests in
 `tests/chrome-comment.test.ts` drive a stand-in for the Docs page.
 
+### Accounts and the connection line
+
+Chrome gives the extension a token only for the Chrome profile's main account,
+while a Docs tab can be signed in as any account in the browser. The line at
+the top of the panel says which account Writer uses, which account the tab is
+signed in as when they differ, and whether the last read worked. Writer's edits
+are recorded under Writer's account.
+
+When a read fails, the pane shows why until a read succeeds, with **Check
+again**. A 403 or 404 is reported as an account problem only when it is one:
+Google also answers 403 for a disabled API and for quota, and those are shown
+as Google words them. Chrome's sign-in failures are translated too; the usual
+one is a profile signed in on Google websites but not to Chrome itself.
+
+A message sent when the document cannot be read still goes into the chat, is
+saved under the document's id (known from the tab even when Google refuses the
+contents), gets a reply saying why it was not sent, and returns to the message
+box to send again.
+
+Signing in as the tab's account instead would need
+`chrome.identity.launchWebAuthFlow` and an OAuth client of type "Web
+application" with redirect URI `https://<extension-id>.chromiumapp.org/`: the
+"Chrome Extension" client type refuses that redirect (`redirect_uri_mismatch`).
+
 ### Updates
 
 The extension is loaded unpacked from the repository, and a rebuild reaches

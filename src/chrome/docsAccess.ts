@@ -43,3 +43,58 @@ export function describeDocsApiError(detail: string): string | null {
 export function looksLikeOfficeFile(title: string | null | undefined): boolean {
   return /\.(docx?|dotx?|docm|rtf|odt)$/i.test(title?.trim() ?? "");
 }
+
+/**
+ * A 404, or a 403 that is about who is asking. Google also answers 403 for
+ * an API not enabled and for quota; those are not an account problem and
+ * must not be reported as one.
+ */
+export function isAccountRefusal(status: number, detail: string): boolean {
+  return status === 404 || (status === 403 && !/not been used|is disabled|quota|rate limit|too many requests/i.test(detail));
+}
+
+/** Why Chrome would not give Writer a Google token, in words that say what to do. */
+export function describeSignInError(raw: string, profileEmail: string | null): string {
+  const account = profileEmail ?? "this Chrome profile's main account";
+  if (/not signed in|turned off browser sign-?in|sign-?in (is )?disabled/i.test(raw)) {
+    return "Writer can't sign in to Google because this Chrome profile isn't signed in to Chrome itself. Being signed in on a Google website isn't enough: click the profile picture in Chrome's toolbar and sign in there.";
+  }
+  if (/did not approve|not granted|revoked|cancell?ed|access_denied/i.test(raw)) {
+    return `Google access wasn't approved for ${account}. Close and reopen Writer, then approve access when Google asks.`;
+  }
+  if (/bad client id|invalid_client/i.test(raw)) {
+    return "Writer's Google sign-in isn't set up for this extension: its OAuth client id is wrong. Run npm run chrome:setup and follow its steps.";
+  }
+  if (/failed to fetch|network|connection/i.test(raw)) {
+    return "Writer can't reach Google to sign in. Check this computer's internet connection, then try again.";
+  }
+  return `Writer couldn't sign in to Google as ${account}: ${raw}`;
+}
+
+export type DocsConnectionState = "connected" | "refused" | "failed";
+
+export interface DocsConnectionSummary {
+  tone: "ok" | "warn" | "error";
+  text: string;
+}
+
+/** One line saying which Google account Writer uses here, and how that went. */
+export function describeConnection(state: DocsConnectionState, writerAccount: string | null, documentAccount: string | null): DocsConnectionSummary {
+  const writer = writerAccount ?? "this Chrome profile's main account";
+  const differs = !!writerAccount && !!documentAccount && writerAccount.toLowerCase() !== documentAccount.toLowerCase();
+  if (state === "failed") {
+    return { tone: "error", text: `Not connected to Google. Writer signs in as ${writer}.` };
+  }
+  if (state === "refused") {
+    return { tone: "error", text: differs ? `No access: Writer signs in as ${writer}, but this tab is signed in as ${documentAccount}.` : `No access: Writer signs in as ${writer}, which can't open this doc.` };
+  }
+  return differs
+    ? { tone: "warn", text: `Writer reads and edits as ${writer}, while this tab is signed in as ${documentAccount}. Writer's edits appear under ${writer}.` }
+    : { tone: "ok", text: `Connected as ${writer}.` };
+}
+
+/** A document's name from its tab title ("Name - Google Docs"). */
+export function documentNameFromTitle(title: string | null | undefined): string | null {
+  const name = title?.replace(/\s+-\s+Google Docs\s*$/i, "").trim();
+  return name || null;
+}

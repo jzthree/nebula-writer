@@ -26,6 +26,7 @@ var NebulaDocs = (() => {
     nebulaApplyTable: () => nebulaApplyTable,
     nebulaComment: () => nebulaComment,
     nebulaDeleteImage: () => nebulaDeleteImage,
+    nebulaDocumentIdentity: () => nebulaDocumentIdentity,
     nebulaFingerprint: () => nebulaFingerprint,
     nebulaFocusKey: () => nebulaFocusKey,
     nebulaInsertImage: () => nebulaInsertImage,
@@ -481,6 +482,10 @@ var NebulaDocs = (() => {
       hash = Math.imul(hash, 16777619) >>> 0;
     }
     return `${length}:${hash.toString(16)}`;
+  }
+  function nebulaDocumentIdentity() {
+    const doc = document();
+    return { documentId: doc.getId(), documentName: doc.getName() };
   }
   function nebulaReadDocument() {
     const doc = document();
@@ -1082,6 +1087,7 @@ var NebulaDocs = (() => {
 function onOpen() { return NebulaDocs.onOpen.apply(null, arguments); }
 function onInstall() { return NebulaDocs.onInstall.apply(null, arguments); }
 function nebulaShowSidebar() { return NebulaDocs.nebulaShowSidebar.apply(null, arguments); }
+function nebulaDocumentIdentity() { return NebulaDocs.nebulaDocumentIdentity.apply(null, arguments); }
 function nebulaReadDocument() { return NebulaDocs.nebulaReadDocument.apply(null, arguments); }
 function nebulaReadFocus() { return NebulaDocs.nebulaReadFocus.apply(null, arguments); }
 function nebulaFocusKey() { return NebulaDocs.nebulaFocusKey.apply(null, arguments); }

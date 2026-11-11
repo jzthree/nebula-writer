@@ -12,7 +12,7 @@ import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
 import { openCommentPicker } from "./commentPicker";
-import { describeDocsApiError, docsAccessDeniedMessage, looksLikeOfficeFile, OFFICE_FILE_MESSAGE } from "./docsAccess";
+import { describeConnection, describeDocsApiError, describeSignInError, docsAccessDeniedMessage, documentNameFromTitle, isAccountRefusal, looksLikeOfficeFile, OFFICE_FILE_MESSAGE, type DocsConnectionState } from "./docsAccess";
 import { planDocsLocate } from "./locate";
 import { commentInDocumentTab, locateInDocumentTab } from "./locateBridge";
 import { ensureCurrentContent, readCodeIds, type CodeIds } from "./extensionUpdate";
@@ -126,7 +126,12 @@ function showNotice(html: string): void {
 /* ------------------------------------------------------------------------- */
 
 async function token(interactive: boolean): Promise<string> {
-  const result = await chrome.identity.getAuthToken({ interactive });
+  let result: chrome.identity.GetAuthTokenResult | string | undefined;
+  try {
+    result = await chrome.identity.getAuthToken({ interactive });
+  } catch (error) {
+    throw new Error(describeSignInError(error instanceof Error ? error.message : String(error), await writerAccount()));
+  }
   const value = typeof result === "string" ? result : result?.token;
   if (!value) {
     throw new Error("Google did not grant access to the document. Click the Writer button again and approve access.");
@@ -144,10 +149,6 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     await chrome.identity.removeCachedAuthToken({ token: bearer });
     return api<T>(path, init, false);
   }
-  if (response.status === 403 || response.status === 404) {
-    // Usually the profile's account cannot see a doc opened as another account.
-    throw new Error(await accessDenied(init.method === "POST"));
-  }
   if (!response.ok) {
     let detail = `${response.status}`;
     try {
@@ -156,18 +157,45 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     } catch {
       // Keep the status.
     }
-    throw new Error(describeDocsApiError(detail) ?? `Google Docs API: ${detail}`);
+    const office = describeDocsApiError(detail);
+    if (!office && isAccountRefusal(response.status, detail)) {
+      // Usually the profile's account cannot see a doc opened as another account.
+      throw new DocsRefused(await accessDenied(init.method === "POST"));
+    }
+    throw new Error(office ?? `Google Docs API: ${detail}`);
   }
   return response.json() as Promise<T>;
 }
 
-async function accessDenied(editing: boolean): Promise<string> {
-  const profileEmail = await chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY })
+/** Google refused this account (as opposed to any other failure). */
+class DocsRefused extends Error {}
+
+/** The account Chrome gives Writer tokens for: this profile's main account. */
+function writerAccount(): Promise<string | null> {
+  return chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY })
     .then((info) => info.email || null).catch(() => null);
-  const docEmail = await activeDoc()
+}
+
+/** The account the Docs tab is signed in as, which can be any account in the browser. */
+function documentAccount(): Promise<string | null> {
+  return activeDoc()
     .then(({ tabId }) => sendToTab(tabId, { type: "nebula-writer:account" }) as Promise<{ email?: string | null } | undefined>)
     .then((reply) => reply?.email ?? null).catch(() => null);
+}
+
+async function accessDenied(editing: boolean): Promise<string> {
+  const [profileEmail, docEmail] = await Promise.all([writerAccount(), documentAccount()]);
   return docsAccessDeniedMessage(profileEmail, docEmail, editing);
+}
+
+const connection = document.getElementById("connection") as HTMLDivElement;
+
+/** Keep the panel's line saying which Google account Writer uses here, and how the last read went. */
+async function showConnection(state: DocsConnectionState): Promise<void> {
+  const [writer, tabAccount] = await Promise.all([writerAccount(), documentAccount()]);
+  const summary = describeConnection(state, writer, tabAccount);
+  connection.textContent = summary.text;
+  connection.className = summary.tone;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -307,9 +335,23 @@ async function selectionText(tabId: number, docId: string): Promise<string> {
 /* ------------------------------------------------------------------------- */
 
 const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unknown>> = {
+  async nebulaDocumentIdentity() {
+    const { tabId, docId } = await activeDoc();
+    const tab = await chrome.tabs.get(tabId);
+    return { documentId: docId, documentName: documentNameFromTitle(tab.title) };
+  },
+
   async nebulaReadDocument() {
-    const { docId } = await activeDoc();
-    const parsed = await fetchParsed(docId);
+    let docId: string;
+    let parsed: ParsedDocument;
+    try {
+      ({ docId } = await activeDoc());
+      parsed = await fetchParsed(docId);
+    } catch (error) {
+      void showConnection(error instanceof DocsRefused ? "refused" : "failed");
+      throw error;
+    }
+    void showConnection("connected");
     showOfficeFileNotice(parsed.payload.documentName);
     const result = await readComments(docId, parsed.payload.paragraphs.map((paragraph) => paragraph.text).join("\n"));
     displayComments(result);

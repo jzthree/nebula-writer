@@ -21,6 +21,7 @@ const EXPORTED = [
   "onOpen",
   "onInstall",
   "nebulaShowSidebar",
+  "nebulaDocumentIdentity",
   "nebulaReadDocument",
   "nebulaReadFocus",
   "nebulaFocusKey",

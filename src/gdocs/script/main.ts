@@ -191,6 +191,11 @@ function fingerprintOf(texts: string[]): string {
   return `${length}:${hash.toString(16)}`;
 }
 
+export function nebulaDocumentIdentity(): { documentId: string; documentName: string } {
+  const doc = document();
+  return { documentId: doc.getId(), documentName: doc.getName() };
+}
+
 export function nebulaReadDocument(): DocsDocumentPayload {
   const doc = document();
   const blocks = walkBlocks(doc.getBody() as unknown as Container);
