@@ -21,7 +21,13 @@ export function accountEmailFromLabels(labels: Array<string | null>): string | n
   return null;
 }
 
-export function docsAccessDeniedMessage(profileEmail: string | null, docEmail: string | null, editing = false): string {
+export function docsAccessDeniedMessage(profileEmail: string | null, docEmail: string | null, editing = false, asTabAccount = false): string {
+  if (asTabAccount && profileEmail) {
+    // Writer already works as the tab's own account: the account itself lacks the access.
+    return editing
+      ? `Google won't let Writer edit this doc: ${profileEmail}, the account this tab is signed in as, can open it but not edit it. Ask the owner for edit access.`
+      : `Google won't let Writer open this doc as ${profileEmail}, the account this tab is signed in as. Ask the owner to share it with that account.`;
+  }
   const writerAs = profileEmail ? `as ${profileEmail}, this Chrome profile's main account` : "as this Chrome profile's main Google account";
   if (editing) {
     return `Google won't let Writer edit this doc: Writer signs in ${writerAs}, which can open it but not edit it. Give that account edit access${docEmail && docEmail !== profileEmail?.toLowerCase() ? `, or open the doc in the Chrome profile whose main account is ${docEmail}` : ""}.`;
@@ -71,7 +77,7 @@ export function describeSignInError(raw: string, profileEmail: string | null): s
   return `Writer couldn't sign in to Google as ${account}: ${raw}`;
 }
 
-export type DocsConnectionState = "connected" | "refused" | "failed";
+export type DocsConnectionState = "connected" | "refused" | "failed" | "approval";
 
 export interface DocsConnectionSummary {
   tone: "ok" | "warn" | "error";
@@ -82,6 +88,9 @@ export interface DocsConnectionSummary {
 export function describeConnection(state: DocsConnectionState, writerAccount: string | null, documentAccount: string | null): DocsConnectionSummary {
   const writer = writerAccount ?? "this Chrome profile's main account";
   const differs = !!writerAccount && !!documentAccount && writerAccount.toLowerCase() !== documentAccount.toLowerCase();
+  if (state === "approval") {
+    return { tone: "warn", text: `Writer can work as ${writer}, the account this tab is signed in as, once you approve it.` };
+  }
   if (state === "failed") {
     return { tone: "error", text: `Not connected to Google. Writer signs in as ${writer}.` };
   }

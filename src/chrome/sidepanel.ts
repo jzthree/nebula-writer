@@ -12,6 +12,7 @@ import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
 import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComments, type DriveCommentsPage, type DriveCommentsResult } from "./driveComments";
 import { openCommentPicker } from "./commentPicker";
+import { authUrl, parseAuthRedirect, tokenAccount } from "./accountAuth";
 import { describeConnection, describeDocsApiError, describeSignInError, docsAccessDeniedMessage, documentNameFromTitle, isAccountRefusal, looksLikeOfficeFile, OFFICE_FILE_MESSAGE, type DocsConnectionState } from "./docsAccess";
 import { planDocsLocate } from "./locate";
 import { commentInDocumentTab, locateInDocumentTab } from "./locateBridge";
@@ -125,7 +126,72 @@ function showNotice(html: string): void {
 /* Google auth + API                                                         */
 /* ------------------------------------------------------------------------- */
 
+/* Signing in as the tab's own account (accountAuth.ts), when a web OAuth client is set up. */
+
+declare const __WEB_CLIENT_ID__: string;
+const WEB_CLIENT_ID = __WEB_CLIENT_ID__;
+const TOKEN_KEY_PREFIX = "nebula-writer:account-token:";
+
+/** The account Writer used for its last Google call; null until one is made. */
+let usingAccount: string | null = null;
+/** The tab's account, when it still needs the author's one-time approval. */
+let approvalNeeded: string | null = null;
+
+/** The tab's account has not approved Writer yet: one click on the panel's sign-in button. */
+class NeedsApproval extends Error {}
+
+async function accountToken(account: string, interactive: boolean): Promise<string | null> {
+  const key = TOKEN_KEY_PREFIX + account.toLowerCase();
+  const cached = (await chrome.storage.session.get(key).catch(() => ({})) as Record<string, { token?: string; expiresAt?: number } | undefined>)[key];
+  if (cached?.token && (cached.expiresAt ?? 0) - 60_000 > Date.now()) return cached.token;
+  const state = crypto.randomUUID();
+  let redirect: string | undefined;
+  try {
+    redirect = await chrome.identity.launchWebAuthFlow({ url: authUrl({ clientId: WEB_CLIENT_ID, redirectUri: chrome.identity.getRedirectURL(), account, silent: !interactive, state }), interactive });
+  } catch (error) {
+    if (!interactive) return null;
+    throw new Error(`Google's sign-in for ${account} did not finish: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const answer = parseAuthRedirect(redirect ?? "", state);
+  if (!answer.ok) {
+    if (!interactive && answer.needsApproval) return null;
+    throw new Error(answer.error);
+  }
+  // Google may sign in another account than the one asked for: never act as the wrong one.
+  const info = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: `Bearer ${answer.token}` } })
+    .then((response) => (response.ok ? response.json() : null)).catch(() => null);
+  const signedIn = tokenAccount(info);
+  if (signedIn !== account.toLowerCase()) {
+    throw new Error(`Google signed Writer in as ${signedIn ?? "an unknown account"}, not ${account}, the account this tab is signed in as. Try again and choose ${account}.`);
+  }
+  await chrome.storage.session.set({ [key]: { token: answer.token, expiresAt: answer.expiresAt } }).catch(() => undefined);
+  return answer.token;
+}
+
+async function forgetAccountToken(account: string): Promise<void> {
+  await chrome.storage.session.remove(TOKEN_KEY_PREFIX + account.toLowerCase()).catch(() => undefined);
+}
+
+/** A token for the Docs API: as the tab's account when Writer can be, else as the profile's main account. */
 async function token(interactive: boolean): Promise<string> {
+  if (WEB_CLIENT_ID) {
+    const account = await documentAccount();
+    if (account) {
+      const value = await accountToken(account, false);
+      if (value) {
+        usingAccount = account;
+        approvalNeeded = null;
+        return value;
+      }
+      approvalNeeded = account;
+      throw new NeedsApproval(`Writer can work as ${account}, the account this tab is signed in as, once you approve it: click "Sign in as ${account}" at the top of this panel.`);
+    }
+  }
+  usingAccount = await writerAccount();
+  return profileToken(interactive);
+}
+
+async function profileToken(interactive: boolean): Promise<string> {
   let result: chrome.identity.GetAuthTokenResult | string | undefined;
   try {
     result = await chrome.identity.getAuthToken({ interactive });
@@ -146,7 +212,11 @@ async function api<T>(path: string, init: RequestInit = {}, retry = true): Promi
     headers: { ...(init.headers ?? {}), Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" }
   });
   if (response.status === 401 && retry) {
-    await chrome.identity.removeCachedAuthToken({ token: bearer });
+    if (approvalNeeded === null && usingAccount && WEB_CLIENT_ID && usingAccount === await documentAccount()) {
+      await forgetAccountToken(usingAccount);
+    } else {
+      await chrome.identity.removeCachedAuthToken({ token: bearer }).catch(() => undefined);
+    }
     return api<T>(path, init, false);
   }
   if (!response.ok) {
@@ -176,26 +246,54 @@ function writerAccount(): Promise<string | null> {
     .then((info) => info.email || null).catch(() => null);
 }
 
-/** The account the Docs tab is signed in as, which can be any account in the browser. */
+let tabAccount: { at: number; email: Promise<string | null> } | null = null;
+
+/** The account the Docs tab is signed in as, which can be any account in the browser (read afresh every few seconds). */
 function documentAccount(): Promise<string | null> {
-  return activeDoc()
-    .then(({ tabId }) => sendToTab(tabId, { type: "nebula-writer:account" }) as Promise<{ email?: string | null } | undefined>)
-    .then((reply) => reply?.email ?? null).catch(() => null);
+  if (!tabAccount || Date.now() - tabAccount.at > 5_000) {
+    tabAccount = {
+      at: Date.now(),
+      email: activeDoc()
+        .then(({ tabId }) => sendToTab(tabId, { type: "nebula-writer:account" }) as Promise<{ email?: string | null } | undefined>)
+        .then((reply) => reply?.email?.toLowerCase() ?? null).catch(() => null)
+    };
+  }
+  return tabAccount.email;
 }
 
 async function accessDenied(editing: boolean): Promise<string> {
-  const [profileEmail, docEmail] = await Promise.all([writerAccount(), documentAccount()]);
-  return docsAccessDeniedMessage(profileEmail, docEmail, editing);
+  const [writer, docEmail] = await Promise.all([usingAccount ? Promise.resolve(usingAccount) : writerAccount(), documentAccount()]);
+  return docsAccessDeniedMessage(writer, docEmail, editing, Boolean(WEB_CLIENT_ID) && !!writer && writer === docEmail);
 }
 
 const connection = document.getElementById("connection") as HTMLDivElement;
 
 /** Keep the panel's line saying which Google account Writer uses here, and how the last read went. */
 async function showConnection(state: DocsConnectionState): Promise<void> {
-  const [writer, tabAccount] = await Promise.all([writerAccount(), documentAccount()]);
-  const summary = describeConnection(state, writer, tabAccount);
-  connection.textContent = summary.text;
+  const [writer, tab] = await Promise.all([usingAccount ? Promise.resolve(usingAccount) : writerAccount(), documentAccount()]);
+  const pending = state !== "connected" ? approvalNeeded : null;
+  const summary = pending ? describeConnection("approval", pending, tab) : describeConnection(state, writer, tab);
   connection.className = summary.tone;
+  if (!pending) {
+    connection.textContent = summary.text;
+    return;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = `Sign in as ${pending}`;
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    void accountToken(pending, true).then(() => {
+      approvalNeeded = null;
+      usingAccount = pending;
+      // The pane re-reads the document on its next check of it (within seconds).
+      return showConnection("connected");
+    }).catch((error: unknown) => {
+      connection.textContent = error instanceof Error ? error.message : String(error);
+      connection.className = "error";
+    });
+  });
+  connection.replaceChildren(document.createTextNode(`${summary.text} `), button);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -348,7 +446,7 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
       ({ docId } = await activeDoc());
       parsed = await fetchParsed(docId);
     } catch (error) {
-      void showConnection(error instanceof DocsRefused ? "refused" : "failed");
+      void showConnection(error instanceof DocsRefused ? "refused" : error instanceof NeedsApproval ? "approval" : "failed");
       throw error;
     }
     void showConnection("connected");

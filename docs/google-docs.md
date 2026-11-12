@@ -303,10 +303,26 @@ saved under the document's id (known from the tab even when Google refuses the
 contents), gets a reply saying why it was not sent, and returns to the message
 box to send again.
 
-Signing in as the tab's account instead would need
-`chrome.identity.launchWebAuthFlow` and an OAuth client of type "Web
-application" with redirect URI `https://<extension-id>.chromiumapp.org/`: the
-"Chrome Extension" client type refuses that redirect (`redirect_uri_mismatch`).
+#### Working as the tab's own account (optional)
+
+With a second OAuth client, Writer signs in as whichever account the Doc tab
+is signed in as, and follows the tab when it changes
+(`src/chrome/accountAuth.ts`). It uses `chrome.identity.launchWebAuthFlow`
+with that account as `login_hint`: silently (`prompt=none`) once the account
+has approved Writer, otherwise the connection line offers **Sign in as …**,
+once per account. Writer checks the token's account against the tab's and
+refuses a token for any other account. Tokens are kept for the browser
+session only. Without the client, or when the tab's account cannot be read,
+Writer uses the profile's main account as before. Comment threads (Connect
+comments) still use the profile's main account.
+
+Setup: in the same Google Cloud project, create an OAuth client of type "Web
+application" with the authorized redirect URI
+`https://<extension-id>.chromiumapp.org/` (the "Chrome Extension" client type
+refuses that redirect with `redirect_uri_mismatch`), add each account you use
+under Test users while the consent screen is in Testing, then run
+`npm run chrome:setup -- --web-client-id=<id>`. A Google Workspace account may
+also need its administrator to allow the app.
 
 ### Updates
 

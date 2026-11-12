@@ -48,8 +48,18 @@ async function readDocumentIdentity(): Promise<DocumentIdentity | null> {
   return identity?.documentId ? { documentKey: `gdocs:${identity.documentId}`, documentName: identity.documentName } : null;
 }
 
+/** The last read failed (no access yet, signed out…): the next successful contact re-reads. */
+let readFailed = false;
+
 async function readDocumentSnapshot(_capabilities?: WordCapabilities, _options?: unknown): Promise<WordDocumentSnapshot> {
-  const payload = await callScript<DocsDocumentPayload>("nebulaReadDocument");
+  let payload: DocsDocumentPayload;
+  try {
+    payload = await callScript<DocsDocumentPayload>("nebulaReadDocument");
+  } catch (error) {
+    readFailed = true;
+    throw error;
+  }
+  readFailed = false;
   lastFingerprint = payload.fingerprint;
   const bodyText = payload.paragraphs.map((paragraph) => paragraph.text).join("\n");
   const paragraphs = indexParagraphs(bodyText, payload.paragraphs.map((paragraph) => ({
@@ -155,8 +165,10 @@ async function subscribeParagraphChanges(handler: () => void): Promise<(() => Pr
       if (stopped) {
         return;
       }
-      if (lastFingerprint !== null && fingerprint !== lastFingerprint) {
+      // Changed text, or Google answering again after a failed read (access granted, signed in): re-read.
+      if (readFailed || (lastFingerprint !== null && fingerprint !== lastFingerprint)) {
         lastFingerprint = fingerprint;
+        readFailed = false;
         handler();
       }
     }).catch(() => {

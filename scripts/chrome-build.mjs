@@ -34,7 +34,8 @@ await build({
   define: {
     __PANE_ORIGIN__: JSON.stringify(paneOrigin),
     __PICKER_API_KEY__: JSON.stringify(local.pickerApiKey || ""),
-    __PICKER_APP_ID__: JSON.stringify(local.pickerAppId || "")
+    __PICKER_APP_ID__: JSON.stringify(local.pickerAppId || ""),
+    __WEB_CLIENT_ID__: JSON.stringify(local.webClientId || "")
   },
   legalComments: "none",
   logLevel: "warning"

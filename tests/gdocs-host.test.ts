@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocsHost } from "../src/gdocs/docsHost";
 import type { DocsDocumentPayload, DocsFocusPayload, DocsReplaceOp } from "../src/gdocs/protocol";
 import { setScriptTransport } from "../src/gdocs/scriptBridge";
@@ -124,6 +124,31 @@ describe("google docs host", () => {
     expect(outcomes[0].ok).toBe(true);
     expect(outcomes[1]).toMatchObject({ ok: false, error: expect.stringContaining("overlaps") });
     expect(outcomes[2].ok).toBe(true);
+  });
+
+  it("re-reads by itself once Google answers again after a failed read", async () => {
+    vi.useFakeTimers();
+    try {
+      let refuse = true;
+      setScriptTransport(async (fn) => {
+        if (fn === "nebulaReadDocument" && refuse) throw new Error("No access yet");
+        if (fn === "nebulaFingerprint") { if (refuse) throw new Error("No access yet"); return "rev-1"; }
+        return fn === "nebulaReadDocument" ? documentPayload : null;
+      });
+      await expect(googleDocsHost.readDocumentSnapshot(googleDocsHost.detectCapabilities(true))).rejects.toThrow("No access yet");
+      const changed = vi.fn();
+      const unsubscribe = await googleDocsHost.subscribeParagraphChanges(changed, googleDocsHost.detectCapabilities(true));
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(changed).not.toHaveBeenCalled();
+      refuse = false;
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(changed).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(changed).toHaveBeenCalledOnce();
+      await unsubscribe?.();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("knows which document this is without reading its contents", async () => {
