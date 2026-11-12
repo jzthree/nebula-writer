@@ -18,7 +18,7 @@ import { readAgentRunContext } from "./agent-context";
 import { hostContextSelection, parseWordHostContext } from "./word-context";
 import { getProviderCatalogs, validateModelOptions } from "./model-catalog";
 import { cliChildEnv } from "./ai";
-import type { AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
+import type { AiRunAccepted, AiRunRecord, AiRunStatus, WordLiveSuggestionResponse, AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
 import { isSuggestionAnchor } from "../src/shared";
 import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
 import { isRunId, markRunInFlight, steerRun } from "./steering";
@@ -33,6 +33,8 @@ import { attachmentTextPathFor, trustedAttachmentTextPath } from "./attachment-t
 import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePath, storeImageBytes } from "./image-files";
 import { supersedeRevisedSuggestions } from "./revisions";
 import { CONVERSATION_KEY_PATTERN, conversationStore, type ConversationWrite } from "./conversation-store";
+import { detachedRuns } from "./detached-runs";
+import { failedReply, finishedReply, stagedSuggestions } from "../src/runReply";
 import { liveCollabDocumentEmphasis, liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
 import { r01RoutineSequence } from "../src/writingRoutines";
@@ -386,7 +388,9 @@ export function createWriterApp() {
         response.status(400).json({ error: "Every turn and suggestion needs an id." });
         return;
       }
-      conversationStore().write(body.key, { turns: body.turns, suggestions: body.suggestions, cards: body.cards, sessions: body.sessions });
+      // A reply the sidecar finished (its pane was gone) is not put back to running by a late save from a pane.
+      const turns = body.turns?.filter((entry) => !regressesFinishedReply(conversationStore().turn(body.key as string, entry.id), entry.turn));
+      conversationStore().write(body.key, { turns, suggestions: body.suggestions, cards: body.cards, sessions: body.sessions });
       response.json({ ok: true });
     } catch (error) {
       next(error);
@@ -1113,40 +1117,88 @@ export function createWriterApp() {
 
   app.post("/api/word/suggest", async (request, response, next) => {
     try {
-      const signal = requestAbortSignal(request, response);
       const parsed = parseWordLiveSuggestionRequest(request.body);
       if ("error" in parsed) {
         response.status(400).json({ error: parsed.error });
         return;
       }
-      rememberWordHostContext(wordLiveDocumentName(parsed.request.documentName), parsed.request.hostContext, parsed.request.documentImages, parsed.request.documentComments, parsed.request.documentCommentsStatus, parsed.request.documentTables);
-      const baseSession = wordLiveSessionForRequest(parsed.request);
-      let undeliveredSteers: string[] = [];
-      const releaseRun = markRunInFlight(parsed.request.runId);
-      const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(() => {
-        undeliveredSteers = releaseRun();
-      });
-      if (undeliveredSteers.length) {
-        ai.undeliveredSteers = undeliveredSteers;
+      const runId = parsed.request.runId;
+      if (parsed.request.detach && runId) {
+        // Outlives the connection: a refreshed or closed pane comes back for the result.
+        const run = detachedRuns.start(runId);
+        if (!run) {
+          response.status(409).json({ error: "A run with this id already exists." });
+          return;
+        }
+        const record = parsed.request.record ?? null;
+        if (record) {
+          conversationStore().write(record.key, { turns: [{ id: record.userTurn.id, turn: record.userTurn }, { id: record.replyTurn.id, turn: record.replyTurn }] });
+        }
+        response.status(202).json({ runId, status: "running" } satisfies AiRunAccepted);
+        void (async () => {
+          try {
+            const payload = await suggestForWordPane(parsed.request, run.signal);
+            if (run.signal.aborted) {
+              throw new Error("Stopped.");
+            }
+            detachedRuns.finish(runId, { status: "done", result: payload });
+            if (record) saveFinishedRun(record, payload);
+          } catch (error) {
+            const stopped = run.signal.aborted;
+            const message = stopped ? "Stopped." : error instanceof Error && error.message ? error.message : "The run failed.";
+            if (!stopped) console.error(`[writer-sidecar] detached run ${runId} failed:`, error);
+            detachedRuns.finish(runId, { status: "error", error: message, stopped });
+            if (record) saveFailedRun(record, message);
+          }
+        })();
+        return;
       }
+      const signal = requestAbortSignal(request, response);
+      const payload = await suggestForWordPane(parsed.request, signal);
       if (signal.aborted) {
         return;
       }
-      activeWriterSession = {
-        ...baseSession,
-        suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, baseSession.suggestions), ai.suggestions, parsed.request.requestedBy ?? "Word"),
-        revision: nextSessionRevision(),
-        updatedAt: new Date().toISOString()
-      };
-      activeWriterSessionPath = null;
-      response.json({
-        ai,
-        session: sessionSummary(activeWriterSession),
-        sessionReused: baseSession.suggestions.length > 0
-      });
+      response.json(payload);
     } catch (error) {
       next(error);
     }
+  });
+
+  // Detached runs (server/detached-runs.ts): wait for a run's result, or stop it.
+  app.get("/api/ai/runs/:runId", async (request, response, next) => {
+    try {
+      const runId = request.params.runId;
+      if (!isRunId(runId)) {
+        response.status(400).json({ error: "Invalid run id." });
+        return;
+      }
+      const waitSeconds = Math.max(0, Math.min(30, Number(request.query.wait) || 0));
+      const closed = new AbortController();
+      response.once("close", () => closed.abort());
+      const state = await detachedRuns.wait(runId, waitSeconds * 1000, closed.signal);
+      if (!state) {
+        response.status(404).json({ error: "Writer has no record of this run: the sidecar restarted while it ran, or it finished more than a day ago." });
+        return;
+      }
+      if (closed.signal.aborted) {
+        return;
+      }
+      const body: AiRunStatus = state.status === "done"
+        ? { status: "done", result: state.result as WordLiveSuggestionResponse }
+        : state.status === "error" ? { status: "error", error: state.error, stopped: state.stopped ?? false } : { status: "running" };
+      response.json(body);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/ai/runs/:runId/stop", (request, response) => {
+    const runId = request.params.runId;
+    if (!isRunId(runId)) {
+      response.status(400).json({ error: "Invalid run id." });
+      return;
+    }
+    response.json({ ok: detachedRuns.stop(runId) });
   });
 
   // Word add-in window state. The pane pushes this while it is open (debounced
@@ -1860,6 +1912,66 @@ function sessionFromImport(imported: ImportedDocument): WriterSession {
     revision: nextSessionRevision(),
     updatedAt: new Date().toISOString()
   };
+}
+
+/** One Word/Docs pane request: the AI run, and the live session updated with what it staged. */
+async function suggestForWordPane(request: WordLiveSuggestionRequest, signal: AbortSignal): Promise<WordLiveSuggestionResponse> {
+  rememberWordHostContext(wordLiveDocumentName(request.documentName), request.hostContext, request.documentImages, request.documentComments, request.documentCommentsStatus, request.documentTables);
+  const baseSession = wordLiveSessionForRequest(request);
+  let undeliveredSteers: string[] = [];
+  const releaseRun = markRunInFlight(request.runId);
+  const ai = await proposeChanges(request, { signal, runId: request.runId ?? null }).finally(() => {
+    undeliveredSteers = releaseRun();
+  });
+  if (undeliveredSteers.length) {
+    ai.undeliveredSteers = undeliveredSteers;
+  }
+  if (!signal.aborted) {
+    activeWriterSession = {
+      ...baseSession,
+      suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, baseSession.suggestions), ai.suggestions, request.requestedBy ?? "Word"),
+      revision: nextSessionRevision(),
+      updatedAt: new Date().toISOString()
+    };
+    activeWriterSessionPath = null;
+  }
+  return {
+    ai,
+    session: sessionSummary(activeWriterSession ?? baseSession),
+    sessionReused: baseSession.suggestions.length > 0
+  };
+}
+
+/** Save a detached run's reply, its suggestions and its CLI session in the document's conversation. */
+function saveFinishedRun(record: AiRunRecord, payload: WordLiveSuggestionResponse): void {
+  try {
+    const staged = stagedSuggestions(payload, record.proposedBy);
+    const reply = finishedReply(record.replyTurn, payload, staged, { undelivered: true });
+    const provider = typeof record.replyTurn.provider === "string" ? record.replyTurn.provider : null;
+    conversationStore().write(record.key, {
+      turns: [{ id: reply.id, turn: reply }],
+      suggestions: staged.map((suggestion) => ({ id: suggestion.id, turnId: reply.id, suggestion })),
+      ...(provider && payload.ai.agentSessionId ? { sessions: { [provider]: payload.ai.agentSessionId } } : {})
+    });
+  } catch (error) {
+    console.error("[writer-sidecar] could not save a finished run:", error);
+  }
+}
+
+function saveFailedRun(record: AiRunRecord, message: string): void {
+  try {
+    const reply = failedReply(record.replyTurn, message);
+    conversationStore().write(record.key, { turns: [{ id: reply.id, turn: reply }] });
+  } catch (error) {
+    console.error("[writer-sidecar] could not save a failed run:", error);
+  }
+}
+
+/** Writing `incoming` over `stored` would put a finished reply back to running. */
+function regressesFinishedReply(stored: unknown, incoming: unknown): boolean {
+  const status = (value: unknown) => (value && typeof value === "object" ? (value as { status?: unknown }).status : undefined);
+  const runId = (value: unknown) => (value && typeof value === "object" ? (value as { runId?: unknown }).runId : undefined);
+  return status(incoming) === "running" && !!runId(incoming) && (status(stored) === "done" || status(stored) === "error");
 }
 
 function wordLiveSessionForRequest(request: WordLiveSuggestionRequest): WriterSession {
@@ -4125,12 +4237,34 @@ function parseWordLiveSuggestionRequest(body: unknown): { request: WordLiveSugge
   if (documentName !== undefined && documentName !== null && typeof documentName !== "string") {
     return { error: "Word live suggestions require documentName to be a string when provided." };
   }
+  const raw = body as { detach?: unknown; record?: unknown };
+  const record = raw.record === undefined || raw.record === null ? null : parseRunRecord(raw.record);
+  if (record && "error" in record) {
+    return record;
+  }
   return {
     request: {
       ...parsed.request,
-      documentName: typeof documentName === "string" ? documentName : null
+      documentName: typeof documentName === "string" ? documentName : null,
+      ...(raw.detach === true ? { detach: true } : {}),
+      ...(record ? { record } : {})
     }
   };
+}
+
+const RUN_RECORD_CHAR_LIMIT = 400_000;
+
+function parseRunRecord(value: unknown): AiRunRecord | { error: string } {
+  const record = value as Partial<AiRunRecord> | null;
+  const turnOk = (turn: unknown) => !!turn && typeof turn === "object" && typeof (turn as { id?: unknown }).id === "string" && ((turn as { id: string }).id.length > 0) && (turn as { id: string }).id.length <= 200;
+  if (!record || typeof record !== "object" || typeof record.key !== "string" || !CONVERSATION_KEY_PATTERN.test(record.key)
+    || !turnOk(record.userTurn) || !turnOk(record.replyTurn) || typeof record.proposedBy !== "string" || record.proposedBy.length > 200) {
+    return { error: "record needs { key, userTurn, replyTurn, proposedBy } with turn ids." };
+  }
+  if (JSON.stringify(record).length > RUN_RECORD_CHAR_LIMIT) {
+    return { error: "record is too large." };
+  }
+  return { key: record.key, userTurn: record.userTurn!, replyTurn: record.replyTurn!, proposedBy: record.proposedBy };
 }
 
 const WORD_CONTEXT_DOCUMENT_TEXT_LIMIT = 4_000_000;

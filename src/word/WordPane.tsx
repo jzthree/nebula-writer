@@ -122,7 +122,7 @@ export interface SentSummary {
 
 export type ChatTurn =
   | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean; selectionExcerpt?: string }
-  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[]; drafts?: AiSuggestion[] }
+  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[]; drafts?: AiSuggestion[]; /** The sidecar run producing this reply, so a reopened pane can pick it up again. */ runId?: string; provider?: string }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
 export interface ModelControls {

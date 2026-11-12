@@ -303,12 +303,48 @@ export interface AiResponse {
 
 export interface WordLiveSuggestionRequest extends AiRequest {
   documentName?: string | null;
+  /**
+   * Keep running if the pane disconnects (a refresh, a closed panel): the
+   * sidecar answers 202 with the run id at once, and the result is fetched
+   * from GET /api/ai/runs/:runId. Stop is POST /api/ai/runs/:runId/stop.
+   */
+  detach?: boolean;
+  /** Where to save this exchange, so the reply is kept even if no pane is open when it finishes. */
+  record?: AiRunRecord;
+}
+
+/**
+ * The exchange a detached run belongs to, as the pane stores it: the
+ * sidecar saves both turns when the run starts and the finished reply when
+ * it ends (see src/runReply.ts), in the document's conversation.
+ */
+export interface AiRunRecord {
+  /** The conversation (document) key. */
+  key: string;
+  userTurn: { id: string } & Record<string, unknown>;
+  /** The reply turn as it is while running; finished from the result. */
+  replyTurn: { id: string } & Record<string, unknown>;
+  /** Who proposed suggestions that do not say (the provider's name). */
+  proposedBy: string;
 }
 
 export interface WordLiveSuggestionResponse {
   ai: AiResponse;
   session: WriterSessionSummary;
   sessionReused: boolean;
+}
+
+export interface AiRunAccepted {
+  runId: string;
+  status: "running";
+}
+
+/** GET /api/ai/runs/:runId */
+export interface AiRunStatus {
+  status: "running" | "done" | "error";
+  result?: WordLiveSuggestionResponse;
+  error?: string;
+  stopped?: boolean;
 }
 
 /* ---------------------------------------------------------------------------

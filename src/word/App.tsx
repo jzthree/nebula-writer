@@ -15,7 +15,7 @@ import { newAiRunId } from "../sidecarClient";
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiFocusDecision, type AiRequestFocus, type SelectionContext } from "../shared";
+import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WordLiveSuggestionResponse, type AiRunRecord, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiFocusDecision, type AiRequestFocus, type SelectionContext } from "../shared";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -57,7 +57,8 @@ import {
   requestWordSuggestions,
   subscribeWriterEvents,
   updateSuggestionStatus,
-  uploadAttachment, fetchImageAsBase64, uploadDocumentImage, steerRun } from "./writerClient";
+  uploadAttachment, fetchImageAsBase64, uploadDocumentImage, steerRun, awaitWordRun, stopWordRun, RunGoneError } from "./writerClient";
+import { finishedReply, replyText, stagedSuggestions } from "../runReply";
 import {
   WordPane,
   type CardState,
@@ -253,6 +254,8 @@ export function App() {
   const readErrorRef = useRef<string | null>(null);
   /** Which document this is, when the host knows that though it cannot read the contents. */
   const [documentIdentity, setDocumentIdentity] = useState<DocumentIdentity | null>(null);
+  const documentIdentityRef = useRef<DocumentIdentity | null>(null);
+  documentIdentityRef.current = documentIdentity;
   const [capabilities, setCapabilities] = useState<WordCapabilities>(() => detectCapabilities(false));
   const [snapshot, setSnapshot] = useState<WordDocumentSnapshot | null>(null);
   const [focus, setFocus] = useState<WordFocusState | null>(null);
@@ -312,6 +315,8 @@ export function App() {
   /** The selection the running request went out with (a steered message names a newer one). */
   const sentSelectionRef = useRef<SelectionContext | null>(null);
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
+  const patchCardRef = useRef<((id: string, patch: Partial<CardState>) => void) | null>(null);
+  const resumeRunRef = useRef<((turn: Extract<ChatTurn, { role: "assistant" }>) => Promise<void>) | null>(null);
   const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
   const decisionsRecordedRef = useRef(0);
@@ -377,7 +382,8 @@ export function App() {
       turns: turnsRef.current.map((turn) => ({
         id: turn.id,
         turn,
-        persist: !turn.id.startsWith(RESTORED_TURN_PREFIX) && !(turn.role === "assistant" && turn.status === "running")
+        // A running reply is saved once it has a sidecar run: a reopened pane picks that run up again.
+        persist: !turn.id.startsWith(RESTORED_TURN_PREFIX) && !(turn.role === "assistant" && turn.status === "running" && !turn.runId)
       })),
       suggestions: suggestionsRef.current.map((suggestion) => ({ id: suggestion.id, turnId: turnOf.get(suggestion.id) ?? null, suggestion })),
       cards: suggestionsRef.current.map((suggestion) => {
@@ -403,7 +409,7 @@ export function App() {
     const restoredTurns = page.turns
       .map((entry) => entry.turn)
       .filter((turn) => !known.has(turn.id))
-      .map((turn): ChatTurn => (turn.role === "assistant" && turn.status === "running" ? { ...turn, status: "error", progress: null, text: turn.text || "Interrupted — the pane was closed while this ran." } : turn));
+      .map((turn): ChatTurn => (turn.role === "assistant" && turn.status === "running" && !turn.runId ? { ...turn, status: "error", progress: null, text: turn.text || "Interrupted — the pane was closed while this ran." } : turn));
     const haveSuggestion = new Set(suggestionsRef.current.map((suggestion) => suggestion.id));
     const restoredSuggestions = page.suggestions.map((entry) => entry.suggestion).filter((suggestion) => !haveSuggestion.has(suggestion.id));
     const restoredCards: Record<string, CardState> = {};
@@ -439,6 +445,15 @@ export function App() {
     if (restoredSuggestions.length) {
       setSuggestions((current) => [...restoredSuggestions, ...current]);
       setCards((current) => ({ ...restoredCards, ...current }));
+    }
+    // Replies still running on the sidecar (the pane was refreshed or closed mid-run): pick them up.
+    const unfinished = restoredTurns.filter((turn): turn is Extract<ChatTurn, { role: "assistant" }> => turn.role === "assistant" && turn.status === "running" && !!turn.runId);
+    if (unfinished.length) {
+      void (async () => {
+        for (const turn of unfinished) {
+          await resumeRunRef.current?.(turn);
+        }
+      })();
     }
     sync.markSaved({
       turns: page.turns.map((entry) => ({ id: entry.id, turn: entry.turn, persist: true })).concat(restoredTurns.map((turn) => ({ id: turn.id, turn, persist: true }))),
@@ -972,6 +987,95 @@ export function App() {
     return [providerLabel(provider), modelText, reasoningText].filter(Boolean).join(" · ");
   }, []);
 
+  /** Stop the running reply: on the sidecar (a closed connection no longer does), and the wait here. */
+  function stopActiveRun(): void {
+    const runId = runIdRef.current;
+    if (runId) {
+      void stopWordRun(runId);
+    }
+    abortRef.current?.abort();
+  }
+
+  /** Take a finished run's result into the pane: its suggestions, the reply, the CLI session. */
+  const applyRunResponse = useCallback((response: WordLiveSuggestionResponse, run: { turnId: string; provider: LocalAiProviderName; engine: string; sessionKey: string }): { fresh: AiSuggestion[]; replyText: string } => {
+    if (response.ai.undeliveredSteers?.length) {
+      // Sent during the run but no session could take them: they become the next turn.
+      queuedRef.current = { text: response.ai.undeliveredSteers.join("\n\n"), focus: null };
+      setQueued(queuedRef.current);
+    }
+    sessionIdRef.current = response.session?.id ?? sessionIdRef.current;
+    if (response.ai.agentSessionId) {
+      agentSessionsRef.current[run.sessionKey] = response.ai.agentSessionId;
+      if (conversationKeyRef.current) {
+        void conversationSyncRef.current?.saveSessions({ [run.provider]: response.ai.agentSessionId });
+      }
+    }
+    setSharedWithAgents(true);
+    const fresh = stagedSuggestions(response, providerLabel(run.provider));
+    // A revision withdraws the card it replaces (the sidecar did the same in the session).
+    for (const suggestion of fresh) {
+      const earlier = suggestion.revises ? suggestionsRef.current.find((candidate) => candidate.id === suggestion.revises) : null;
+      if (earlier && !cardsRef.current[earlier.id]?.outcome) {
+        patchCardRef.current?.(earlier.id, { outcome: "revised", detail: `see ${suggestion.ref ?? "the new suggestion"}`, error: null });
+      }
+    }
+    if (fresh.length) {
+      setSuggestions((current) => {
+        const ids = new Set(fresh.map((suggestion) => suggestion.id));
+        return [...current.filter((suggestion) => !ids.has(suggestion.id)), ...fresh];
+      });
+      setActiveId(fresh[0].id);
+    }
+    const text = replyText(response, fresh.length);
+    setTurns((current) => current.map((turn) => (turn.id === run.turnId && turn.role === "assistant"
+      ? { ...finishedReply(turn, response, fresh), engine: response.ai.modelOptions ? engineLabel(run.provider, response.ai.modelOptions) : run.engine }
+      : turn)));
+    return { fresh, replyText: text };
+  }, [engineLabel]);
+
+  /** Pick up a reply still running on the sidecar, after the pane was refreshed or reopened. */
+  const resumeRun = useCallback(async (turn: Extract<ChatTurn, { role: "assistant" }>): Promise<void> => {
+    if (!turn.runId || runningRef.current) {
+      return;
+    }
+    runningRef.current = true;
+    runIdRef.current = turn.runId;
+    runningTurnRef.current = turn.id;
+    setRequestState("running");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const provider = (turn.provider as LocalAiProviderName | undefined) ?? settingsRef.current.provider;
+    try {
+      const response = await awaitWordRun(turn.runId, { signal: controller.signal });
+      if (controller.signal.aborted) {
+        return;
+      }
+      const label = snapshotRef.current?.documentName ?? documentIdentityRef.current?.documentName ?? "untitled";
+      const { fresh } = applyRunResponse(response, { turnId: turn.id, provider, engine: turn.engine, sessionKey: `${provider}:${label}` });
+      setRequestState(fresh.length ? "done" : "empty");
+    } catch (error) {
+      if (controller.signal.aborted) {
+        patchTurn(turn.id, { text: "Stopped.", status: "error", progress: null });
+        setRequestState("idle");
+      } else {
+        patchTurn(turn.id, { text: error instanceof RunGoneError ? "Interrupted — Writer's sidecar restarted while this ran, so the reply was lost. Send the message again." : errorMessage(error), status: "error", progress: null });
+        setRequestState("error");
+      }
+    } finally {
+      abortRef.current = null;
+      runningTurnRef.current = null;
+      runningRef.current = false;
+      runIdRef.current = null;
+      const next = queuedRef.current;
+      if (next) {
+        queuedRef.current = null;
+        setQueued(null);
+        void askRef.current?.({ instruction: next.text, focus: next.focus });
+      }
+    }
+  }, [applyRunResponse, patchTurn]);
+  resumeRunRef.current = resumeRun;
+
   const ask = useCallback(async (overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) => {
     const typed = (overrides.instruction ?? instruction).trim();
     if (!typed || hostStatus !== "ready") {
@@ -1005,7 +1109,8 @@ export function App() {
     // Into the chat before anything can fail: what was sent is always on record.
     const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
     appendTurn(userTurn);
-    appendTurn({ id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: "Reading the document…", origin: "pane", activity: [] });
+    const replyTurn: ChatTurn = { id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: "Reading the document…", origin: "pane", activity: [], runId, provider };
+    appendTurn(replyTurn);
     let reachedAi = false;
     try {
       const snap = (await refreshSnapshot({ full: true })) ?? snapshotRef.current;
@@ -1054,42 +1159,22 @@ export function App() {
       const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
       const userMirrored = mirrorChat([userMessage]);
 
-      reachedAi = true;
-      const response = await requestWordSuggestions(request, { signal: controller.signal });
-      if (response.ai.undeliveredSteers?.length) {
-        // Sent during the run but no session could take them: they become the next turn.
-        queueMessage(response.ai.undeliveredSteers.join("\n\n"), null);
+      // The sidecar saves this exchange and its reply itself, so a refresh or a
+      // closed pane mid-run loses nothing (the pane picks the run up on reopen).
+      const key = conversationKeyRef.current;
+      if (key) {
+        await conversationSyncRef.current?.flush();
       }
+      const record: AiRunRecord | undefined = key
+        ? { key, userTurn: { ...userTurn, sent }, replyTurn: { ...replyTurn, progress: null }, proposedBy: providerLabel(provider) }
+        : undefined;
+      reachedAi = true;
+      const response = await requestWordSuggestions({ ...request, ...(record ? { record } : {}) }, { signal: controller.signal });
       if (controller.signal.aborted) {
         return;
       }
-      sessionIdRef.current = response.session?.id ?? sessionIdRef.current;
-      if (response.ai.agentSessionId) {
-        agentSessionsRef.current[sessionKey] = response.ai.agentSessionId;
-        if (conversationKeyRef.current) {
-          void conversationSyncRef.current?.saveSessions({ [provider]: response.ai.agentSessionId });
-        }
-      }
       lastPushedTextRef.current = snap.bodyText;
-      setSharedWithAgents(true);
-      const fresh = response.ai.suggestions.map((suggestion) => ({ ...suggestion, proposedBy: suggestion.proposedBy ?? providerLabel(provider) }));
-      // A revision withdraws the card it replaces (the sidecar did the same in the session).
-      for (const suggestion of fresh) {
-        const earlier = suggestion.revises ? suggestionsRef.current.find((candidate) => candidate.id === suggestion.revises) : null;
-        if (earlier && !cardsRef.current[earlier.id]?.outcome) {
-          patchCard(earlier.id, { outcome: "revised", detail: `see ${suggestion.ref ?? "the new suggestion"}`, error: null });
-        }
-      }
-      if (fresh.length) {
-        setSuggestions((current) => {
-          const ids = new Set(fresh.map((suggestion) => suggestion.id));
-          return [...current.filter((suggestion) => !ids.has(suggestion.id)), ...fresh];
-        });
-        setActiveId(fresh[0].id);
-      }
-      const replyText = response.ai.message || (fresh.length ? `${fresh.length} suggestion${fresh.length === 1 ? "" : "s"} staged.` : "No anchored suggestions were returned.");
-      const activity: AiActivityEntry[] | undefined = response.ai.activity?.length ? response.ai.activity : undefined;
-      patchTurn(assistantTurnId, { text: replyText, status: "done", drafts: undefined, suggestionIds: fresh.map((suggestion) => suggestion.id), progress: null, engine: response.ai.modelOptions ? engineLabel(provider, response.ai.modelOptions) : engine, ...(activity ? { activity } : {}) });
+      const { fresh, replyText } = applyRunResponse(response, { turnId: assistantTurnId, provider, engine, sessionKey });
       setRequestState(fresh.length ? "done" : "empty");
       const assistantMessage: WriterChatMessage = { id: assistantTurnId, role: "assistant", content: replyText, author: engine, createdAt: new Date().toISOString() };
       // The first request creates the session, so the author's turn may not have had one to land in yet.
@@ -1121,7 +1206,7 @@ export function App() {
         void ask({ instruction: next.text, focus: next.focus });
       }
     }
-  }, [appendTurn, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot]);
+  }, [appendTurn, applyRunResponse, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot]);
 
   askRef.current = ask;
 
@@ -1188,7 +1273,7 @@ export function App() {
         }
         return;
       }
-      abortRef.current?.abort();
+      stopActiveRun();
       return;
     }
     queuedRef.current = null;
@@ -1202,7 +1287,7 @@ export function App() {
   }, []);
 
   const stop = useCallback(() => {
-    abortRef.current?.abort();
+    stopActiveRun();
   }, []);
 
   /* ------------------------------------------------------------------ */
@@ -1215,6 +1300,7 @@ export function App() {
   const patchCard = useCallback((id: string, patch: Partial<CardState>) => {
     setCards((current) => ({ ...current, [id]: { ...(current[id] ?? DEFAULT_CARD_STATE), ...patch } }));
   }, []);
+  patchCardRef.current = patchCard;
 
   const runBusy = useCallback(async (label: string, action: () => Promise<void>) => {
     if (busyRef.current) {

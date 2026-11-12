@@ -204,6 +204,12 @@ export class ConversationStore {
     };
   }
 
+  /** A stored turn, or null. */
+  turn(key: string, id: string): unknown {
+    const row = this.statement("SELECT json FROM turns WHERE key = ? AND id = ?").get(key, id) as { json: string } | undefined;
+    return row ? JSON.parse(row.json) : null;
+  }
+
   /** Upsert turns (new ones are appended in order), suggestions, card states and sessions. */
   write(key: string, change: ConversationWrite): void {
     this.db.exec("BEGIN");

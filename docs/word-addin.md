@@ -106,6 +106,19 @@ default, `WRITER_CODEX_KEEPALIVE_MS`; `0` starts one per turn), so a
 follow-up reuses the loaded thread instead of reopening it, which used to
 take 4–12 s per turn. Stop interrupts the turn and leaves the process running.
 
+A reply survives a refresh or a closed pane. The pane sends its request with
+`detach: true`: the sidecar answers 202 at once and runs it on its own
+(`server/detached-runs.ts`), and the pane waits on `GET /api/ai/runs/:runId`.
+With the request goes a `record` of the exchange: the sidecar saves the
+author's message and the running reply in the document's conversation when
+the run starts, and the finished reply with its suggestions and CLI session
+when it ends, applying the same rules as the pane (`src/runReply.ts`). The
+running reply carries its run id, so a reopened pane picks the run up again,
+progress included. A run the sidecar no longer knows (it restarted) is shown
+as interrupted. Finished results are kept for a day. Stop is
+`POST /api/ai/runs/:runId/stop`; a dropped connection no longer stops a run.
+The web app does not detach its runs yet.
+
 Quotes heal themselves where they safely can: a suggestion whose original
 differs from the document only in typography, spacing, or a small misquote
 inside a long passage is snapped to the document's exact text (the same

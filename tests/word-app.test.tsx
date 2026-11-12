@@ -11,6 +11,7 @@ const captured: {
   catalogFetches: boolean[];
   imageUploads: Array<Record<string, unknown>>;
   steers: Array<{ runId: string; text: string }>;
+  stops: string[];
   steerOk: boolean;
   releaseUpload?: () => void;
 } = {
@@ -21,11 +22,15 @@ const captured: {
   catalogFetches: [],
   imageUploads: [],
   steers: [],
+  stops: [],
   steerOk: true
 };
 
 const ORIGINAL = "Chromatin accessibility is actually a very important determinant of gene regulation, and it is the case that many studies have looked at it.";
 const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
+
+// Detached runs a reopened pane picks up: run id → the result the sidecar holds.
+const runs = vi.hoisted(() => ({ results: new Map<string, unknown>(), Gone: class RunGoneError extends Error {} }));
 
 // The saved conversation: the real store, in memory, behind the client calls.
 const sessionFetch = vi.hoisted(() => ({ hold: false, release: null as null | ((payload: unknown) => void), onUpdated: null as null | (() => void), onProgress: null as null | ((progress: unknown, queue: unknown[]) => void) }));
@@ -97,6 +102,13 @@ vi.mock("../src/word/writerClient", () => ({
     return { index, path: `/tmp/images/img-${index}.png`, url: `/api/ai/images/img-${index}.png`, mime: "image/png", width: meta.width ?? null, height: meta.height ?? null, altText: meta.altText ?? null, context: meta.context ?? null, paragraphIndex: meta.paragraphIndex ?? null };
   },
   fetchImageAsBase64: async () => "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  RunGoneError: runs.Gone,
+  stopWordRun: async (runId: string) => { captured.stops.push(runId); },
+  awaitWordRun: async (runId: string) => {
+    const pending = runs.results.get(runId);
+    if (!pending) throw new runs.Gone("Writer has no record of this run.");
+    return pending;
+  },
   steerRun: async (runId: string, text: string) => {
     captured.steers.push({ runId, text });
     return captured.steerOk ? { ok: true } : { ok: false, reason: "not-steerable" };
@@ -262,6 +274,8 @@ beforeEach(async () => {
   conversations.writes = 0;
   captured.requests = [];
   captured.steers = [];
+  captured.stops = [];
+  runs.results.clear();
   captured.steerOk = true;
   captured.imageUploads = [];
   captured.contextPushes = [];
@@ -1029,7 +1043,11 @@ describe("Word task pane", () => {
     const first = await renderPane();
     send("Tighten the first sentence.");
     await waitFor(() => expect(screen.getByText("Tighten the opening claim")).toBeInTheDocument());
-    await waitFor(() => expect(conversations.store!.read("word:file:///Users/mock/Documents/Aims.docx").turns).toHaveLength(2));
+    await waitFor(() => {
+      const saved = conversations.store!.read("word:file:///Users/mock/Documents/Aims.docx");
+      expect(saved.turns.map((entry) => (entry.turn as { status?: string }).status)).toEqual([undefined, "done"]);
+      expect(saved.suggestions).toHaveLength(1);
+    });
     first.unmount();
 
     // Reopened: the transcript, the pending card and the provider session come back.
@@ -1126,3 +1144,36 @@ describe("A document Writer cannot read", () => {
     expect(captured.requests[0].conversation).toBeUndefined();
   });
 });
+
+describe("A reply still running when the pane was refreshed", () => {
+  const key = "word:file:///Users/mock/Documents/Aims.docx";
+  const seed = (runId: string) => conversations.store!.write(key, { turns: [
+    { id: "u-away", turn: { id: "u-away", role: "user", at: "2026-11-12T10:00:00.000Z", text: "Work on this while I refresh." } },
+    { id: "a-away", turn: { id: "a-away", role: "assistant", at: "2026-11-12T10:00:00.000Z", text: "", status: "running", engine: "Claude", suggestionIds: [], progress: null, origin: "pane", activity: [], runId, provider: "claude" } }
+  ] });
+
+  it("picks the run up again and shows its reply when it finishes", async () => {
+    seed("run-away");
+    runs.results.set("run-away", { ai: { message: "Done while you were away.", provider: "claude", suggestions: [], agentSessionId: null, activity: [] }, session: { id: "word-session" }, sessionReused: false });
+    await renderPane();
+    await waitFor(() => expect(screen.getByText("Done while you were away.")).toBeInTheDocument());
+    expect(screen.getByText("Work on this while I refresh.")).toBeInTheDocument();
+    await waitFor(() => expect((conversations.store!.read(key, {}).turns.find((entry) => entry.id === "a-away")!.turn as { status: string }).status).toBe("done"));
+  });
+
+  it("says the reply was lost when the sidecar no longer has the run", async () => {
+    seed("run-gone");
+    await renderPane();
+    await waitFor(() => expect(screen.getByText(/Interrupted — Writer's sidecar restarted while this ran/)).toBeInTheDocument());
+  });
+
+  it("stops the run on the sidecar when Stop is pressed, not just the wait here", async () => {
+    await renderPane();
+    send("Slow: take your time.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    fireEvent.click(screen.getByLabelText(/^Stop/));
+    await waitFor(() => expect(captured.stops).toEqual([captured.requests[0].runId]));
+    await waitFor(() => expect(screen.getByText("Stopped.")).toBeInTheDocument());
+  });
+});
+

@@ -13,7 +13,7 @@ import type {
   WordHostContextUpdate,
   WordHostContextUpdateResponse,
   WordLiveSuggestionRequest,
-  WordLiveSuggestionResponse, AiDocumentImage } from "../shared";
+  WordLiveSuggestionResponse, AiDocumentImage, AiRunAccepted, AiRunStatus } from "../shared";
 import {
   fetchWordLiveSuggestionsFromSidecar,
   getHealthFromSidecar,
@@ -30,12 +30,59 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return getHealthFromSidecar(API_BASE);
 }
 
+/**
+ * Run a request detached from this page: the sidecar keeps it going if the
+ * pane is refreshed or closed, and this waits for the result (as a pane that
+ * comes back does, with awaitWordRun). Aborting `signal` only stops waiting;
+ * stopWordRun stops the run.
+ */
 export async function requestWordSuggestions(request: WordLiveSuggestionRequest, options: { signal?: AbortSignal } = {}): Promise<WordLiveSuggestionResponse> {
-  const response = await fetchWordLiveSuggestionsFromSidecar(API_BASE, request, options);
+  const response = await fetchWordLiveSuggestionsFromSidecar(API_BASE, { ...request, detach: true }, options);
   if (!response.ok) {
     throw new Error(await readError(response));
   }
-  return readJson<WordLiveSuggestionResponse>(response);
+  const body = await readJson<WordLiveSuggestionResponse | AiRunAccepted>(response);
+  // A sidecar from before detached runs answers with the result itself.
+  return "ai" in body ? body : awaitWordRun(body.runId, options);
+}
+
+/** The run is unknown to the sidecar: it restarted while the run went on, or the result expired. */
+export class RunGoneError extends Error {}
+
+const RUN_WAIT_SECONDS = 25;
+const RUN_RECONNECT_MS = 30_000;
+
+/** Wait for a detached run's result; throws its error, or RunGoneError. */
+export async function awaitWordRun(runId: string, options: { signal?: AbortSignal } = {}): Promise<WordLiveSuggestionResponse> {
+  let unreachableSince: number | null = null;
+  for (;;) {
+    if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}?wait=${RUN_WAIT_SECONDS}`, { signal: options.signal, cache: "no-store" });
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      // The sidecar may be restarting: keep trying for a while before giving up.
+      unreachableSince ??= Date.now();
+      if (Date.now() - unreachableSince > RUN_RECONNECT_MS) throw new Error("Writer's sidecar stopped answering while this ran.");
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      continue;
+    }
+    unreachableSince = null;
+    if (response.status === 404) {
+      throw new RunGoneError(await readError(response));
+    }
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    const state = await readJson<AiRunStatus>(response);
+    if (state.status === "done" && state.result) return state.result;
+    if (state.status === "error") throw new Error(state.error || "The run failed.");
+  }
+}
+
+export async function stopWordRun(runId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/stop`, { method: "POST" }).catch(() => undefined);
 }
 
 export async function pushWordContext(update: WordHostContextUpdate): Promise<WordHostContextUpdateResponse> {
