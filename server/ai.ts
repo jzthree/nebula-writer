@@ -13,6 +13,7 @@ import { cliEnablementDiagnostic, cliTimeoutMs, formatCliTimeout, isCliExecution
 import { elideLongPayloads, STDERR_TAIL_CHARS } from "./cli-output";
 export { elideLongPayloads } from "./cli-output";
 import { CodexAppServerUnavailable, runCodexAppServer } from "./codex-app-server";
+import { LOCAL_AI_PROVIDERS, LOCAL_AI_PROVIDER_INFO, providerCliName } from "../src/providers";
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome, ensureWriterCodexMirrorHome, resolveWriterCliHome } from "./cli-home";
@@ -430,21 +431,22 @@ async function cliProvider(provider: CliProviderName, request: AiRequest, option
     };
   }
   const engine = process.env.WRITER_AI_ENGINE?.trim().toLowerCase();
-  if (engine === "oneshot") {
+  // Antigravity has no one-shot mode in Writer: it only takes the agentic engine (ACP).
+  if (engine === "oneshot" && provider !== "antigravity") {
     return withModelOptions(request, await oneShotCliProvider(provider, request, options));
   }
   if (engine === "agentic") {
     return withModelOptions(request, await agenticCliProvider(provider, request, options));
   }
-  // Per-provider default (docs/agentic-ai.md): Claude runs the agentic
-  // engine, validated end-to-end under the lockdown recipe. Codex stays on
-  // the one-shot pipeline: codex 0.142's non-interactive `exec` cancels MCP
-  // tool calls through an approval elicitation no config override disables
-  // ("user cancelled MCP tool call"), so its agentic mode is opt-in via
+  // Per-provider default (docs/agentic-ai.md): Claude and Antigravity run the
+  // agentic engine (Writer's MCP tools). Codex stays on the one-shot
+  // pipeline: codex 0.142's non-interactive `exec` cancels MCP tool calls
+  // through an approval elicitation no config override disables ("user
+  // cancelled MCP tool call"), so its agentic mode is opt-in via
   // WRITER_AI_ENGINE=agentic until a codex release fixes that.
-  return withModelOptions(request, provider === "claude"
-    ? await agenticCliProvider(provider, request, options)
-    : await oneShotCliProvider(provider, request, options));
+  return withModelOptions(request, provider === "codex"
+    ? await oneShotCliProvider(provider, request, options)
+    : await agenticCliProvider(provider, request, options));
 }
 
 /**
@@ -747,8 +749,12 @@ export function describeUserHistoryLocations(toolAccess: AiToolAccess, home: str
       places.push(join(dir, "projects"));
     }
   }
+  const antigravity = join(home, ".gemini", "antigravity-cli", "conversations");
+  if (existsSync(antigravity)) {
+    places.push(`${antigravity} (one SQLite file per conversation)`);
+  }
   return places.length
-    ? [`The user's own Codex and Claude session histories (all projects, not Writer's runs) are in ${places.join(", ")}. Look there only when the user asks about earlier sessions or work; your CLI's own home in this run may be Writer's copy without that history.`]
+    ? [`The user's own agent session histories (Codex, Claude, Antigravity; all projects, not Writer's runs) are in ${places.join(", ")}. Look there only when the user asks about earlier sessions or work; your CLI's own home in this run may be Writer's copy without that history.`]
     : [];
 }
 
@@ -930,7 +936,7 @@ function cliFailureGuidance(rawMessage: string): string {
     return " The provider is rate-limiting or overloaded right now. Wait a moment and resend, or switch to the other provider in the picker.";
   }
   if (/not logged in|unauthorized|401|authentication|please run \/login|log ?in/i.test(rawMessage)) {
-    return " The CLI isn't logged in. Sign in on this machine (Claude: run `claude`; Codex: run `codex login`), then resend — no sidecar restart needed.";
+    return ` The CLI isn't logged in. Sign in on this machine (${LOCAL_AI_PROVIDERS.map((name) => `${LOCAL_AI_PROVIDER_INFO[name].name}: run \`${LOCAL_AI_PROVIDER_INFO[name].login}\``).join("; ")}), then resend — no sidecar restart needed.`;
   }
   if (/\btimed out after\b/i.test(rawMessage)) {
     return " The request hit the WRITER_CLI_TIMEOUT_MS limit configured for this sidecar. Raise it, or unset it to let requests run until you stop them (the default), then restart the sidecar.";
@@ -1736,8 +1742,9 @@ export function cliChildEnv(provider: CliProviderName, toolAccess: AiToolAccess 
   const cliHome = toolAccess === "full"
     ? provider === "codex" ? ensureWriterCodexMirrorHome() : null
     : ensureWriterCliHome(provider);
-  if (cliHome) {
-    env[PROVIDER_CHILD_HOME_ENV[provider]] = cliHome;
+  const homeEnv = PROVIDER_CHILD_HOME_ENV[provider];
+  if (cliHome && homeEnv) {
+    env[homeEnv] = cliHome;
   }
   return env;
 }
@@ -1747,7 +1754,7 @@ export function codexTransport(env: NodeJS.ProcessEnv = process.env): "app-serve
   return env.WRITER_CODEX_TRANSPORT?.trim().toLowerCase() === "exec" ? "exec" : "app-server";
 }
 
-const PROVIDER_CHILD_HOME_ENV: Record<CliProviderName, string> = {
+const PROVIDER_CHILD_HOME_ENV: Partial<Record<CliProviderName, string>> = {
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME"
 };
@@ -2765,5 +2772,5 @@ function formatCliDiagnostic(value: string): string {
 }
 
 function providerLabel(provider: CliProviderName): string {
-  return provider === "codex" ? "Codex CLI" : "Claude Code";
+  return providerCliName(provider);
 }

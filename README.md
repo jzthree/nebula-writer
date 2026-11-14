@@ -6,7 +6,7 @@ Nebula Writer treats **Word as the final review surface**: the browser editor is
 
 ## Highlights
 
-- **Local-first AI.** Suggestions come from the Codex CLI or Claude Code running on your machine. No document text leaves your computer unless your CLI provider sends it.
+- **Local-first AI.** Suggestions come from the Codex CLI, Claude Code or the Antigravity CLI running on your machine. No document text leaves your computer unless your CLI provider sends it.
 - **Exact-source suggestions.** Every AI edit anchors to verbatim text from your document. Stale or ambiguous anchors are detected: if the original text moved or appears in several places, the Writer highlights the closest match and asks you to confirm before replacing anything.
 - **Formatting-aware suggestions.** The AI sees bold, italic, underline, and highlight as `**bold**`, `*italic*`, `__underline__`, `==highlight==` markers and can keep, add, or remove them in a replacement; applying a suggestion sets the emphasis in Word, in the web editor, and in the exported DOCX, and a plain-text edit carries the original's emphasis across instead of flattening it.
 - **Reversible review.** Accept and reject are transactional — an accept only counts once the replacement is verified in the document — and both are undoable (`Undo accept` restores the original text; `Restore` returns a rejected suggestion to the queue).
@@ -48,12 +48,30 @@ Because both humans and agents operate on the same shared session, an MCP-connec
 
 ## AI providers
 
-Two user-facing providers, both shelling out to local CLIs:
+Three user-facing providers, all shelling out to local CLIs:
 
 | Provider | Backend |
 | --- | --- |
 | `codex` | local `codex` CLI |
 | `claude` | local `claude` (Claude Code) CLI |
+| `antigravity` | local `agy` (Antigravity CLI), through its ACP server (`agy acp`) |
+
+Antigravity takes Writer's per-run MCP tools only through ACP (`session/new`
+accepts MCP servers for one session; `agy -p` reads only the global config), so
+Writer runs one `agy acp` process per turn (`server/acp-runtime.ts`). Its model
+list comes from `agy models`, each id including its thinking level, and the
+default from `~/.gemini/antigravity-cli/settings.json`. Tool access maps onto
+Antigravity's own controls: **Full** runs it as you do (your data dir and
+settings) in its `auto` mode; **Read** and **Document** use a Writer-owned data
+dir, `~/.gemini/nebula-writer` (`WRITER_ANTIGRAVITY_DATA_DIR`, `default` to
+opt out), so Writer's conversations stay out of your Antigravity history. A
+background run has nobody to approve anything, so Writer answers Antigravity's
+permission requests itself: its own tools never ask; at Read, read/search/fetch
+actions are allowed; everything else is declined and noted in the activity
+log. Antigravity's own settings decide which actions never ask, so Document is
+not as strict a lockdown as Claude's. Messages sent during a turn queue for the
+next one (ACP has no mid-turn input). Writer's inline terminal runs only Codex
+and Claude.
 
 Use the activity button next to the provider picker to run a smoke test — it sends a small anchored revision request through the same path as real requests and reports whether the CLI returned a parseable, anchored suggestion.
 
@@ -71,6 +89,7 @@ WRITER_ALLOW_CLI=0 npm run sidecar
 | --- | --- | --- |
 | `WRITER_CODEX_PATH` | `codex` on `PATH` | Specific Codex CLI executable |
 | `WRITER_CLAUDE_PATH` | `claude` on `PATH` | Specific Claude Code executable |
+| `WRITER_ANTIGRAVITY_PATH` | `agy` on `PATH` | Specific Antigravity CLI executable |
 | `WRITER_CLI_TIMEOUT_MS` | unset (no timeout) | Optional cap on one provider request, in milliseconds (minimum 100). By default a request runs until it finishes or you press Stop; the UI shows what the CLI is doing and how long it has been running. |
 | `WRITER_ALLOW_CLI` | `1` | Set `0` to lock out local CLI execution |
 | `WRITER_TOOL_ACCESS` | `full` | Default tool access for AI requests when a client does not choose: `full` (everything the CLI has), `read` (web + read-only files), `document` (Writer's tools only). |

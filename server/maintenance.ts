@@ -45,13 +45,14 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 }
 
 // Writer confines the CLIs' transcripts to ~/.nebula-writer/{claude,codex}
-// (see cli-home.ts). Those grow one transcript per AI request, so age them
+// (see cli-home.ts) and Antigravity's to ~/.gemini/nebula-writer. Those grow one transcript per AI request, so age them
 // out too — a resumable chat session only needs to survive same-day
 // follow-ups, so two weeks is generous. Auth files (symlinks) are never
 // touched.
 export function writerCliTrajectoryRoots(home: string = homedir()): string[] {
   const base = join(home, ".nebula-writer");
-  return [join(base, "claude", "projects"), join(base, "codex", "sessions")];
+  // Antigravity's Writer data dir lives under ~/.gemini (it accepts only names relative to it; acp-runtime.ts).
+  return [join(base, "claude", "projects"), join(base, "codex", "sessions"), join(home, ".gemini", "nebula-writer", "conversations")];
 }
 
 export async function pruneWriterCliTrajectories(

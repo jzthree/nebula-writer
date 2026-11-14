@@ -10,6 +10,7 @@ import { markedSides, renderMarked } from "../emphasisView";
  * calls live in App.tsx.
  */
 
+import { providerName } from "../providers";
 import {
   AlertTriangle,
   ArrowDown,
@@ -1073,7 +1074,7 @@ function SettingsPanel(props: {
       </label>
       {catalog ? (
         <div className="wp-catalog-info">
-          <strong>{catalog.provider === "codex" ? "Codex" : "Claude Code"} {catalog.version ?? ""}</strong>
+          <strong>{providerName(catalog.provider)} {catalog.version ?? ""}</strong>
           <span>Default: {catalog.defaults.model ?? "CLI default"}{catalog.defaults.reasoning ? ` · ${catalog.defaults.reasoning}` : ""}{catalog.defaults.source ? ` (${shortPath(catalog.defaults.source)})` : ""}</span>
           <span>
             {catalog.models.length} model{catalog.models.length === 1 ? "" : "s"}{catalog.reasoning ? ` · ${catalog.reasoning.levels.length} reasoning levels via ${catalog.reasoning.control === "effort" ? "--effort" : "model_reasoning_effort"}` : " · no reasoning control"} · discovered {clock(catalog.discoveredAt)} ·{" "}

@@ -63,6 +63,7 @@ import {
   EyeOff, ListPlus } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
+import { isLocalAiProvider, LOCAL_AI_PROVIDER_INFO, LOCAL_AI_PROVIDERS, providerName } from "./providers";
 import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
 import { applySuggestion, centerEditorRange, centerSuggestionTarget, editorEmphasisSpans, findSuggestionMatch, findSuggestionRange, findTextRange, getSelectionContext, replacementEmphasis, leadingAnchorContext, materializeSourceTrackedChanges, normalizeText, primeSuggestionRangeCache, readEditorTables, replacementToContent, revertImageSuggestion, revertTableSuggestion, selectSuggestionTarget, suggestionsFromSuggestionMarks, trailingAnchorContext } from "./editorOps";
@@ -603,7 +604,7 @@ export function App() {
   const [provider, setProviderState] = useState<InteractiveProviderName>(() => {
     try {
       const stored = window.localStorage.getItem("nebula-writer-provider");
-      return stored === "claude" || stored === "codex" ? stored : "codex";
+      return isInteractiveProviderName(stored) ? stored : "codex";
     } catch {
       return "codex";
     }
@@ -4592,7 +4593,12 @@ export function App() {
     setAgentTerminalBusy(true);
     setError(null);
     try {
-      const status = await ensureAgentTerminal(provider === "codex" ? "codex" : "claude", cloudMode ? "local" : "sidecar");
+      const terminal = terminalProvider(provider);
+      if (!terminal) {
+        setError(`${providerLabel(provider)} can't run in Writer's terminal yet. Use it from the Word or Google Docs pane, or pick Codex or Claude Code here.`);
+        return;
+      }
+      const status = await ensureAgentTerminal(terminal, cloudMode ? "local" : "sidecar");
       if (!status.available || !status.url) {
         setError(status.detail || "The agent terminal is unavailable — open your local Writer (http://localhost:8787), or set up hop for remote access.");
         return;
@@ -6022,7 +6028,7 @@ export function App() {
           <div className="provider-select" title={`${providerState}${providerDetail ? ` — ${providerDetail}` : ""}`}>
             <Bot size={17} aria-hidden="true" />
             <select value={provider} onChange={(event) => setProvider(event.target.value as InteractiveProviderName)} aria-label="AI provider">
-              {([["codex", "Codex CLI"], ["claude", "Claude Code"]] as const).map(([name, label]) => {
+              {LOCAL_AI_PROVIDERS.map((name) => [name, LOCAL_AI_PROVIDER_INFO[name].cliName] as const).map(([name, label]) => {
                 const status = healthForAi?.providerStatus?.find((candidate) => candidate.name === name);
                 // Granular per-provider readiness: each option says whether THAT
                 // CLI is ready or missing, independent of the other, so "Codex
@@ -6445,7 +6451,7 @@ export function App() {
                       void fetch("/api/agent-terminal/restart", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ provider: provider === "codex" ? "codex" : "claude" })
+                        body: JSON.stringify({ provider: terminalProvider(provider) ?? "claude" })
                       }).then(() => {
                         setDocumentNote(`Restarting the ${providerLabel(provider)} terminal…`);
                         if (!terminalDockOpen) {
@@ -6460,7 +6466,7 @@ export function App() {
                 </span>
               </div>
               <div className="terminal-dock-body">
-                <AgentTerminal provider={provider === "codex" ? "codex" : "claude"} />
+                <ProviderTerminal provider={provider} />
               </div>
             </div>
           ) : null}
@@ -6541,7 +6547,7 @@ export function App() {
                 <div className="agent-terminal-bar">
                   <span>{providerLabel(provider)} — ask it to revise; edits appear in Proposed changes</span>
                 </div>
-                <AgentTerminal provider={provider === "codex" ? "codex" : "claude"} />
+                <ProviderTerminal provider={provider} />
               </div>
             ) : null}
 
@@ -6939,7 +6945,7 @@ export function App() {
                   <Loader2 size={14} aria-hidden="true" />
                   <span>
                     {remoteAiProgress && remoteAiProgress.requestedBy && remoteAiProgress.requestedBy !== collabSession.user.name
-                      ? `Queued — waiting for ${remoteAiProgress.requestedBy}'s ${remoteAiProgress.provider === "claude" ? "Claude Code" : "Codex"} request to finish first`
+                      ? `Queued — waiting for ${remoteAiProgress.requestedBy}'s ${providerName(remoteAiProgress.provider)} request to finish first`
                       : remoteAiProgress?.stage
                         ? `${providerLabel(provider)} — ${remoteAiProgress.stage}`
                         : `${providerLabel(provider)} is drafting suggestions`}
@@ -6950,7 +6956,7 @@ export function App() {
                 <article className="message assistant thinking" role="status" aria-label="A collaborator's AI request is running">
                   <Loader2 size={14} aria-hidden="true" />
                   <span>
-                    {remoteAiProgress.provider === "claude" ? "Claude Code" : remoteAiProgress.provider === "codex" ? "Codex" : remoteAiProgress.provider} is drafting suggestions
+                    {providerName(remoteAiProgress.provider)} is drafting suggestions
                     {remoteAiProgress.requestedBy ? ` for ${remoteAiProgress.requestedBy}` : ""} — {remoteAiProgress.stage}
                     {remoteAiQueue.length ? ` (+${remoteAiQueue.length} queued)` : ""}
                   </span>
@@ -8357,7 +8363,7 @@ export function App() {
                   works without one. Install and sign in to either — your own account is used:
                 </p>
                 <div className="setup-provider-list">
-                  {(["codex", "claude"] as const).map((name) => {
+                  {LOCAL_AI_PROVIDERS.map((name) => {
                     const status = healthForAi?.providerStatus?.find((candidate) => candidate.name === name);
                     const ready = status?.available === true;
                     return (
@@ -8371,11 +8377,11 @@ export function App() {
                         ) : (
                           <>
                             <SetupCommand
-                              command={name === "codex" ? "npm install -g @openai/codex" : "npm install -g @anthropic-ai/claude-code"}
+                              command={LOCAL_AI_PROVIDER_INFO[name].install}
                               onCopied={setDocumentNote}
                             />
                             <span>
-                              then sign in once: <code>{name === "codex" ? "codex login" : "claude"}</code>
+                              then sign in once: <code>{LOCAL_AI_PROVIDER_INFO[name].login}</code>
                             </span>
                           </>
                         )}
@@ -9177,7 +9183,19 @@ function countPendingSuggestions(suggestions: AiSuggestion[]): number {
 }
 
 function providerLabel(provider: InteractiveProviderName): string {
-  return provider === "codex" ? "Codex" : "Claude Code";
+  return providerName(provider);
+}
+
+/** The provider Writer's inline terminal runs for this choice; null when that CLI has no terminal mode in Writer. */
+function terminalProvider(provider: InteractiveProviderName): "codex" | "claude" | null {
+  return provider === "codex" || provider === "claude" ? provider : null;
+}
+
+function ProviderTerminal({ provider }: { provider: InteractiveProviderName }) {
+  const terminal = terminalProvider(provider);
+  return terminal
+    ? <AgentTerminal provider={terminal} />
+    : <p className="agent-terminal-unavailable">{providerLabel(provider)} can't run in Writer's terminal yet: it takes Writer's document tools only through its ACP server, not its interactive mode. Use it from the Word or Google Docs pane, or pick Codex or Claude Code here.</p>;
 }
 
 function availableAlternateProvider(provider: InteractiveProviderName, health: HealthResponse | null): InteractiveProviderName | null {
@@ -9191,7 +9209,7 @@ function availableAlternateProvider(provider: InteractiveProviderName, health: H
 }
 
 function isInteractiveProviderName(value: unknown): value is InteractiveProviderName {
-  return value === "codex" || value === "claude";
+  return isLocalAiProvider(value);
 }
 
 function parseMaxSuggestionsInput(value: string): number | null {

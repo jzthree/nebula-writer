@@ -81,6 +81,10 @@ export function modelCliArgs(provider: CliProviderName, modelOptions: AiModelOpt
     return [];
   }
   const args: string[] = [];
+  if (provider === "antigravity") {
+    // Chosen over ACP (session/set_model), not by flag: see acp-runtime.ts.
+    return [];
+  }
   if (provider === "claude") {
     if (modelOptions.model) {
       args.push("--model", modelOptions.model);
@@ -408,7 +412,7 @@ export function clearModelCatalogCache(): void {
 }
 
 export async function getProviderCatalogs(options: CatalogDiscoveryOptions = {}): Promise<AiProviderCatalog[]> {
-  return Promise.all((["claude", "codex"] as const).map((provider) => getProviderCatalog(provider, options)));
+  return Promise.all((["claude", "codex", "antigravity"] as const).map((provider) => getProviderCatalog(provider, options)));
 }
 
 export async function getProviderCatalog(provider: CliProviderName, options: CatalogDiscoveryOptions = {}): Promise<AiProviderCatalog> {
@@ -430,7 +434,9 @@ export async function getProviderCatalog(provider: CliProviderName, options: Cat
       ? unavailableCatalog(provider, resolved.detail)
       : provider === "claude"
         ? await discoverClaude(resolved.command, resolved.path, version, env, home)
-        : await discoverCodex(resolved.command, resolved.path, version, env, home);
+        : provider === "antigravity"
+          ? await discoverAntigravity(resolved.command, resolved.path, version, env, home)
+          : await discoverCodex(resolved.command, resolved.path, version, env, home);
     cache.set(provider, { key, at: Date.now(), catalog });
     return catalog;
   })();
@@ -606,6 +612,60 @@ async function discoverCodex(command: string, path: string, version: string | nu
     models: parsed.models,
     reasoning: parsed.levels.length ? { control: "model_reasoning_effort", levels: parsed.levels } : null,
     defaults,
+    allowsCustomModel: true,
+    discoveredAt: new Date().toISOString(),
+    notes
+  };
+}
+
+/** `agy models`: one "id<TAB>name" line per model, after a "Fetching…" line. The effort level is part of each id. */
+export function parseAntigravityModels(text: string): AiModelChoice[] {
+  const models: AiModelChoice[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const [id, label] = line.split("\t").map((part) => part?.trim());
+    if (id && label && MODEL_ID_PATTERN.test(id) && !models.some((model) => model.id === id)) {
+      models.push({ id, label, source: "catalog" });
+    }
+  }
+  return models;
+}
+
+/** Antigravity's settings name the default model by its display name ("Gemini 4 Carbon (High)"). */
+export function parseAntigravitySettingsDefaults(json: string, models: AiModelChoice[]): { model: string | null; reasoning: string | null } {
+  try {
+    const value = (JSON.parse(json) as { model?: unknown }).model;
+    if (typeof value !== "string" || !value.trim()) return { model: null, reasoning: null };
+    const named = models.find((model) => model.label === value.trim() || model.id === value.trim());
+    return { model: named?.id ?? null, reasoning: null };
+  } catch {
+    return { model: null, reasoning: null };
+  }
+}
+
+export function antigravitySettingsPath(home: string = homedir()): string {
+  return join(home, ".gemini", "antigravity-cli", "settings.json");
+}
+
+async function discoverAntigravity(command: string, path: string, version: string | null, env: NodeJS.ProcessEnv, home: string): Promise<AiProviderCatalog> {
+  const notes: string[] = [];
+  const raw = await runCommand(command, ["models"], env).catch((error: unknown) => {
+    notes.push(`agy models failed: ${errorMessage(error)}`);
+    return "";
+  });
+  const models = parseAntigravityModels(raw);
+  notes.push(models.length ? "Catalog from agy models; each model id includes its thinking level." : "No Antigravity model list found; type a model id manually.");
+  const settingsPath = antigravitySettingsPath(home);
+  const defaults = existsSync(settingsPath)
+    ? { ...parseAntigravitySettingsDefaults(readFileSync(settingsPath, "utf8"), models), source: settingsPath }
+    : { model: null, reasoning: null, source: null };
+  return {
+    provider: "antigravity",
+    available: true,
+    version,
+    path,
+    models,
+    reasoning: null,
+    defaults: defaults.model ? defaults : { model: null, reasoning: null, source: null },
     allowsCustomModel: true,
     discoveredAt: new Date().toISOString(),
     notes

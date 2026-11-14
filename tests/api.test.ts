@@ -42,7 +42,7 @@ describe("writer sidecar API", () => {
       valid: true,
       clamped: false
     });
-    expect(body.providers).toEqual(["codex", "claude"]);
+    expect(body.providers).toEqual(["codex", "claude", "antigravity"]);
     expect(body.providerStatus.find((provider) => provider.name === "demo")).toBeUndefined();
     for (const provider of body.providerStatus) {
       expect(provider).toHaveProperty("overrideEnv");
@@ -3191,7 +3191,7 @@ describe("AI model catalog", () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body.toString("utf8")) as { providers: Array<{ provider: string; available: boolean; models: unknown[]; reasoning: unknown; defaults: { model: string | null; reasoning: string | null }; discoveredAt: string }>; refreshed: boolean };
     expect(body.refreshed).toBe(false);
-    expect(body.providers.map((provider) => provider.provider).sort()).toEqual(["claude", "codex"]);
+    expect(body.providers.map((provider) => provider.provider).sort()).toEqual(["antigravity", "claude", "codex"]);
     for (const provider of body.providers) {
       expect(typeof provider.available).toBe("boolean");
       expect(Array.isArray(provider.models)).toBe(true);

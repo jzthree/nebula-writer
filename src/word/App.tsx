@@ -59,6 +59,7 @@ import {
   updateSuggestionStatus,
   uploadAttachment, fetchImageAsBase64, uploadDocumentImage, steerRun, awaitWordRun, stopWordRun, RunGoneError } from "./writerClient";
 import { finishedReply, replyText, stagedSuggestions } from "../runReply";
+import { isLocalAiProvider, providerCliName, providerName } from "../providers";
 import {
   WordPane,
   type CardState,
@@ -175,7 +176,7 @@ function loadSettings(): PaneSettings {
     }
     const parsed = JSON.parse(raw) as Partial<PaneSettings>;
     const models: PaneSettings["models"] = {};
-    for (const provider of ["claude", "codex"] as const) {
+    for (const provider of ["claude", "codex", "antigravity"] as const) {
       const entry = parsed.models?.[provider];
       if (entry && typeof entry === "object") {
         models[provider] = {
@@ -191,7 +192,7 @@ function loadSettings(): PaneSettings {
       shareWithAgents: typeof parsed.shareWithAgents === "boolean" ? parsed.shareWithAgents : DEFAULT_SETTINGS.shareWithAgents,
       mirrorChat: typeof parsed.mirrorChat === "boolean" ? parsed.mirrorChat : DEFAULT_SETTINGS.mirrorChat,
       toolAccess: isAiToolAccess(parsed.toolAccess) ? parsed.toolAccess : DEFAULT_SETTINGS.toolAccess,
-      provider: parsed.provider === "codex" ? "codex" : "claude",
+      provider: isLocalAiProvider(parsed.provider) ? parsed.provider : DEFAULT_SETTINGS.provider,
       scope: isScope(parsed.scope) ? parsed.scope : "auto",
       models
     };
@@ -750,7 +751,7 @@ export function App() {
       if (refresh) {
         const summary = response.providers
           .filter((provider) => provider.available)
-          .map((provider) => `${provider.provider === "codex" ? "Codex" : "Claude Code"} ${provider.version ?? ""}: ${provider.models.length} models`)
+          .map((provider) => `${providerName(provider.provider)} ${provider.version ?? ""}: ${provider.models.length} models`)
           .join(" · ");
         showNotice("info", summary ? `Model list refreshed — ${summary}.` : "No AI CLI found to list models from.");
       }
@@ -1977,10 +1978,11 @@ export function App() {
 
   const providerOptions = useMemo(() => {
     const status = new Map((health?.providerStatus ?? []).map((provider) => [provider.name, provider.available]));
-    return [
-      { value: "claude" as const, label: "Claude", available: status.get("claude") ?? true },
-      { value: "codex" as const, label: "Codex", available: status.get("codex") ?? true }
-    ];
+    return (["claude", "codex", "antigravity"] as const).map((value) => ({
+      value,
+      label: value === "claude" ? "Claude" : providerName(value),
+      available: status.get(value) ?? true
+    }));
   }, [health]);
 
   const contextStrip = useMemo(() => {
@@ -2226,7 +2228,7 @@ function describeProgress(stage: string, passIndex: number | null, passTotal: nu
 }
 
 function providerLabel(provider: string): string {
-  return provider === "codex" ? "Codex CLI" : provider === "demo" ? "Demo provider" : "Claude Code";
+  return providerCliName(provider);
 }
 
 /** Raw base64 (as Office.js returns it) to a Blob whose type is sniffed from the leading bytes. */

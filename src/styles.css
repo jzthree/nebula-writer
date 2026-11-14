@@ -4304,6 +4304,14 @@ button:disabled {
   margin: 8px 10px 10px;
 }
 
+.agent-terminal-unavailable {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted, #5f6368);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .agent-terminal-bar {
   display: flex;
   align-items: center;

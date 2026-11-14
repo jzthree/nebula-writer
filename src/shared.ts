@@ -3,8 +3,8 @@ import type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
 
 export type { EmphasisSpan, SuggestionEmphasis } from "./emphasis";
 export type { AiTableEdit, DocumentTable } from "./tables";
-export type AiProviderName = "demo" | "codex" | "claude";
-export type LocalAiProviderName = "codex" | "claude";
+export type AiProviderName = "demo" | "codex" | "claude" | "antigravity";
+export type LocalAiProviderName = "codex" | "claude" | "antigravity";
 
 /**
  * How much of the CLI's own tooling an AI request may use. The document is

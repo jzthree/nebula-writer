@@ -34,6 +34,7 @@ import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePat
 import { supersedeRevisedSuggestions } from "./revisions";
 import { CONVERSATION_KEY_PATTERN, conversationStore, type ConversationWrite } from "./conversation-store";
 import { detachedRuns } from "./detached-runs";
+import { isLocalAiProvider, LOCAL_AI_PROVIDERS, providerName } from "../src/providers";
 import { failedReply, finishedReply, stagedSuggestions } from "../src/runReply";
 import { liveCollabDocumentEmphasis, liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
 import { getShareToken, isShareModeEnabled, shareAuthMiddleware } from "./shareAuth";
@@ -689,7 +690,7 @@ export function createWriterApp() {
       // Both terminal providers share the live run, so authorship comes from
       // the stage call itself — without it, the claiming client labels the
       // marks with whatever provider IT has selected.
-      const agentLabel = body.agent === "claude" ? "Claude Code" : body.agent === "codex" ? "Codex" : null;
+      const agentLabel = isLocalAiProvider(body.agent) ? providerName(body.agent) : null;
       if (isLive && run.staged.length && activeWriterSession) {
         const attributed = agentLabel
           ? run.staged.map((suggestion) => ({ ...suggestion, proposedBy: suggestion.proposedBy ?? agentLabel }))
@@ -3838,11 +3839,11 @@ function reviewSuggestionsRoutineRunMetadata(routineRun: SessionExportRoutineRun
 }
 
 function isAiProviderName(value: unknown): value is AiProviderName {
-  return value === "codex" || value === "claude" || value === "demo";
+  return value === "demo" || isLocalAiProvider(value);
 }
 
 function isLocalAiProviderName(value: unknown): value is LocalAiProviderName {
-  return value === "codex" || value === "claude";
+  return isLocalAiProvider(value);
 }
 
 async function storeAiAttachment(buffer: Buffer, originalName: string): Promise<AiAttachment> {
@@ -4417,34 +4418,21 @@ function isSelectionContext(value: unknown): value is SelectionContext {
 
 function providerHealth(cliEnabled: boolean) {
   const cliDiagnostic = cliEnablementDiagnostic();
-  const codex = resolveCliCommand("codex");
-  const claude = resolveCliCommand("claude");
-  return [
-    {
-      name: "codex" as AiProviderName,
-      available: codex.available,
-      enabled: cliEnabled && codex.available,
-      detail: codex.available
-        ? cliEnabled ? codex.detail : cliDiagnostic
-        : codex.detail,
-      overrideEnv: codex.overrideEnv,
-      overrideValue: codex.overrideValue,
-      path: codex.path,
-      version: codex.path ? commandVersion(codex.path) : null
-    },
-    {
-      name: "claude" as AiProviderName,
-      available: claude.available,
-      enabled: cliEnabled && claude.available,
-      detail: claude.available
-        ? cliEnabled ? claude.detail : cliDiagnostic
-        : claude.detail,
-      overrideEnv: claude.overrideEnv,
-      overrideValue: claude.overrideValue,
-      path: claude.path,
-      version: claude.path ? commandVersion(claude.path) : null
-    }
-  ];
+  return LOCAL_AI_PROVIDERS.map((name) => {
+    const resolved = resolveCliCommand(name);
+    return {
+      name: name as AiProviderName,
+      available: resolved.available,
+      enabled: cliEnabled && resolved.available,
+      detail: resolved.available
+        ? cliEnabled ? resolved.detail : cliDiagnostic
+        : resolved.detail,
+      overrideEnv: resolved.overrideEnv,
+      overrideValue: resolved.overrideValue,
+      path: resolved.path,
+      version: resolved.path ? commandVersion(resolved.path) : null
+    };
+  });
 }
 
 function commandVersion(command: string): string | null {

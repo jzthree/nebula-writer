@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { cliTimeoutMs, formatCliTimeout, resolveCliCommand, type CliProviderName } from "./cli-runtime";
 import type { AiToolAccess } from "../src/shared";
 import { execViaGateway, gatewayAvailable } from "./gateway-client";
+import { runAcpTurn } from "./acp-runtime";
 
 /**
  * Agentic CLI runner, ported from slides-mcp's agent-connector and adapted to
@@ -241,7 +242,7 @@ function createAgentProcess(options: AgentTurnOptions, command: string, args: st
   // colour/pager overrides — never process.env or a home var.
   if (gatewayAvailable()) {
     const gw = execViaGateway({
-      provider: options.provider,
+      provider: options.provider as "codex" | "claude",
       bin: command,
       args,
       label: "writer",
@@ -316,6 +317,14 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
     throw new Error(resolved.detail);
   }
   const command = resolved.command;
+  if (options.provider === "antigravity") {
+    // Antigravity takes Writer's MCP server per session only through ACP (acp-runtime.ts).
+    return runAcpTurn(options, command, mcpServerLaunch(options.runUrl), {
+      summarize: summarizeToolInput,
+      toolName: stripMcpPrefix,
+      childEnv: { ...process.env, ...CLI_ENV_OVERRIDES }
+    });
+  }
   const onEvent = options.onEvent ?? (() => undefined);
   const mcpConfig = writeMcpConfig(options.runUrl);
   const args = options.provider === "claude"
@@ -457,7 +466,8 @@ interface ParserOutcome {
 }
 
 function stripMcpPrefix(toolName: string): string {
-  return toolName.replace(/^mcp__writer__/, "").replace(/^mcp__[^_]+__/, "");
+  // Claude names MCP tools mcp__writer__x; Antigravity names them mcp_writer_x.
+  return toolName.replace(/^mcp__writer__/, "").replace(/^mcp__[^_]+__/, "").replace(/^mcp_writer_/, "");
 }
 
 /** A command line as the user would type it: Codex wraps each in `/bin/zsh -lc "…"` (or passes argv), which says nothing. */

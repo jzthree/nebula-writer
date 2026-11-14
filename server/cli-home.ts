@@ -30,7 +30,8 @@ type ProviderHomeConfig = {
   authFiles: string[];
 };
 
-const PROVIDER_HOME: Record<CliProviderName, ProviderHomeConfig> = {
+/** CLIs whose home Writer redirects by environment; Antigravity's data dir is a flag instead (acp-runtime.ts). */
+const PROVIDER_HOME: Partial<Record<CliProviderName, ProviderHomeConfig>> = {
   claude: {
     overrideEnv: "WRITER_CLAUDE_CONFIG_DIR",
     childEnv: "CLAUDE_CONFIG_DIR",
@@ -66,6 +67,9 @@ export function resolveWriterCliHome(
   home: string = homedir()
 ): WriterCliHome | null {
   const config = PROVIDER_HOME[provider];
+  if (!config) {
+    return null;
+  }
   const override = env[config.overrideEnv]?.trim();
   if (override && OPT_OUT_VALUES.has(override.toLowerCase())) {
     return null;

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
-export type CliProviderName = "codex" | "claude";
+export type CliProviderName = "codex" | "claude" | "antigravity";
 
 type ProviderConfig = {
   executable: string;
@@ -52,6 +52,10 @@ const PROVIDER_CONFIG: Record<CliProviderName, ProviderConfig> = {
   claude: {
     executable: "claude",
     overrideEnv: "WRITER_CLAUDE_PATH"
+  },
+  antigravity: {
+    executable: "agy",
+    overrideEnv: "WRITER_ANTIGRAVITY_PATH"
   }
 };
 
