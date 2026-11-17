@@ -1,7 +1,7 @@
 import { newAiRunId } from "./sidecarClient";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { wordDiffSegments } from "./wordDiff";
-import Image from "@tiptap/extension-image";
+import Image from "./preservedImage";
 import Link from "@tiptap/extension-link";
 import Paragraph from "@tiptap/extension-paragraph";
 import Placeholder from "@tiptap/extension-placeholder";
