@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import JSZip from "jszip";
+import { Document, ImageRun, Packer, Paragraph, TextRun } from "docx";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1565,6 +1566,73 @@ function ensureDocumentNamespaces(documentXml: string, namespaces: Record<string
 
 describe("DOCX images", () => {
   const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+
+  it("keeps an imported embedded figure and its text in rebuilt export", async () => {
+    const source = await Packer.toBuffer(new Document({ sections: [{ children: [
+      new Paragraph({ children: [new TextRun("Before figure"), new ImageRun({ type: "png", data: ONE_PIXEL_PNG, transformation: { width: 320, height: 160 } }), new TextRun("After figure")] })
+    ] }] }));
+    const imported = await importDocx(source, "figure.docx");
+    expect(imported.html).toContain("data:image/png;base64,");
+    expect(imported.html).toContain('width="320" height="160"');
+    const rebuilt = await exportDocx({ title: "Rebuilt figure", html: imported.html, trackedChanges: false });
+    const zip = await JSZip.loadAsync(rebuilt);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    const media = zip.file(/^word\/media\/.+\.png$/);
+    expect(media).toHaveLength(1);
+    expect((await media[0].async("nodebuffer")).equals(ONE_PIXEL_PNG)).toBe(true);
+    expect(xml).toContain('<wp:extent cx="3048000" cy="1524000"');
+    expect(xml).toMatch(/Before figure[\s\S]*?<w:drawing>[\s\S]*?After figure/);
+    expect((await importDocx(rebuilt, "rebuilt.docx")).features.images).toBe(1);
+  });
+
+  it("keeps embedded figures beside inline tracked revisions in rebuilt export", async () => {
+    const rebuilt = await exportDocx({ title: "Image and revision", trackedChanges: true, html: [
+      '<p><img src="data:image/png;base64,', ONE_PIXEL_PNG.toString("base64"), '" />',
+      '<span data-suggestion-deletion="true" authorname="Reviewer">Old caption.</span>',
+      '<span data-suggestion-insertion="true" authorname="Reviewer">Corrected caption.</span></p>'
+    ].join("") });
+    const zip = await JSZip.loadAsync(rebuilt);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    expect(xml).toContain("<w:drawing>");
+    expect(xml).toMatch(/<w:del [^>]*w:author="Reviewer"[\s\S]*?Old caption\./);
+    expect(xml).toMatch(/<w:ins [^>]*w:author="Reviewer"[\s\S]*?Corrected caption\./);
+    expect((await zip.file(/^word\/media\/.+\.png$/)[0].async("nodebuffer")).equals(ONE_PIXEL_PNG)).toBe(true);
+  });
+
+  it("keeps TipTap block images and pending caption revisions in rebuilt export", async () => {
+    const rebuilt = await exportDocx({ title: "Block figure", trackedChanges: true, html: [
+      '<p>Before figure.</p><img src="data:image/png;base64,', ONE_PIXEL_PNG.toString("base64"), '" />',
+      '<p>Old caption.</p>'
+    ].join(""), suggestions: [{ id: "caption", title: "Correct caption", original: "Old caption.", replacement: "Corrected caption.", rationale: "Match the assay.", confidence: 1, target: "global", status: "pending" }] });
+    const zip = await JSZip.loadAsync(rebuilt);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    expect(xml).toMatch(/Before figure\.[\s\S]*?<w:drawing>[\s\S]*?<w:del [\s\S]*?Old caption\.[\s\S]*?<w:ins [\s\S]*?Corrected caption\./);
+    expect((await zip.file(/^word\/media\/.+\.png$/)[0].async("nodebuffer")).equals(ONE_PIXEL_PNG)).toBe(true);
+  });
+
+  it("preserves a drawing when a pending text edit crosses it", async () => {
+    const rebuilt = await exportDocx({ title: "Crossing figure", trackedChanges: true,
+      html: '<p>Before<img src="data:image/png;base64,' + ONE_PIXEL_PNG.toString("base64") + '" />After</p>',
+      suggestions: [{ id: "crossing", title: "Crossing edit", original: "BeforeAfter", replacement: "Revised caption", rationale: "Text should not erase the figure.", confidence: 1, target: "global", status: "pending" }]
+    });
+    const zip = await JSZip.loadAsync(rebuilt);
+    const xml = await zip.file("word/document.xml")!.async("string");
+    expect(xml).toContain("<w:drawing>");
+    expect(xml).toMatch(/Before[\s\S]*?<w:drawing>[\s\S]*?After/);
+    expect(xml).toContain("Revised caption");
+  });
+
+  it("bounds rebuilt figure dimensions and rejects invalid or nonembedded images explicitly", async () => {
+    const rebuilt = await exportDocx({ title: "Bounded figure", html: '<p><img width="99999999" height="49999999.5" src="data:image/png;base64,' + ONE_PIXEL_PNG.toString("base64") + '" /></p>' });
+    const xml = await (await JSZip.loadAsync(rebuilt)).file("word/document.xml")!.async("string");
+    const extent = /<wp:extent cx="(\d+)" cy="(\d+)"/.exec(xml);
+    expect(extent).not.toBeNull();
+    expect(Number(extent![1])).toBeLessThanOrEqual(576 * 9525);
+    expect(Number(extent![2])).toBeGreaterThan(0);
+    for (const src of ['https://example.org/figure.png', 'file:///tmp/figure.png', 'data:image/png;base64,not-valid!', 'data:image/png;base64,YWJj']) {
+      await expect(exportDocx({ title: "Invalid figure", html: '<p><img src="' + src + '" /></p>' })).rejects.toThrow(/image|figure/i);
+    }
+  });
 
   it("extracts the document's pictures with a caption context", async () => {
     const source = await docxWithUnsupportedImage({ extension: "png", contentType: "image/png" });

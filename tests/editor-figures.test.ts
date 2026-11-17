@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import Image from "@tiptap/extension-image";
+import Image from "../src/preservedImage";
+import { Document, ImageRun, Packer, Paragraph } from "docx";
+import JSZip from "jszip";
 import { afterEach, describe, expect, it } from "vitest";
 import { applySuggestion, findSuggestionMatch, revertImageSuggestion } from "../src/editorOps";
 import type { AiSuggestion } from "../src/shared";
+import { exportDocx, importDocx } from "../server/docx";
 
 let editor: Editor | null = null;
 
 function makeEditor(html: string): Editor {
-  editor = new Editor({ extensions: [StarterKit, Image.configure({ inline: false })], content: html });
+  editor = new Editor({ extensions: [StarterKit, Image.configure({ inline: false, allowBase64: true })], content: html });
   return editor;
 }
 
@@ -31,6 +34,17 @@ function images(ed: Editor): string[] {
 }
 
 describe("web editor figures", () => {
+  it("retains imported Word figure dimensions through editor serialization and rebuilt export", async () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+    const source = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph({ children: [new ImageRun({ type: "png", data: png, transformation: { width: 320, height: 160 } })] })] }] }));
+    const imported = await importDocx(source, "source.docx");
+    const ed = makeEditor(imported.html);
+    expect(ed.getHTML()).toContain('width="320" height="160"');
+    const rebuilt = await exportDocx({ title: "Editor roundtrip", html: ed.getHTML() });
+    const zip = await JSZip.loadAsync(rebuilt);
+    expect(await zip.file("word/document.xml")!.async("string")).toContain('<wp:extent cx="3048000" cy="1524000"');
+    expect((await zip.file(/^word\/media\/.+\.png$/)[0].async("nodebuffer")).equals(png)).toBe(true);
+  });
   it("inserts a figure and its caption after the anchor paragraph, keeping the anchor", () => {
     const ed = makeEditor("<p>Enrollment grew at every site.</p><p>Closing.</p>");
     const suggestion = figure({ original: "grew at every site", image: { action: "insert", index: null, path: "/tmp/f.png", url: "/api/ai/images/f.png", mime: "image/png", caption: "Figure 1. Enrollment by site." } });

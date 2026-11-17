@@ -1,4 +1,4 @@
-import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
+import { Document, HeadingLevel, ImageRun, Packer, Paragraph, TextRun } from "docx";
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import { execFile as execFileCallback } from "node:child_process";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AiSuggestion, DocxBodySafeAnchor, DocxFeatureSummary, ExportRequest, ImportedDocument, SourceTrackedChangePreview } from "../src/shared";
-import { DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../src/shared";
+import { AI_IMAGE_BYTES_LIMIT, DOCUMENT_COMMENT_LIMIT, locateCommentAnchor, type DocumentComment } from "../src/shared";
 import { chooseAnchoredCandidate } from "../src/shared";
 import { carryEmphasis, emphasisFromPieces, formatOf as toFormat, normalizeColor, splitByEmphasis, type EmphasisFormat, type EmphasisSpan } from "../src/emphasis";
 
@@ -118,13 +118,14 @@ function isMissingExecutableError(error: unknown): boolean {
 export async function importDocx(buffer: Buffer, name: string): Promise<ImportedDocument> {
   const displayBuffer = await acceptedTrackedChangesForDisplay(buffer);
   const conversion = await convertDisplayDocxToHtml(displayBuffer, buffer);
-  const [features, textBoxParagraphs, bodySafeAnchorDetails, sourceTrackedChanges] = await Promise.all([
+  const [features, textBoxParagraphs, bodySafeAnchorDetails, sourceTrackedChanges, images] = await Promise.all([
     analyzeDocxFeatures(buffer),
     extractTextBoxParagraphs(conversion.buffer),
     extractDocxBodySafeAnchorDetails(buffer),
-    extractSourceTrackedChangePreview(buffer)
+    extractSourceTrackedChangePreview(buffer),
+    extractDocxImages(displayBuffer, Number.MAX_SAFE_INTEGER)
   ]);
-  const html = annotateTextBoxParagraphs(annotateOfficeMathPreviews(conversion.result.value || "<p></p>", conversion.officeMathPreviews), textBoxParagraphs);
+  const html = annotateImportedImageDimensions(annotateTextBoxParagraphs(annotateOfficeMathPreviews(conversion.result.value || "<p></p>", conversion.officeMathPreviews), textBoxParagraphs), images);
   const plainText = htmlToText(html);
   const bodySafeAnchors = bodySafeAnchorDetails.map((anchor) => anchor.text);
 
@@ -1310,6 +1311,24 @@ export async function extractDocxImages(buffer: Buffer, limit = 24): Promise<Doc
   return images;
 }
 
+function annotateImportedImageDimensions(html: string, images: DocxExtractedImage[]): string {
+  // Match the embedded bytes rather than image position: equation previews and
+  // unsupported-format placeholders may add images to Mammoth's output.
+  const bySource = new Map<string, DocxExtractedImage[]>();
+  for (const image of images) {
+    const source = `data:${image.mime};base64,${image.bytes.toString("base64")}`;
+    const matches = bySource.get(source) ?? [];
+    matches.push(image);
+    bySource.set(source, matches);
+  }
+  return html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const source = imageAttribute(tag, "src").replace(/^data:image\/jpg;/i, "data:image/jpeg;");
+    const image = bySource.get(source)?.shift();
+    if (!image?.width || !image.height) return tag;
+    return tag.replace(/\s*\/?>$/, ` width="${image.width}" height="${image.height}" />`);
+  });
+}
+
 function maxDocPrId(documentXml: string): number {
   let max = 0;
   for (const match of documentXml.matchAll(/<wp:docPr\b[^>]*\bid="(\d+)"/g)) {
@@ -1469,7 +1488,15 @@ export function htmlToText(html: string): string {
 
 export interface TextBlock {
   type: "heading1" | "heading2" | "heading3" | "paragraph" | "bullet";
-  runs: Array<{ text: string; bold?: boolean; italics?: boolean; underline?: boolean; highlight?: boolean; revision?: TextRunRevision }>;
+  runs: Array<{ text: string; bold?: boolean; italics?: boolean; underline?: boolean; highlight?: boolean; revision?: TextRunRevision; image?: RebuiltImage }>;
+}
+
+interface RebuiltImage {
+  data: Buffer;
+  type: "png" | "jpg" | "gif";
+  width: number;
+  height: number;
+  alt: string;
 }
 
 /** A run that came from a suggestion mark in the editor HTML: the mark IS the
@@ -1486,8 +1513,12 @@ export function htmlToBlocks(html: string): TextBlock[] {
     .replace(/<li\b[^>]*>/gi, "<p data-type=\"bullet\">")
     .replace(/<\/li>/gi, "</p>")
     .replace(/<br\s*\/?>/gi, "\n");
-  const matches = [...normalized.matchAll(/<(h1|h2|h3|p)\b([^>]*)>([\s\S]*?)<\/\1>/gi)];
+  // TipTap serializes block images outside <p>; Mammoth also emits inline images.
+  const matches = [...normalized.matchAll(/<(h1|h2|h3|p)\b([^>]*)>([\s\S]*?)<\/\1>|(<img\b[^>]*>)/gi)];
   const blocks = matches.map((match): TextBlock => {
+    if (match[4]) {
+      return { type: "paragraph", runs: parseRuns(match[4]) };
+    }
     const [, tag, attrs, inner] = match;
     return {
       type: attrs.includes("data-type=\"bullet\"")
@@ -1526,31 +1557,94 @@ function parseRuns(innerHtml: string): TextBlock["runs"] {
   return runs.length ? runs : [{ text: "" }];
 }
 
-function parseInlineRuns(fragment: string, runs: TextBlock["runs"], revision?: TextRunRevision): void {
+function parseInlineRuns(fragment: string, runs: TextBlock["runs"], revision?: TextRunRevision, format: { bold?: boolean; italics?: boolean; underline?: boolean; highlight?: boolean } = {}): void {
   // Drop every tag except the formatting pairs the tokenizer understands.
   // Without this, an unrecognized tag (e.g. a suggestion-mark <span> with
   // attributes) fails both alternatives at its "<", and [^<]+ then captures
   // the tag's attribute text as literal document content.
-  const cleaned = fragment.replace(/<\/?(?!(?:strong|b|em|i|u|mark)\b)[a-zA-Z][^>]*>/gi, "");
-  const tokenPattern = /<(strong|b|em|i|u|mark)\b[^>]*>([\s\S]*?)<\/\1>|([^<]+)/gi;
+  const cleaned = fragment.replace(/<\/?(?!(?:strong|b|em|i|u|mark|img)\b)[a-zA-Z][^>]*>/gi, "");
+  const tokenPattern = /<(strong|b|em|i|u|mark)\b[^>]*>([\s\S]*?)<\/\1>|(<img\b[^>]*>)|([^<]+)/gi;
   for (const token of cleaned.matchAll(tokenPattern)) {
-    if (token[3]) {
-      pushRun(runs, decodeEntities(token[3]), false, false, revision);
+    if (token[4]) {
+      pushRun(runs, decodeEntities(token[4]), format.bold, format.italics, revision, format.underline, format.highlight);
+    } else if (token[3]) {
+      runs.push({ text: "", image: rebuiltImage(token[3]), ...(revision ? { revision } : {}) });
     } else {
       const tag = token[1].toLowerCase();
-      const inner = token[2];
-      // Nested emphasis (<strong><em>…</em></strong>) collapses to the union of the tags.
-      pushRun(
-        runs,
-        decodeEntities(stripTags(inner)),
-        tag === "strong" || tag === "b" || /<(?:strong|b)\b/i.test(inner),
-        tag === "em" || tag === "i" || /<(?:em|i)\b/i.test(inner),
-        revision,
-        tag === "u" || /<u\b/i.test(inner),
-        tag === "mark" || /<mark\b/i.test(inner)
-      );
+      parseInlineRuns(token[2], runs, revision, {
+        bold: format.bold || tag === "strong" || tag === "b",
+        italics: format.italics || tag === "em" || tag === "i",
+        underline: format.underline || tag === "u",
+        highlight: format.highlight || tag === "mark"
+      });
     }
   }
+}
+
+function imageAttribute(tag: string, name: string): string {
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'<>]+))`, "i").exec(tag);
+  return decodeEntities(match?.[1] ?? match?.[2] ?? match?.[3] ?? "");
+}
+
+function rebuiltImage(tag: string): RebuiltImage {
+  const source = imageAttribute(tag, "src");
+  const match = /^data:image\/(png|jpe?g|gif);base64,([\s\S]+)$/i.exec(source);
+  const imageError = "Rebuilt DOCX requires valid embedded PNG, JPEG, or GIF images. Use source-preserving Review DOCX for other image formats; external image URLs are not fetched.";
+  if (!match) {
+    throw new Error(imageError);
+  }
+  const base64 = match[2].replace(/\s/g, "");
+  if (base64.length > Math.ceil(AI_IMAGE_BYTES_LIMIT / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
+    throw new Error(imageError);
+  }
+  const data = Buffer.from(base64, "base64");
+  const type = match[1].toLowerCase().replace("jpeg", "jpg") as RebuiltImage["type"];
+  const dimensions = rebuiltImageDimensions(data, type);
+  if (!dimensions || data.length > AI_IMAGE_BYTES_LIMIT) {
+    throw new Error(imageError);
+  }
+  const requestedWidth = Number(imageAttribute(tag, "width"));
+  const requestedHeight = Number(imageAttribute(tag, "height"));
+  let width = requestedWidth > 0 && Number.isFinite(requestedWidth) ? requestedWidth : dimensions.width;
+  let height = requestedHeight > 0 && Number.isFinite(requestedHeight) ? requestedHeight : width * dimensions.height / dimensions.width;
+  if (!(requestedWidth > 0) && requestedHeight > 0 && Number.isFinite(requestedHeight)) {
+    width = height * dimensions.width / dimensions.height;
+  }
+  // Fit within default Word page margins without stretching the requested aspect.
+  const scale = Math.min(1, 576 / width, 720 / height);
+  width = Math.max(1, Math.round(width * scale));
+  height = Math.max(1, Math.round(height * scale));
+  return { data, type, width, height, alt: imageAttribute(tag, "alt") };
+}
+
+function rebuiltImageDimensions(data: Buffer, type: RebuiltImage["type"]): { width: number; height: number } | null {
+  let width = 0;
+  let height = 0;
+  if (type === "png" && data.length >= 33 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && data.toString("ascii", 12, 16) === "IHDR") {
+    width = data.readUInt32BE(16);
+    height = data.readUInt32BE(20);
+  } else if (type === "gif" && data.length >= 10 && /^GIF8[79]a$/.test(data.toString("ascii", 0, 6))) {
+    width = data.readUInt16LE(6);
+    height = data.readUInt16LE(8);
+  } else if (type === "jpg" && data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 3 < data.length) {
+      if (data[offset++] !== 0xff) break;
+      while (data[offset] === 0xff) offset++;
+      const marker = data[offset++];
+      if (marker === 0xd9 || marker === 0xda || offset + 2 > data.length) break;
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      const length = data.readUInt16BE(offset);
+      if (length < 2 || offset + length > data.length) break;
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker) && length >= 7) {
+        height = data.readUInt16BE(offset + 3);
+        width = data.readUInt16BE(offset + 5);
+        break;
+      }
+      offset += length;
+    }
+  }
+  return width > 0 && height > 0 ? { width, height } : null;
 }
 
 function pushRun(runs: TextBlock["runs"], text: string, bold = false, italics = false, revision?: TextRunRevision, underline = false, highlight = false): void {
@@ -1579,7 +1673,12 @@ function blockToParagraph(block: TextBlock): Paragraph {
   return new Paragraph({
     heading,
     bullet: block.type === "bullet" ? { level: 0 } : undefined,
-    children: block.runs.map((run) => new TextRun({
+    children: block.runs.map((run) => run.image ? new ImageRun({
+      type: run.image.type,
+      data: run.image.data,
+      transformation: { width: run.image.width, height: run.image.height },
+      altText: { name: run.image.alt || "Figure", title: run.image.alt, description: run.image.alt }
+    }) : new TextRun({
       text: run.text,
       bold: run.bold,
       italics: run.italics,
@@ -1599,7 +1698,26 @@ async function addTrackedChanges(baseDocx: Buffer, blocks: TextBlock[], suggesti
   const documentXml = await documentXmlFile.async("string");
   const revisionIds = revisionIdAllocatorFromXml(documentXml);
   const usedSuggestionIds = new Set<string>();
-  const paragraphs = blocks.map((block) => blockToTrackedXml(block, suggestions, usedSuggestionIds, revisionIds));
+  const baseParagraphs = [...documentXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)].map((match) => match[0]);
+  const paragraphs = blocks.map((block, index) => {
+    const baseParagraph = baseParagraphs[index];
+    if (block.runs.some((run) => run.image) && !block.runs.some((run) => run.revision)) {
+      // Preserve the native drawing and patch only safe text spans beside it.
+      let paragraph = baseParagraph;
+      for (const suggestion of suggestions.filter((item) => !usedSuggestionIds.has(item.id))) {
+        const patched = patchParagraphTextRuns(paragraph, suggestion, revisionIds);
+        if (patched) {
+          paragraph = patched;
+          usedSuggestionIds.add(suggestion.id);
+        }
+      }
+      return paragraph;
+    }
+    const drawings = [...baseParagraph.matchAll(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g)]
+      .filter((match) => match[0].includes("<w:drawing>"))
+      .map((match) => match[0]);
+    return blockToTrackedXml(block, suggestions, usedSuggestionIds, revisionIds, drawings);
+  });
   const unmatched = suggestions.filter((suggestion) => !usedSuggestionIds.has(suggestion.id));
   if (unmatched.length) {
     paragraphs.push(...unmatchedSuggestionsXml(unmatched, revisionIds));
@@ -1804,7 +1922,7 @@ function containsUnsplittableInlineXml(paragraphXml: string): boolean {
 // hyperlink, field, footnote, or existing revision. Edits that would touch such
 // a span are refused (and fall back to a comment) instead.
 function spanDisturbsProtectedMarker(xmlSlice: string): boolean {
-  return /<\/?(?:w:hyperlink|w:commentRangeStart|w:commentRangeEnd|w:commentReference|w:bookmarkStart|w:bookmarkEnd|w:fldSimple|w:fldChar|w:instrText|w:footnoteReference|w:endnoteReference|w:ins|w:del|w:moveFrom|w:moveTo)\b/i.test(xmlSlice);
+  return /<\/?(?:w:hyperlink|w:commentRangeStart|w:commentRangeEnd|w:commentReference|w:bookmarkStart|w:bookmarkEnd|w:fldSimple|w:fldChar|w:instrText|w:footnoteReference|w:endnoteReference|w:ins|w:del|w:moveFrom|w:moveTo|w:drawing|w:pict|v:imagedata)\b/i.test(xmlSlice);
 }
 
 function containsOfficeMathXml(paragraphXml: string): boolean {
@@ -2571,7 +2689,8 @@ function blockToTrackedXml(
   block: TextBlock,
   suggestions: AiSuggestion[],
   usedSuggestionIds: Set<string>,
-  revisionIds: RevisionIdAllocator
+  revisionIds: RevisionIdAllocator,
+  drawings: string[] = []
 ): string {
   const paragraphProperties = block.type === "heading1"
     ? "<w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
@@ -2586,6 +2705,12 @@ function blockToTrackedXml(
   // suggestion's inserted paragraphs used to export as plain document text).
   if (block.runs.some((run) => run.revision)) {
     const runsXml = block.runs.map((run) => {
+      if (run.image) {
+        const drawing = drawings.shift() ?? "";
+        return run.revision
+          ? `<w:${run.revision.kind === "delete" ? "del" : "ins"} w:id="${revisionIds.next()}" w:author="${escapeXml(run.revision.author)}" w:date="${new Date().toISOString()}">${drawing}</w:${run.revision.kind === "delete" ? "del" : "ins"}>`
+          : drawing;
+      }
       if (!run.revision) {
         return textRunXml(run.text);
       }
