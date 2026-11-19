@@ -82,7 +82,7 @@ describe("detached pane runs over the API", () => {
     expect(saved.suggestions.map((entry) => (entry.suggestion as { id: string; proposedBy?: string }).proposedBy)).toContain("Demo");
 
     // A late save from a pane that still thought it was running does not undo that.
-    await post("/api/conversations", { key, turns: [{ id: "a-1", turn: replyTurn }] });
+    expect((await post("/api/conversations/write", { key, turns: [{ id: "a-1", turn: replyTurn }] })).status).toBe(200);
     expect((conversationStore().read(key, {}).turns[1].turn as { status: string }).status).toBe("done");
   });
 
