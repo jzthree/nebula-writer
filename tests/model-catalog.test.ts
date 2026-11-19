@@ -236,3 +236,18 @@ describe("live discovery", () => {
     expect(again.discoveredAt).toBe(codex.discoveredAt);
   }, 60_000);
 });
+
+describe("a model list refresh that finds nothing", () => {
+  it("keeps the last list it had, and says so", async () => {
+    const { keepLastGoodModels } = await import("../server/model-catalog");
+    const base = { provider: "antigravity" as const, available: true, version: "1.5.12", path: "/bin/agy", reasoning: null, allowsCustomModel: true, discoveredAt: "2026-11-19T00:00:00.000Z" };
+    const previous = { ...base, models: [{ id: "gemini-4-carbon-high", label: "Gemini 4 Carbon (High)", source: "catalog" as const }], defaults: { model: "gemini-4-carbon-high", reasoning: null, source: "settings.json" }, notes: [] };
+    const empty = { ...base, models: [], defaults: { model: null, reasoning: null, source: null }, notes: ["agy models failed: timed out"], discoveredAt: "2026-11-19T01:00:00.000Z" };
+    const kept = keepLastGoodModels(empty, previous);
+    expect(kept.models).toEqual(previous.models);
+    expect(kept.defaults.model).toBe("gemini-4-carbon-high");
+    expect(kept.notes.join(" ")).toContain("this refresh found none");
+    expect(keepLastGoodModels(empty, null).models).toEqual([]);
+    expect(keepLastGoodModels({ ...empty, available: false }, previous).models).toEqual([]);
+  });
+});

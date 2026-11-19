@@ -39,7 +39,7 @@ import {
   Undo2,
   User,
   X, ListPlus } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
@@ -221,7 +221,18 @@ function draggingFiles(event: { dataTransfer: DataTransfer | null }): boolean {
   return Boolean(event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files"));
 }
 
+/** The app the pane runs in ("Word", "Google Docs"), for labels deep in the card tree. */
+const HostNameContext = createContext<string>("Word");
+
 export function WordPane(props: WordPaneProps) {
+  return (
+    <HostNameContext.Provider value={props.hostName}>
+      <WordPaneBody {...props} />
+    </HostNameContext.Provider>
+  );
+}
+
+function WordPaneBody(props: WordPaneProps) {
   const running = props.requestState === "running";
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Files dropped anywhere on the pane are attached. Nested elements fire
@@ -305,7 +316,7 @@ export function WordPane(props: WordPaneProps) {
             label={props.sidecarStatus === "ok" ? "Writer" : props.sidecarStatus === "checking" ? "Writer…" : "No Writer"}
             title={props.sidecarDetail}
           />
-          <button type="button" className="wp-icon-button" onClick={props.onSync} disabled={props.hostStatus !== "ready" || Boolean(props.busyLabel)} title="Re-read the document from Word" aria-label="Re-read the document from Word">
+          <button type="button" className="wp-icon-button" onClick={props.onSync} disabled={props.hostStatus !== "ready" || Boolean(props.busyLabel)} title={`Re-read the document from ${props.hostName}`} aria-label={`Re-read the document from ${props.hostName}`}>
             <RefreshCw size={14} aria-hidden="true" />
           </button>
           <button type="button" className={`wp-icon-button ${settingsOpen ? "active" : ""}`} onClick={() => setSettingsOpen((open) => !open)} title="Settings & diagnostics" aria-label="Settings & diagnostics" aria-expanded={settingsOpen}>
@@ -530,18 +541,18 @@ function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostS
     );
   }
   return (
-    <section className="wp-context" aria-label="Where you are in Word" aria-live="polite">
+    <section className="wp-context" aria-label={`Where you are in ${props.hostName}`} aria-live="polite">
       <div className="wp-context-doc">
         <FileText size={13} aria-hidden="true" />
         <span className="wp-context-name" title={props.documentName ?? undefined}>{props.documentName ?? "Untitled document"}</span>
         <span className="wp-context-count">{props.wordCount.toLocaleString()} words</span>
         {props.sharedWithAgents ? <span className="wp-context-shared" title="Terminal and MCP agents read this document and your position"><Bot size={11} aria-hidden="true" /> agents</span> : null}
-        {props.stale ? <span className="wp-context-stale" title="Word's text changed; re-reading">syncing…</span> : null}
+        {props.stale ? <span className="wp-context-stale" title={`${props.hostName}'s text changed; re-reading`}>syncing…</span> : null}
       </div>
       <div className="wp-context-where">
         <MapPin size={13} aria-hidden="true" />
         <div>
-          {props.heading ? <strong>{props.heading}</strong> : <strong className="quiet" title="This line shows the section your cursor is in, taken from the nearest Word heading above it. There is none here: text only counts as a heading if it uses a Heading style.">No section heading here</strong>}
+          {props.heading ? <strong>{props.heading}</strong> : <strong className="quiet" title="This line shows the section your cursor is in, taken from the nearest heading above it. There is none here: text only counts as a heading if it uses a Heading style.">No section heading here</strong>}
           <span>{props.position}</span>
         </div>
       </div>
@@ -1127,6 +1138,7 @@ function SuggestionCard(props: {
   const deletion = !suggestion.commentOnly && !isTable && suggestion.kind !== "image" && suggestion.replacement.trim() === "";
   // A table that is changed or deleted has no passage of text to hang a Word comment on.
   const commentable = !isTable || suggestion.table?.action === "insert";
+  const hostName = useContext(HostNameContext);
   const [expanded, setExpanded] = useState(false);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"original" | "revised" | null>(null);
@@ -1236,7 +1248,7 @@ function SuggestionCard(props: {
         {props.revisionOf ? <span className="tag revision" title="Written after your feedback on the earlier suggestion">Revision of {props.revisionOf}</span> : null}
         {suggestion.proposedBy ? <span>{suggestion.proposedBy}</span> : null}
         {suggestion.commentOnly ? <span className="tag">advisory</span> : deletion ? <span className="tag">deletion</span> : isTable ? <span className="tag">table</span> : null}
-        {state.heading ? <span title="Section in Word">§ {state.heading}</span> : null}
+        {state.heading ? <span title={`Section in ${hostName}`}>§ {state.heading}</span> : null}
         {state.paragraphIndex !== null ? <span>¶ {state.paragraphIndex + 1}</span> : null}
         {state.matches !== null && state.matches > 1 ? (
           <span className="wp-match" title="This text appears more than once — pick the occurrence to act on">
@@ -1252,7 +1264,7 @@ function SuggestionCard(props: {
       <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
         <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title="Select this passage in the document"><Crosshair size={13} aria-hidden="true" /> Locate</button>
         {suggestion.commentOnly ? null : (
-          <button type="button" className="primary" onClick={props.onApply} disabled={props.busy || !props.hostReady} title={props.trackChanges === "always" ? "Replace the text as a Word tracked change" : "Replace the text (tracked if Word's Track Changes is on)"}>
+          <button type="button" className="primary" onClick={props.onApply} disabled={props.busy || !props.hostReady} title={hostName !== "Word" ? `Replace the text in ${hostName}` : props.trackChanges === "always" ? "Replace the text as a Word tracked change" : "Replace the text (tracked if Word's Track Changes is on)"}>
             <Replace size={13} aria-hidden="true" /> Apply
           </button>
         )}

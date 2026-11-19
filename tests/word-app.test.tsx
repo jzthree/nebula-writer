@@ -1177,3 +1177,41 @@ describe("A reply still running when the pane was refreshed", () => {
   });
 });
 
+describe("The pane in Google Docs", () => {
+  beforeEach(async () => {
+    const { setDocumentHost, wordDocumentHost } = await import("../src/word/hostBridge");
+    setDocumentHost({
+      ...wordDocumentHost,
+      waitForHost: async (timeoutMs) => {
+        const boot = await wordDocumentHost.waitForHost(timeoutMs);
+        return { ...boot, detail: "Connected to Google Docs.", capabilities: { ...boot.capabilities, hostName: "Google Docs", trackChanges: false } };
+      },
+      detectCapabilities: (host) => ({ ...wordDocumentHost.detectCapabilities(host), hostName: "Google Docs", trackChanges: false })
+    });
+  });
+
+  afterEach(async () => {
+    const { setDocumentHost, wordDocumentHost } = await import("../src/word/hostBridge");
+    setDocumentHost(wordDocumentHost);
+  });
+
+  it("says Google Docs, not Word, in what it tells the author and records", async () => {
+    const { App } = await import("../src/word/App");
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Aims.docx")).toBeInTheDocument());
+    await waitFor(() => expect(captured.catalogFetches.length).toBeGreaterThan(0));
+    expect(screen.getByLabelText("Re-read the document from Google Docs")).toBeInTheDocument();
+    act(() => {
+      mock.selectText(ORIGINAL);
+    });
+    await waitFor(() => expect(screen.getByText(/Selection · 23 words/)).toBeInTheDocument());
+    send("Tighten this.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    await waitFor(() => expect(captured.chat[0]?.content).toContain("[Google Docs pane sent Selection"));
+    fireEvent.click(await screen.findByTitle("Replace the text in Google Docs"));
+    // The stand-in host underneath is Word's, which applies as a tracked change.
+    await waitFor(() => expect(screen.getByText(/^Applied .*Google Docs\.$/)).toBeInTheDocument());
+    expect(screen.queryByText(/in Word/)).toBeNull();
+  });
+});
+

@@ -162,10 +162,10 @@ const CONVERSATION_PAGE_TURNS = 40;
 const RESTORED_TURN_PREFIX = "restored-";
 
 const WORD_PRESETS: WordPreset[] = [
-  { group: "Word", id: "word-paragraph", label: "Tighten this paragraph", scope: "paragraph", instruction: "Tighten the paragraph at my caret: remove hedging and filler, keep every claim, citation, and number exactly, and make each sentence carry one idea." },
-  { group: "Word", id: "word-selection", label: "Polish the selection", scope: "selection", instruction: "Improve the selected text for clarity, flow, and reviewer impact without changing its meaning. Return concise anchored edits." },
-  { group: "Word", id: "word-viewport", label: "Review the visible pages", scope: "viewport", instruction: "Review the pages on my screen as a critical reviewer. Propose the highest-impact edits for clarity, logic, and precision; flag any claim that needs support as an advisory note." },
-  { group: "Word", id: "word-here", label: "What's weak right here?", scope: "paragraph", instruction: "Look at the passage where my caret is and the sentences around it. Point out the single weakest sentence and propose a stronger version; leave everything else alone." }
+  { group: "This document", id: "word-paragraph", label: "Tighten this paragraph", scope: "paragraph", instruction: "Tighten the paragraph at my caret: remove hedging and filler, keep every claim, citation, and number exactly, and make each sentence carry one idea." },
+  { group: "This document", id: "word-selection", label: "Polish the selection", scope: "selection", instruction: "Improve the selected text for clarity, flow, and reviewer impact without changing its meaning. Return concise anchored edits." },
+  { group: "This document", id: "word-viewport", label: "Review the visible pages", scope: "viewport", instruction: "Review the pages on my screen as a critical reviewer. Propose the highest-impact edits for clarity, logic, and precision; flag any claim that needs support as an advisory note." },
+  { group: "This document", id: "word-here", label: "What's weak right here?", scope: "paragraph", instruction: "Look at the passage where my caret is and the sentences around it. Point out the single weakest sentence and propose a stronger version; leave everything else alone." }
 ];
 
 function loadSettings(): PaneSettings {
@@ -252,6 +252,8 @@ export function App() {
   const [hostDetail, setHostDetail] = useState("Connecting to the document…");
   /** Why the last read of the document failed; null once one succeeds. */
   const [readError, setReadError] = useState<string | null>(null);
+  /** The app this pane runs in, for what it tells the author ("Applying in Google Docs…"). */
+  const hostLabel = (): string => capabilitiesRef.current.hostName ?? "Word";
   const readErrorRef = useRef<string | null>(null);
   /** Which document this is, when the host knows that though it cannot read the contents. */
   const [documentIdentity, setDocumentIdentity] = useState<DocumentIdentity | null>(null);
@@ -1157,7 +1159,7 @@ export function App() {
       const sent = summarizeSent(request, resolved.label, snap, currentFocus, hostContext.recentFocus.length, hostContext.outline.length, engine);
       setTurns((current) => current.map((turn) => (turn.id === userTurn.id && turn.role === "user" ? { ...turn, sent } : turn)));
       patchTurn(assistantTurnId, { progress: `Asking ${engine} · ${resolved.label}` });
-      const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[Word pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
+      const userMessage: WriterChatMessage = { id: userTurn.id, role: "user", content: `${activeFocus ? `[About ${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"] ` : ""}${askedText}\n\n[${hostLabel()} pane sent ${sent.scopeLabel} · ${sent.engine}]`, author: request.requestedBy ?? "Word", createdAt: userTurn.at };
       const userMirrored = mirrorChat([userMessage]);
 
       // The sidecar saves this exchange and its reply itself, so a refresh or a
@@ -1625,7 +1627,7 @@ export function App() {
           patchCard(other.id, { matches: null });
         }
       }
-      await Promise.all(applied.map((entry) => recordDecision(entry.suggestion, "accepted", entry.trackedChange ? "Applied in Word as a tracked change" : "Applied in Word")));
+      await Promise.all(applied.map((entry) => recordDecision(entry.suggestion, "accepted", entry.trackedChange ? `Applied in ${hostLabel()} as a tracked change` : `Applied in ${hostLabel()}`)));
     }
     return { applied: applied.map((entry) => entry.suggestion), failed };
   }, [patchCard, preferredOffset, recordDecision]);
@@ -1636,11 +1638,13 @@ export function App() {
       return;
     }
     setActiveId(suggestion.id);
-    void runBusy("Applying in Word…", async () => {
+    void runBusy(`Applying in ${hostLabel()}…`, async () => {
       const { applied, failed } = await applyMany([suggestion], snap);
       if (applied.length) {
         const detail = cardsRef.current[suggestion.id]?.detail ?? "";
-        showNotice("success", detail.startsWith("tracked") ? "Applied as a tracked change — review it in Word." : "Applied directly (Word's Track Changes is off).");
+        showNotice("success", detail.startsWith("tracked")
+          ? `Applied as a tracked change — review it in ${hostLabel()}.`
+          : hostLabel() === "Word" ? "Applied directly (Word's Track Changes is off)." : `Applied in ${hostLabel()}.`);
       } else {
         showNotice("error", failed[0]?.error ?? "Could not apply this suggestion.");
       }
@@ -1657,10 +1661,10 @@ export function App() {
     if (!candidates.length) {
       return;
     }
-    void runBusy(`Applying ${candidates.length} change${candidates.length === 1 ? "" : "s"} in Word…`, async () => {
+    void runBusy(`Applying ${candidates.length} change${candidates.length === 1 ? "" : "s"} in ${hostLabel()}…`, async () => {
       const snap = (await refreshSnapshot()) ?? snapshotRef.current;
       if (!snap) {
-        showNotice("error", "Could not read the document from Word.");
+        showNotice("error", `Could not read the document from ${hostLabel()}.`);
         return;
       }
       setActiveId(candidates[0].id);
@@ -1702,7 +1706,7 @@ export function App() {
 
   const dismiss = useCallback((suggestion: AiSuggestion) => {
     patchCard(suggestion.id, { outcome: "dismissed", detail: null, error: null });
-    void recordDecision(suggestion, "rejected", "Dismissed in the Word pane");
+    void recordDecision(suggestion, "rejected", `Dismissed in the ${hostLabel()} pane`);
   }, [patchCard, recordDecision]);
 
   const restore = useCallback((suggestion: AiSuggestion) => {
@@ -1721,7 +1725,7 @@ export function App() {
       return;
     }
     setActiveId(suggestion.id);
-    void runBusy("Reverting in Word…", async () => {
+    void runBusy(`Reverting in ${hostLabel()}…`, async () => {
       const latest = (await refreshSnapshot()) ?? snap;
       try {
         // Applied as tracked changes that are still there: reject them, as Word's Reject would.
@@ -1749,7 +1753,7 @@ export function App() {
       }
       lastPushedTextRef.current = null;
       // The sidecar first: until it knows, a pending card with an accepted suggestion reads as decided elsewhere.
-      await recordDecision(suggestion, "pending", "Applied, then reverted in Word");
+      await recordDecision(suggestion, "pending", `Applied, then reverted in ${hostLabel()}`);
       patchCard(suggestion.id, { outcome: null, detail: REVERTED_DETAIL, error: null, matches: null, revisions: null });
       showNotice("success", "Reverted — the original text is back. The suggestion is pending again.");
       await refreshSnapshot();
@@ -1815,7 +1819,7 @@ export function App() {
   const clearConversation = useCallback(() => {
     for (const suggestion of suggestionsRef.current) {
       if (!cardsRef.current[suggestion.id]?.outcome) {
-        void recordDecision(suggestion, "rejected", "Cleared from the Word pane");
+        void recordDecision(suggestion, "rejected", `Cleared from the ${hostLabel()} pane`);
       }
     }
     setTurns([]);
@@ -2004,7 +2008,7 @@ export function App() {
   const capabilityRows = useMemo<CapabilityRow[]>(() => [
     { label: `${capabilities.hostName ?? "Word"} host`, ok: capabilities.host, detail: capabilities.host ? `${capabilities.platform ?? "desktop"}${capabilities.officeVersion ? ` · Office ${capabilities.officeVersion}` : ""}` : hostDetail },
     { label: "Tracked changes & comments", ok: capabilities.trackChanges && capabilities.comments, detail: capabilities.trackChanges ? "WordApi 1.4" : capabilities.hostName === "Google Docs" ? "Google Docs applies edits directly — turn on change highlighting below" : "Needs WordApi 1.4 (update Word)" },
-    { label: "Viewport (pages on screen)", ok: capabilities.viewport, detail: capabilities.viewport ? "WordApiDesktop 1.2" : "Not available in this Word build — caret and selection still work" },
+    { label: "Viewport (pages on screen)", ok: capabilities.viewport, detail: capabilities.viewport ? "WordApiDesktop 1.2" : capabilities.hostName === "Word" || !capabilities.hostName ? "Not available in this Word build — caret and selection still work" : `${capabilities.hostName} does not report the pages on screen — caret and selection still work` },
     { label: "Selection events", ok: capabilities.selectionEvents, detail: capabilities.selectionEvents ? "Live caret tracking" : "Polling only" },
     { label: "Paragraph events", ok: capabilities.paragraphEvents, detail: capabilities.paragraphEvents ? "WordApi 1.6 — re-reads on edits" : "Polling every 20 s" },
     { label: "Writer sidecar", ok: sidecarStatus === "ok", detail: sidecarDetail },
@@ -2099,7 +2103,7 @@ export function App() {
         lastPushedTextRef.current = null;
         void runBusy("Re-reading the document…", async () => {
           await refreshSnapshot({ full: true });
-          showNotice("info", "Document re-read from Word.");
+          showNotice("info", `Document re-read from ${hostLabel()}.`);
         });
       }}
       pendingCount={pendingSuggestions.length}

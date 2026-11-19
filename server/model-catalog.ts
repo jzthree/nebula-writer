@@ -28,7 +28,7 @@ import { cliVersion } from "./cli-version";
 import { resolveCliCommand, type CliProviderName } from "./cli-runtime";
 
 const CATALOG_TTL_MS = 10 * 60 * 1000;
-const COMMAND_TIMEOUT_MS = 12_000;
+const COMMAND_TIMEOUT_MS = 30_000;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,79}$/;
 const REASONING_ID_PATTERN = /^[a-z][a-z0-9_-]{0,23}$/;
 const CLAUDE_MODEL_ID = /claude-(?:fable|opus|sonnet|haiku)-\d+(?:-\d{1,2}(?!\d))?(?:-\d{8})?/g;
@@ -397,6 +397,26 @@ export interface CatalogDiscoveryOptions {
   home?: string;
 }
 
+const EMPTY_CATALOG_TTL_MS = 30 * 1000;
+
+/**
+ * A refresh that found no models (a slow or failing CLI, a busy machine) keeps
+ * the last list it had rather than leaving only "Default model": the models
+ * a CLI offers rarely change, and the note says the list was not refreshed.
+ */
+export function keepLastGoodModels(fresh: AiProviderCatalog, previous: AiProviderCatalog | null): AiProviderCatalog {
+  if (!fresh.available || fresh.models.length || !previous?.models.length) {
+    return fresh;
+  }
+  return {
+    ...fresh,
+    models: previous.models,
+    reasoning: fresh.reasoning ?? previous.reasoning,
+    defaults: fresh.defaults.model || fresh.defaults.reasoning ? fresh.defaults : previous.defaults,
+    notes: [...fresh.notes, `Showing the model list from ${previous.discoveredAt}: this refresh found none.`]
+  };
+}
+
 interface CacheEntry {
   key: string;
   at: number;
@@ -421,7 +441,9 @@ export async function getProviderCatalog(provider: CliProviderName, options: Cat
   const version = resolved.path ? await cliVersion(resolved.path) : null;
   const key = cacheKey(resolved.path, version);
   const cached = cache.get(provider);
-  if (cached && cached.key === key && !options.refresh && Date.now() - cached.at < CATALOG_TTL_MS) {
+  // An empty list (the CLI did not answer in time, or failed) is retried soon, not kept for the full TTL.
+  const ttl = cached?.catalog.models.length ? CATALOG_TTL_MS : EMPTY_CATALOG_TTL_MS;
+  if (cached && cached.key === key && !options.refresh && Date.now() - cached.at < ttl) {
     return cached.catalog;
   }
   const pending = inflight.get(provider);
@@ -438,8 +460,9 @@ export async function getProviderCatalog(provider: CliProviderName, options: Cat
         : provider === "antigravity"
           ? await discoverAntigravity(resolved.command, resolved.path, version, env, home)
           : await discoverCodex(resolved.command, resolved.path, version, env, home);
-    cache.set(provider, { key, at: Date.now(), catalog });
-    return catalog;
+    const kept = keepLastGoodModels(catalog, cache.get(provider)?.catalog ?? null);
+    cache.set(provider, { key, at: Date.now(), catalog: kept });
+    return kept;
   })();
   inflight.set(provider, task);
   try {

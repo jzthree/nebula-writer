@@ -238,7 +238,31 @@ function isExecutable(path: string): boolean {
   }
 }
 
+/**
+ * Lookups are cached briefly: each one starts a shell synchronously, and the
+ * health check and every request ask for all CLIs, which on a loaded machine
+ * held up everything else the server was doing. A cached path is used only
+ * while it still exists.
+ */
+const COMMAND_PATH_TTL_MS = 30_000;
+const commandPathCache = new Map<string, { path: string | null; at: number }>();
+
 function commandPath(command: string): string | null {
+  const key = `${command}\0${process.env.PATH ?? ""}`;
+  const cached = commandPathCache.get(key);
+  if (cached && Date.now() - cached.at < COMMAND_PATH_TTL_MS && (cached.path === null || isExecutable(cached.path))) {
+    return cached.path;
+  }
+  const path = lookUpCommandPath(command);
+  commandPathCache.set(key, { path, at: Date.now() });
+  return path;
+}
+
+export function clearCommandPathCache(): void {
+  commandPathCache.clear();
+}
+
+function lookUpCommandPath(command: string): string | null {
   // The sidecar's own PATH wins (the launchd wrapper and a terminal both set
   // it deliberately); a login shell is only a fallback for sparse
   // environments. A login shell re-sources the user's profile and can reorder
