@@ -30,7 +30,7 @@ const ORIGINAL = "Chromatin accessibility is actually a very important determina
 const REPLACEMENT = "Chromatin accessibility is a key determinant of gene regulation, and many studies have examined it.";
 
 // Detached runs a reopened pane picks up: run id → the result the sidecar holds.
-const runs = vi.hoisted(() => ({ results: new Map<string, unknown>(), Gone: class RunGoneError extends Error {} }));
+const runs = vi.hoisted(() => ({ results: new Map<string, unknown>(), Gone: class RunGoneError extends Error {}, stopped: new Map<string, () => void>() }));
 
 // The saved conversation: the real store, in memory, behind the client calls.
 const sessionFetch = vi.hoisted(() => ({ hold: false, release: null as null | ((payload: unknown) => void), onUpdated: null as null | (() => void), onProgress: null as null | ((progress: unknown, queue: unknown[]) => void) }));
@@ -103,7 +103,7 @@ vi.mock("../src/word/writerClient", () => ({
   },
   fetchImageAsBase64: async () => "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   RunGoneError: runs.Gone,
-  stopWordRun: async (runId: string) => { captured.stops.push(runId); },
+  stopWordRun: async (runId: string) => { captured.stops.push(runId); runs.stopped.get(runId)?.(); },
   awaitWordRun: async (runId: string) => {
     const pending = runs.results.get(runId);
     if (!pending) throw new runs.Gone("Writer has no record of this run.");
@@ -113,8 +113,19 @@ vi.mock("../src/word/writerClient", () => ({
     captured.steers.push({ runId, text });
     return captured.steerOk ? { ok: true } : { ok: false, reason: "not-steerable" };
   },
-  requestWordSuggestions: async (request: WordLiveSuggestionRequest, options: { signal?: AbortSignal } = {}) => {
+  requestWordSuggestions: async (request: WordLiveSuggestionRequest, options: { signal?: AbortSignal; onAccepted?: () => void } = {}) => {
     captured.requests.push(request);
+    if (request.instruction.startsWith("Stoppable:")) {
+      // A detached run that stages one suggestion, then runs until it is stopped and answers with what it kept.
+      options.onAccepted?.();
+      await new Promise<void>((resolve) => runs.stopped.set(request.runId!, resolve));
+      const kept: AiSuggestion = { id: "kept-1", title: "Kept after Stop", original: ORIGINAL, replacement: REPLACEMENT, rationale: "Proposed before the stop.", confidence: 0.8, target: "global", range: null, status: "pending" };
+      return {
+        ai: { message: "Stopped. The 1 suggestion proposed before you stopped is kept.", provider: request.provider, suggestions: [kept], agentSessionId: null, activity: [] },
+        session: { id: "word-session" },
+        sessionReused: false
+      } as unknown as Awaited<ReturnType<typeof import("../src/word/writerClient").requestWordSuggestions>>;
+    }
     if (request.instruction.startsWith("Slow:")) {
       // A request that takes a while, so a second message can be typed meanwhile.
       await new Promise<void>((resolve, reject) => {
@@ -276,6 +287,7 @@ beforeEach(async () => {
   captured.steers = [];
   captured.stops = [];
   runs.results.clear();
+  runs.stopped.clear();
   captured.steerOk = true;
   captured.imageUploads = [];
   captured.contextPushes = [];
@@ -1193,6 +1205,16 @@ describe("A reply still running when the pane was refreshed", () => {
     fireEvent.click(screen.getByLabelText(/^Stop/));
     await waitFor(() => expect(captured.stops).toEqual([captured.requests[0].runId]));
     await waitFor(() => expect(screen.getByText("Stopped.")).toBeInTheDocument());
+  });
+
+  it("keeps the suggestions a stopped run had already proposed", async () => {
+    await renderPane();
+    send("Stoppable: review everything.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    fireEvent.click(screen.getByLabelText(/^Stop/));
+    await waitFor(() => expect(screen.getByText(/proposed before you stopped is kept/)).toBeInTheDocument());
+    expect(screen.getAllByText("Kept after Stop").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Stopped.")).toBeNull();
   });
 });
 

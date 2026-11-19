@@ -861,6 +861,11 @@ export function App() {
   // Latest stage of the AI request this tab is waiting on: pushed over the
   // /events socket as it changes, with GET /api/ai/progress as the fallback.
   const [aiDrafts, setAiDrafts] = useState<AiSuggestion[]>([]);
+  // The drafts as last shown, for Stop to keep.
+  const aiDraftsRef = useRef<AiSuggestion[]>([]);
+  aiDraftsRef.current = aiDrafts;
+  /** What the running request asked, so a stopped one can still take its drafts in as a reply. */
+  const aiRunRequestRef = useRef<Parameters<typeof receiveAiResponse>[1] | null>(null);
   const liveAiProgressRef = useRef<{ stage: string; passIndex: number | null; passTotal: number | null; startedAt: string } | null>(null);
   const [remoteAiProgress, setRemoteAiProgress] = useState<{ provider: string; requestedBy: string | null; stage: string } | null>(null);
   const [remoteAiQueue, setRemoteAiQueue] = useState<Array<{ provider: string; requestedBy: string | null }>>([]);
@@ -4432,6 +4437,13 @@ export function App() {
       };
       // Personal runner: their own CLI account, with staging left to the
       // cloud session (recordWriterSuggestions) instead of the local one.
+      aiRunRequestRef.current = {
+        instruction: trimmedInstruction,
+        mode: activeScope,
+        provider,
+        routineIntent: loadedRoutineIntent,
+        sequenceRoutineId: loadedSequenceRoutineId
+      };
       const response = localAiActiveRef.current
         ? await requestLocalAiSuggestion({ ...aiRequest, stageSuggestions: false }, { signal: controller.signal })
         : await requestAiSuggestion(aiRequest, { signal: controller.signal });
@@ -4547,6 +4559,19 @@ export function App() {
     aiAbortControllerRef.current = null;
     aiRequestInFlightRef.current = false;
     setBusy(null);
+    // What it had already proposed was on screen as drafts: stopping keeps them.
+    const drafts = aiDraftsRef.current;
+    const request = aiRunRequestRef.current;
+    aiRunRequestRef.current = null;
+    setAiDrafts([]);
+    if (drafts.length && request) {
+      receiveAiResponse({
+        provider: request.provider,
+        message: `Stopped. The ${drafts.length} suggestion${drafts.length === 1 ? "" : "s"} proposed before you stopped ${drafts.length === 1 ? "is" : "are"} kept.`,
+        suggestions: drafts
+      }, request);
+      return;
+    }
     appendMessage("system", "Stopped the in-flight AI request. You can revise the prompt and send a new one.");
   }
 

@@ -530,7 +530,10 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const suggestions = [...run.staged];
-    if (suggestions.length && !options.signal?.aborted) {
+    if (suggestions.length && options.signal?.aborted) {
+      return { ...stoppedResponse(provider, suggestions), activity: [...run.activity], agentSessionId: request.agentSessionId ?? null };
+    }
+    if (suggestions.length) {
       return {
         provider,
         message: `The ${provider} agent stopped early (${formatCliDiagnostic(rawMessage)}), but the ${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"} it staged ${suggestions.length === 1 ? "is" : "are"} kept.${cliFailureGuidance(rawMessage)}`,
@@ -831,6 +834,9 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
       ? `The document has ${request.documentTables!.length} table${request.documentTables!.length === 1 ? "" : "s"}: ${request.documentTables!.map((table) => documentTableLabel(table)).join("; ")}. writer_list_tables gives their cells as grids; writer_stage_table_edit inserts a new table, rewrites one (pass the complete new grid — Writer applies only the difference: changed cells, added/removed rows and columns) or deletes one.`
       : "To add a table (budgets, timelines, comparisons), call writer_stage_table_edit with action \"insert\".",
     "",
+    ...(resolveToolAccess(request) === "full"
+      ? ["Your reply ends the run: commands still running in the background are stopped when you reply, and nothing you do after it reaches the user. Wait for any command whose result you need before replying."]
+      : []),
     "When finished, write a short reply that organizes what you staged. Format: a line starting with `## ` opens a section (e.g. `## Significance`, `## Aim 2 approach`); one or two plain sentences of context; then each suggestion's ref from writer_stage_suggestions on its own line, like `[S3]`, in the order the user should review them. The user's pane shows each suggestion card exactly where you place it and offers Apply-all per section, so reference every staged suggestion once and do not repeat the suggestion text. If nothing was safe to stage, say why in 1-2 sentences.",
     "",
     "User request:",
@@ -839,19 +845,21 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
 }
 
 async function oneShotCliProvider(provider: CliProviderName, request: AiRequest, options: AiRunOptions = {}): Promise<AiResponse> {
+  let reporter: OneShotProgressReporter | null = null;
   try {
     throwIfAborted(provider, options.signal);
     if (shouldUseCoveragePasses(request)) {
       return await runCoveragePasses(provider, request, options);
     }
     setAiProgress(provider, `Starting ${providerLabel(provider)}`, undefined, request.requestedBy ?? null);
-    const reporter = createOneShotProgressReporter(provider, request);
+    const passReporter = createOneShotProgressReporter(provider, request);
+    reporter = passReporter;
     let threadId: string | null = null;
     const onStreamEvent = (event: CliStreamEvent) => {
       if (event.kind === "session") {
         threadId = event.sessionId;
       }
-      reporter(event);
+      passReporter(event);
     };
     // Codex keeps a thread per conversation (Claude's one-shot mode has no
     // resume; its agentic engine resumes sessions instead).
@@ -912,6 +920,9 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     }
     return provider === "codex" ? { ...response, agentSessionId: threadId ?? resumeId } : response;
   } catch (error) {
+    if (options.signal?.aborted && reporter?.drafts.length) {
+      return stoppedResponse(provider, [...reporter.drafts]);
+    }
     const rawMessage = error instanceof Error ? error.message : String(error);
     const message = formatCliDiagnostic(rawMessage);
     const guidance = cliFailureGuidance(rawMessage);
@@ -1314,7 +1325,11 @@ async function runCoveragePasses(provider: CliProviderName, request: AiRequest, 
   let failedChunk: DocumentCoverageChunk | null = null;
   let failureMessage = "";
 
+  let passReporter: OneShotProgressReporter | null = null;
   for (const chunk of chunks) {
+    if (options.signal?.aborted && responses.length) {
+      break;
+    }
     throwIfAborted(provider, options.signal);
     const pass = { index: chunk.index, total: chunk.total };
     setAiProgress(provider, `Starting ${providerLabel(provider)}`, pass, request.requestedBy ?? null);
@@ -1326,13 +1341,19 @@ async function runCoveragePasses(provider: CliProviderName, request: AiRequest, 
       const result = await runCli(
         provider,
         buildCliPrompt(chunkRequest, { coveragePass: chunk }),
-        { ...options, onStreamEvent: createOneShotProgressReporter(provider, request, pass), toolAccess: resolveToolAccess(request) },
+        { ...options, onStreamEvent: (passReporter = createOneShotProgressReporter(provider, request, pass)), toolAccess: resolveToolAccess(request) },
         request.modelOptions ?? null
       );
       responses.push(parseCliProgressedResponse(provider, result, chunkRequest));
     } catch (error) {
-      if (options.signal?.aborted || !responses.length) {
-        // Nothing salvageable (or the user interrupted) — let the caller report the failure.
+      if (options.signal?.aborted) {
+        // Stopped: keep the finished passes and what this pass had already proposed.
+        const kept = [...mergeCoverageResponses(provider, chunks, responses, requestedSuggestionLimit(request)).suggestions, ...(passReporter?.drafts ?? [])];
+        if (!kept.length) throw error;
+        return stoppedResponse(provider, kept);
+      }
+      if (!responses.length) {
+        // Nothing salvageable — let the caller report the failure.
         throw error;
       }
       // Keep the completed passes instead of discarding minutes of work, and
@@ -1344,6 +1365,9 @@ async function runCoveragePasses(provider: CliProviderName, request: AiRequest, 
   }
 
   const merged = mergeCoverageResponses(provider, chunks, responses, requestedSuggestionLimit(request));
+  if (options.signal?.aborted) {
+    return stoppedResponse(provider, merged.suggestions);
+  }
   if (failedChunk) {
     merged.message = `${merged.message} Heads up: coverage pass ${failedChunk.index} of ${failedChunk.total} failed (${formatCliDiagnostic(failureMessage)}), so these suggestions only cover roughly the first ${Math.round((failedChunk.start / Math.max(1, failedChunk.totalLength)) * 100)}% of the document.${cliFailureGuidance(failureMessage)}`;
   }
@@ -1694,6 +1718,20 @@ function runCliCommand(
   });
 }
 
+/**
+ * What a run stopped by the author returns: the suggestions it had already
+ * proposed. They showed up as drafts while it ran, so stopping keeps them
+ * rather than throwing away work the author already saw.
+ */
+function stoppedResponse(provider: CliProviderName, suggestions: AiSuggestion[]): AiResponse {
+  const count = suggestions.length;
+  return {
+    provider,
+    message: `Stopped. The ${count} suggestion${count === 1 ? "" : "s"} proposed before you stopped ${count === 1 ? "is" : "are"} kept.`,
+    suggestions
+  };
+}
+
 function throwIfAborted(provider: CliProviderName, signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new Error(`${provider} request was interrupted.`);
@@ -1959,11 +1997,16 @@ function formatCharCount(chars: number): string {
  * republished when it changes, and streamed-output counts are throttled so
  * the websocket is not flooded by per-token deltas.
  */
+type OneShotProgressReporter = ((event: CliStreamEvent) => void) & {
+  /** The suggestions read from the stream so far: what the author sees arrive as drafts. */
+  drafts: AiSuggestion[];
+};
+
 function createOneShotProgressReporter(
   provider: CliProviderName,
   request: AiRequest,
   pass?: { index: number; total: number }
-): (event: CliStreamEvent) => void {
+): OneShotProgressReporter {
   const requestedBy = request.requestedBy ?? null;
   const label = providerLabel(provider);
   let lastStage = "";
@@ -1976,7 +2019,7 @@ function createOneShotProgressReporter(
     lastStage = stage;
     setAiProgress(provider, stage, pass, requestedBy, tool);
   };
-  return (event) => {
+  const report = (event: CliStreamEvent) => {
     switch (event.kind) {
       case "status":
         publish(event.stage === "connected" ? `${label} is reading the document` : event.detail ?? capitalizeFirst(event.stage));
@@ -2016,6 +2059,7 @@ function createOneShotProgressReporter(
         break;
     }
   };
+  return Object.assign(report, { drafts });
 }
 
 interface CliStreamObserver {

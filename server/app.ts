@@ -1145,9 +1145,10 @@ export function createWriterApp() {
         void (async () => {
           try {
             const payload = await suggestForWordPane(parsed.request, run.signal);
-            if (run.signal.aborted) {
+            if (run.signal.aborted && !payload.ai.suggestions.length) {
               throw new Error("Stopped.");
             }
+            // Stopped after proposing something: the reply keeps those suggestions.
             detachedRuns.finish(runId, { status: "done", result: payload });
             if (record) saveFinishedRun(record, payload);
           } catch (error) {
@@ -1933,7 +1934,7 @@ async function suggestForWordPane(request: WordLiveSuggestionRequest, signal: Ab
   if (undeliveredSteers.length) {
     ai.undeliveredSteers = undeliveredSteers;
   }
-  if (!signal.aborted) {
+  if (!signal.aborted || ai.suggestions.length) {
     activeWriterSession = {
       ...baseSession,
       suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, baseSession.suggestions), ai.suggestions, request.requestedBy ?? "Word"),

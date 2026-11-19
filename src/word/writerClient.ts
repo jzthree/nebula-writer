@@ -36,14 +36,16 @@ export async function fetchHealth(): Promise<HealthResponse> {
  * comes back does, with awaitWordRun). Aborting `signal` only stops waiting;
  * stopWordRun stops the run.
  */
-export async function requestWordSuggestions(request: WordLiveSuggestionRequest, options: { signal?: AbortSignal } = {}): Promise<WordLiveSuggestionResponse> {
-  const response = await fetchWordLiveSuggestionsFromSidecar(API_BASE, { ...request, detach: true }, options);
+export async function requestWordSuggestions(request: WordLiveSuggestionRequest, options: { signal?: AbortSignal; onAccepted?: () => void } = {}): Promise<WordLiveSuggestionResponse> {
+  const response = await fetchWordLiveSuggestionsFromSidecar(API_BASE, { ...request, detach: true }, { signal: options.signal });
   if (!response.ok) {
     throw new Error(await readError(response));
   }
   const body = await readJson<WordLiveSuggestionResponse | AiRunAccepted>(response);
   // A sidecar from before detached runs answers with the result itself.
-  return "ai" in body ? body : awaitWordRun(body.runId, options);
+  if ("ai" in body) return body;
+  options.onAccepted?.();
+  return awaitWordRun(body.runId, { signal: options.signal });
 }
 
 /** The run is unknown to the sidecar: it restarted while the run went on, or the result expired. */

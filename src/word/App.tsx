@@ -134,6 +134,8 @@ const SNAPSHOT_POLL_MS = 20_000;
 const SNAPSHOT_STALE_THROTTLE_MS = 3_000;
 const CONTEXT_PUSH_DEBOUNCE_MS = 700;
 const HEALTH_POLL_MS = 30_000;
+/** After Stop, how long to wait for the run's last answer (with what it kept) before giving up on it. */
+const STOP_ANSWER_WAIT_MS = 20_000;
 const MAX_TURNS = 200;
 
 /** Card detail of a pending card the user applied and then reverted. */
@@ -315,6 +317,10 @@ export function App() {
   const requestBackgroundSnapshotRef = useRef<() => void>(() => undefined);
   /** Run id of the request in flight (mid-turn steering addresses it). */
   const runIdRef = useRef<string | null>(null);
+  /** Stop was pressed: the run is ending on the sidecar, and its last answer (what it kept) is on the way. */
+  const stoppingRef = useRef(false);
+  /** The sidecar has the run (it answered the request, or the pane picked the run up again). */
+  const runAcceptedRef = useRef(false);
   /** The selection the running request went out with (a steered message names a newer one). */
   const sentSelectionRef = useRef<SelectionContext | null>(null);
   const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
@@ -990,13 +996,32 @@ export function App() {
     return [providerLabel(provider), modelText, reasoningText].filter(Boolean).join(" · ");
   }, []);
 
-  /** Stop the running reply: on the sidecar (a closed connection no longer does), and the wait here. */
+  /**
+   * Stop the running reply. The sidecar ends the run and answers with the
+   * suggestions it had already proposed, so the wait here goes on for that
+   * answer; it gives up only if none comes (an older sidecar, a lost run).
+   */
   function stopActiveRun(): void {
     const runId = runIdRef.current;
-    if (runId) {
-      void stopWordRun(runId);
+    const controller = abortRef.current;
+    if (!runId || !controller || !runAcceptedRef.current) {
+      // Not running on the sidecar yet: nothing to wait for.
+      if (runId) void stopWordRun(runId);
+      controller?.abort();
+      return;
     }
-    abortRef.current?.abort();
+    if (stoppingRef.current) {
+      return;
+    }
+    stoppingRef.current = true;
+    const turnId = runningTurnRef.current;
+    if (turnId) {
+      patchTurn(turnId, { progress: "Stopping — keeping what it already proposed…" });
+    }
+    void stopWordRun(runId);
+    setTimeout(() => {
+      if (abortRef.current === controller) controller.abort();
+    }, STOP_ANSWER_WAIT_MS);
   }
 
   /** Take a finished run's result into the pane: its suggestions, the reply, the CLI session. */
@@ -1043,6 +1068,7 @@ export function App() {
     }
     runningRef.current = true;
     runIdRef.current = turn.runId;
+    runAcceptedRef.current = true;
     runningTurnRef.current = turn.id;
     setRequestState("running");
     const controller = new AbortController();
@@ -1057,7 +1083,7 @@ export function App() {
       const { fresh } = applyRunResponse(response, { turnId: turn.id, provider, engine: turn.engine, sessionKey: `${provider}:${label}` });
       setRequestState(fresh.length ? "done" : "empty");
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || stoppingRef.current) {
         patchTurn(turn.id, { text: "Stopped.", status: "error", progress: null });
         setRequestState("idle");
       } else {
@@ -1069,6 +1095,8 @@ export function App() {
       runningTurnRef.current = null;
       runningRef.current = false;
       runIdRef.current = null;
+      stoppingRef.current = false;
+      runAcceptedRef.current = false;
       const next = queuedRef.current;
       if (next) {
         queuedRef.current = null;
@@ -1172,7 +1200,7 @@ export function App() {
         ? { key, userTurn: { ...userTurn, sent }, replyTurn: { ...replyTurn, progress: null }, proposedBy: providerLabel(provider) }
         : undefined;
       reachedAi = true;
-      const response = await requestWordSuggestions({ ...request, ...(record ? { record } : {}) }, { signal: controller.signal });
+      const response = await requestWordSuggestions({ ...request, ...(record ? { record } : {}) }, { signal: controller.signal, onAccepted: () => { runAcceptedRef.current = true; } });
       if (controller.signal.aborted) {
         return;
       }
@@ -1183,7 +1211,7 @@ export function App() {
       // The first request creates the session, so the author's turn may not have had one to land in yet.
       mirrorChat(userMirrored ? [assistantMessage] : [userMessage, assistantMessage]);
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || stoppingRef.current) {
         patchTurn(assistantTurnId, { text: "Stopped.", status: "error", progress: null });
         setRequestState("idle");
       } else {
@@ -1202,6 +1230,8 @@ export function App() {
       runningTurnRef.current = null;
       runningRef.current = false;
       runIdRef.current = null;
+      stoppingRef.current = false;
+      runAcceptedRef.current = false;
       const next = queuedRef.current;
       if (next) {
         queuedRef.current = null;

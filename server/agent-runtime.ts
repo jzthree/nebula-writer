@@ -42,6 +42,8 @@ function codeRoot(): string {
   }
 }
 
+/** How long a CLI may take to exit by itself after its final answer. */
+export const AFTER_RESULT_GRACE_MS = 5_000;
 const KILL_GRACE_MS = 500;
 
 const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
@@ -82,6 +84,8 @@ export interface AgentTurnOptions {
   toolAccess?: AiToolAccess | null;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** After the final answer, how long the CLI may take to exit before Writer ends it (AFTER_RESULT_GRACE_MS). */
+  afterResultGraceMs?: number;
   onEvent?: (event: AgentEvent) => void;
   /** Client run id: a steerable turn (Claude) registers under it for POST /api/ai/steer. */
   runId?: string | null;
@@ -339,6 +343,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
       let stdoutBuffer = "";
       let stderr = "";
       let timeoutTimer: NodeJS.Timeout | undefined;
+      let afterResultTimer: NodeJS.Timeout | undefined;
       let abortHandler: (() => void) | null = null;
       let unregisterSteer: () => void = () => undefined;
 
@@ -365,6 +370,9 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
         unregisterSteer();
         if (timeoutTimer) {
           clearTimeout(timeoutTimer);
+        }
+        if (afterResultTimer) {
+          clearTimeout(afterResultTimer);
         }
         if (abortHandler && options.signal) {
           options.signal.removeEventListener("abort", abortHandler);
@@ -406,6 +414,15 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
             if (event.kind === "result" && !resultSeen) {
               resultSeen = true;
               proc.endInput();
+              // The answer is in. A CLI that stays up after it (Claude Code waits
+              // for background commands the agent started, then answers again)
+              // would leave the author watching a finished reply as "drafting".
+              afterResultTimer = setTimeout(() => {
+                if (settled) return;
+                proc.abort();
+                const outcome = parser.outcome();
+                finish(() => resolvePromise({ ok: outcome.ok, text: outcome.text, cost: outcome.cost, sessionId: outcome.sessionId, provider: options.provider }));
+              }, options.afterResultGraceMs ?? AFTER_RESULT_GRACE_MS);
             }
             onEvent(event);
           }
