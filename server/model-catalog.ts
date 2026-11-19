@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AiModelChoice, AiModelOptions, AiProviderCatalog, AiReasoningChoice, LocalAiProviderName } from "../src/shared";
 import { resolveWriterCliHome } from "./cli-home";
+import { cliVersion } from "./cli-version";
 import { resolveCliCommand, type CliProviderName } from "./cli-runtime";
 
 const CATALOG_TTL_MS = 10 * 60 * 1000;
@@ -417,7 +418,7 @@ export async function getProviderCatalogs(options: CatalogDiscoveryOptions = {})
 
 export async function getProviderCatalog(provider: CliProviderName, options: CatalogDiscoveryOptions = {}): Promise<AiProviderCatalog> {
   const resolved = resolveCliCommand(provider);
-  const version = resolved.path ? commandVersion(resolved.path) : null;
+  const version = resolved.path ? await cliVersion(resolved.path) : null;
   const key = cacheKey(resolved.path, version);
   const cached = cache.get(provider);
   if (cached && cached.key === key && !options.refresh && Date.now() - cached.at < CATALOG_TTL_MS) {
@@ -700,34 +701,6 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
       resolvePromise(String(stdout));
     });
   });
-}
-
-const versionCache = new Map<string, { key: string; version: string | null }>();
-
-function commandVersion(path: string): string | null {
-  let key = path;
-  try {
-    const real = realpathSync(path);
-    const stat = statSync(real);
-    key = `${real}|${stat.size}|${Math.round(stat.mtimeMs)}`;
-  } catch {
-    // Fall through with the plain path as the key.
-  }
-  const cached = versionCache.get(path);
-  if (cached && cached.key === key) {
-    return cached.version;
-  }
-  let version: string | null = null;
-  try {
-    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-    const output = execFileSync(path, ["--version"], { encoding: "utf8", timeout: 8_000, stdio: ["ignore", "pipe", "pipe"] });
-    const line = output.split(/\r?\n/).find((part) => /\d+\.\d+/.test(part));
-    version = line ? line.trim() : null;
-  } catch {
-    version = null;
-  }
-  versionCache.set(path, { key, version });
-  return version;
 }
 
 function errorMessage(error: unknown): string {

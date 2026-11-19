@@ -618,6 +618,8 @@ window.addEventListener("message", (event) => {
   }
   const data = event.data as { nebula?: string; id?: string; fn?: string; args?: unknown[] };
   if (data.nebula === "pane-ready") {
+    paneConnected = true;
+    clearUnreachable();
     announce();
     return;
   }
@@ -643,13 +645,77 @@ window.addEventListener("message", (event) => {
     .catch((error: unknown) => reply({ ok: false, error: error instanceof Error ? error.message : String(error) }));
 });
 
-frame.addEventListener("load", announce);
-frame.src = `${PANE_ORIGIN}/gdocs/pane.html`;
-setTimeout(() => {
-  if (!announced) {
-    showNotice(`<p><strong>Writer is not reachable.</strong></p><p>Start the Nebula Writer sidecar on this computer (it serves the pane at <code>${PANE_ORIGIN}/gdocs/pane.html</code>), then reopen this panel.</p>`);
+/* ------------------------------------------------------------------------- */
+/* Getting the pane up, and saying why when it is not                        */
+/* ------------------------------------------------------------------------- */
+
+const PANE_URL = `${PANE_ORIGIN}/gdocs/pane.html`;
+/** The pane said it is running (it repeats "pane-ready" until this panel answers). */
+let paneConnected = false;
+let unreachableShown = false;
+let paneAttempts = 0;
+let frameSetAt = Date.now();
+let frameLoaded = false;
+let serverWasDown = false;
+const PANE_STUCK_MS = 20_000;
+
+function loadPane(): void {
+  paneAttempts += 1;
+  frameSetAt = Date.now();
+  frameLoaded = false;
+  frame.src = paneAttempts > 1 ? `${PANE_URL}?attempt=${paneAttempts}` : PANE_URL;
+}
+
+function clearUnreachable(): void {
+  if (unreachableShown) {
+    notice.textContent = "";
+    notice.className = "";
+    unreachableShown = false;
   }
-}, 6000);
+}
+
+/**
+ * Until the pane is up: find out why (Writer's server not answering, or
+ * answering while the pane has not started), say so, and load the pane
+ * again. The notice goes away by itself once the pane connects, so a slow
+ * start never leaves a stale "not reachable" behind.
+ */
+async function checkPane(): Promise<void> {
+  if (paneConnected) return;
+  let serverAnswers = false;
+  try {
+    serverAnswers = (await fetch(`${PANE_ORIGIN}/api/health`, { cache: "no-store", signal: AbortSignal.timeout(4_000) })).ok;
+  } catch {
+    serverAnswers = false;
+  }
+  if (paneConnected) return;
+  unreachableShown = true;
+  if (!serverAnswers) {
+    serverWasDown = true;
+    showNotice(`<p><strong>Writer's local server isn't answering</strong> at <code>${PANE_ORIGIN}</code>.</p><p>If it isn't running, start it (<code>npm run sidecar</code> in the Writer folder, or install it as a login service). This panel keeps trying and connects by itself once it answers.</p>`);
+    return;
+  }
+  showNotice("<p><strong>Writer's pane is taking a while to load.</strong></p><p>Writer's local server is answering; this panel connects by itself as soon as the pane starts.</p>");
+  // Reload only when it helps: the server just came back, the frame shows an
+  // error page (loaded, but no pane spoke), or the load itself is stuck.
+  if (serverWasDown || frameLoaded || Date.now() - frameSetAt > PANE_STUCK_MS) {
+    loadPane();
+  }
+  serverWasDown = false;
+}
+
+frame.addEventListener("load", () => {
+  frameLoaded = true;
+  announce();
+});
+loadPane();
+setTimeout(() => {
+  void checkPane();
+  const timer = setInterval(() => {
+    if (paneConnected) clearInterval(timer);
+    else void checkPane();
+  }, 10_000);
+}, 6_000);
 
 // Files are dropped onto the pane (which attaches them); one dropped on the
 // panel's own edge must not replace the panel with the file.

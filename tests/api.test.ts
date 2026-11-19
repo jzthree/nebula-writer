@@ -206,10 +206,15 @@ describe("writer sidecar API", () => {
     process.env.WRITER_CODEX_PATH = relative(process.cwd(), fakeCodexPath);
 
     try {
-      const response = await requestBuffer("GET", "/api/health");
-      const body = JSON.parse(response.body.toString("utf8")) as {
-        providerStatus: Array<{ name: string; version: string | null; overrideEnv: string; overrideValue: string | null; path: string | null }>;
-      };
+      // Health never waits for a CLI: the first call starts reading the version, a later one reports it.
+      type Health = { providerStatus: Array<{ name: string; version: string | null; overrideEnv: string; overrideValue: string | null; path: string | null }> };
+      let response = await requestBuffer("GET", "/api/health");
+      let body = JSON.parse(response.body.toString("utf8")) as Health;
+      for (let tries = 0; tries < 50 && !body.providerStatus.find((provider) => provider.name === "codex")?.version; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        response = await requestBuffer("GET", "/api/health");
+        body = JSON.parse(response.body.toString("utf8")) as Health;
+      }
       const codex = body.providerStatus.find((provider) => provider.name === "codex");
 
       expect(response.statusCode).toBe(200);

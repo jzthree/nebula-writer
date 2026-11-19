@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { documentTableLabel, parseDocumentTables, type DocumentTable } from "../src/tables";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -34,6 +33,7 @@ import { IMAGE_ROUTE_PREFIX, imageMimeForName, isStoredImagePath, servedImagePat
 import { supersedeRevisedSuggestions } from "./revisions";
 import { CONVERSATION_KEY_PATTERN, conversationStore, type ConversationWrite } from "./conversation-store";
 import { detachedRuns } from "./detached-runs";
+import { knownCliVersion } from "./cli-version";
 import { isLocalAiProvider, LOCAL_AI_PROVIDERS, providerName } from "../src/providers";
 import { failedReply, finishedReply, stagedSuggestions } from "../src/runReply";
 import { liveCollabDocumentEmphasis, liveCollabDocumentText, scheduleSessionUpdateBroadcast } from "./realtime";
@@ -4430,41 +4430,10 @@ function providerHealth(cliEnabled: boolean) {
       overrideEnv: resolved.overrideEnv,
       overrideValue: resolved.overrideValue,
       path: resolved.path,
-      version: resolved.path ? commandVersion(resolved.path) : null
+      // Never waits for the CLI: a freshly updated binary can take seconds to answer.
+      version: resolved.path ? knownCliVersion(resolved.path) : null
     };
   });
-}
-
-function commandVersion(command: string): string | null {
-  for (const args of [["--version"], ["version"], ["-v"]]) {
-    const result = spawnSync(command, args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 3000
-    });
-    if (result.error || result.signal) {
-      continue;
-    }
-
-    const combinedOutput = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (combinedOutput.length === 0) {
-      continue;
-    }
-
-    if (result.status === 0) {
-      return combinedOutput[0];
-    }
-
-    const versionLine = combinedOutput.find((line) => /\d+\.\d+/.test(line));
-    if (versionLine) {
-      return versionLine;
-    }
-  }
-
-  return null;
 }
 
 function requestAbortSignal(request: Request, response: Response): AbortSignal {

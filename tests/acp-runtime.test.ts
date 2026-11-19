@@ -173,7 +173,10 @@ process.stdin.on("data", (chunk) => {
   it("cancels the turn when stopped", async () => {
     const controller = new AbortController();
     const turn = runAgentTurn({ provider: "antigravity", prompt: "Please wait.", runUrl: "http://127.0.0.1:1/api/agent-run/r4", workspaceDir: dir, toolAccess: "full", signal: controller.signal });
-    setTimeout(() => controller.abort(), 300);
+    // Stop once the turn is really running (a loaded machine can take a while to start the stand-in).
+    const prompted = () => { try { return entries().some((entry) => entry.method === "session/prompt"); } catch { return false; } };
+    for (let tries = 0; tries < 200 && !prompted(); tries++) await new Promise((resolve) => setTimeout(resolve, 50));
+    controller.abort();
     await expect(turn).rejects.toThrow(/interrupted/);
     // The stand-in logs the cancel as it reads it: wait for that rather than a fixed time.
     for (let tries = 0; tries < 40 && !entries().some((entry) => entry.method === "session/cancel"); tries++) {
