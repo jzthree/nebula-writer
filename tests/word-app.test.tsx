@@ -646,6 +646,25 @@ describe("Word task pane", () => {
     expect(card.querySelector("img[alt='Current picture']")).toHaveAttribute("src", "/api/ai/images/img-0.png");
     expect(card.querySelector("img[alt='Proposed picture']")).toHaveAttribute("src", "/api/ai/images/new-figure.png");
 
+    // Either picture can be saved to edit it directly.
+    const clicked: Array<{ href: string; download: string }> = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { clicked.push({ href: this.href, download: this.download }); });
+    fireEvent.click(within(card).getByLabelText("Download proposed picture"));
+    expect(clicked).toEqual([{ href: expect.stringMatching(/\/api\/ai\/images\/new-figure\.png\?download=writer-Sharper-schematic-proposed$/), download: "writer-Sharper-schematic-proposed" }]);
+    click.mockRestore();
+    // In Word's own panel a link cannot download: the picture opens in the default browser instead.
+    const opened: string[] = [];
+    const office = (globalThis as unknown as { Office?: { context?: Record<string, unknown> } }).Office;
+    const context = office?.context ?? {};
+    const previousUi = context.ui;
+    const previousRequirements = context.requirements;
+    context.ui = { openBrowserWindow: (url: string) => opened.push(url) };
+    context.requirements = { isSetSupported: (name: string) => name === "OpenBrowserWindowApi" };
+    fireEvent.click(within(card).getByLabelText("Download current picture"));
+    context.ui = previousUi;
+    context.requirements = previousRequirements;
+    expect(opened).toEqual([expect.stringMatching(/\/api\/ai\/images\/img-0\.png\?download=writer-Sharper-schematic-current$/)]);
+
     fireEvent.click(screen.getByTitle("Replace the text as a Word tracked change"));
     await waitFor(() => expect(mock.pictureReplacements).toHaveLength(1));
     expect(mock.pictureReplacements[0]).toMatchObject({ index: 0, tracked: true });

@@ -63,6 +63,7 @@ import {
   EyeOff, ListPlus } from "lucide-react";
 import { AgentTerminal } from "./AgentTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
+import { DownloadableImage, imageFileName } from "./imageDownload";
 import { isLocalAiProvider, LOCAL_AI_PROVIDER_INFO, LOCAL_AI_PROVIDERS, providerName } from "./providers";
 import { ConversationSync, type ConversationState } from "./conversationSync";
 import { markedSides, renderMarked } from "./emphasisView";
@@ -262,7 +263,7 @@ function ImageChange({ suggestion }: { suggestion: AiSuggestion }) {
     const anchor = suggestion.original.replace(/\s+/g, " ").trim();
     return (
       <figure className="image-change image-change-insert">
-        <img src={image.url} alt={image.caption || "Proposed figure"} />
+        <DownloadableImage url={image.url} alt={image.caption || "Proposed figure"} name={imageFileName(suggestion, "figure")} />
         <figcaption>
           {image.caption ? <span className="image-change-caption">{image.caption}</span> : null}
           <span className="image-change-anchor">New figure after “{anchor.length > 80 ? `…${anchor.slice(-77)}` : anchor}”</span>
@@ -273,16 +274,16 @@ function ImageChange({ suggestion }: { suggestion: AiSuggestion }) {
   if (action === "delete") {
     return (
       <figure className="image-change image-change-delete">
-        {image.originalUrl ? <img src={image.originalUrl} alt="Picture to remove" /> : <span className="image-change-missing">current picture</span>}
+        {image.originalUrl ? <DownloadableImage url={image.originalUrl} alt="Picture to remove" name={imageFileName(suggestion, "current")} /> : <span className="image-change-missing">current picture</span>}
         <figcaption>Remove {suggestion.original}</figcaption>
       </figure>
     );
   }
   return (
     <figure className="image-change">
-      {image.originalUrl ? <img src={image.originalUrl} alt="Current picture" /> : <span className="image-change-missing">current picture</span>}
+      {image.originalUrl ? <DownloadableImage url={image.originalUrl} alt="Current picture" name={imageFileName(suggestion, "current")} /> : <span className="image-change-missing">current picture</span>}
       <span className="image-change-arrow" aria-hidden="true">→</span>
-      <img src={image.url} alt="Proposed picture" />
+      <DownloadableImage url={image.url} alt="Proposed picture" name={imageFileName(suggestion, "proposed")} />
       <figcaption>{suggestion.original}</figcaption>
     </figure>
   );

@@ -3286,6 +3286,12 @@ describe("document images", () => {
     expect(served.headers["content-type"]).toContain("image/png");
     expect(Buffer.from(served.body).equals(ONE_PIXEL_PNG)).toBe(true);
 
+    // The panes' Download button: the same picture as a named file, with the stored extension.
+    const download = await requestBuffer("GET", `${image.url}?download=${encodeURIComponent("writer-S3 proposed/../x.jpg")}`);
+    expect(download.statusCode).toBe(200);
+    expect(String(download.headers["content-disposition"])).toMatch(/^attachment; filename="writer-S3 proposed-x\.png"/);
+    expect(Buffer.from(download.body).equals(ONE_PIXEL_PNG)).toBe(true);
+
     expect((await requestBuffer("GET", "/api/ai/images/..%2Fnope.png")).statusCode).toBe(404);
     expect((await requestBuffer("GET", "/api/ai/images/missing.png")).statusCode).toBe(404);
 

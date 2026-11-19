@@ -11,6 +11,7 @@ import { markedSides, renderMarked } from "../emphasisView";
  */
 
 import { providerName } from "../providers";
+import { DownloadableImage, imageFileName } from "../imageDownload";
 import {
   AlertTriangle,
   ArrowDown,
@@ -1367,7 +1368,7 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
     const image = suggestion.image;
     return (
       <figure className="wp-image-change insert">
-        <img src={image.url} alt="New figure" />
+        <DownloadableImage url={image.url} alt="New figure" name={imageFileName(suggestion, "figure")} />
         {image.caption ? <p className="wp-image-caption">{tidy(image.caption)}</p> : null}
         <figcaption>New figure after “{excerpt(suggestion.original, 80)}”</figcaption>
       </figure>
@@ -1377,7 +1378,7 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
     const image = suggestion.image;
     return (
       <figure className="wp-image-change delete">
-        {image.originalUrl ? <img src={image.originalUrl} alt="Picture to remove" /> : <span className="wp-image-missing">picture</span>}
+        {image.originalUrl ? <DownloadableImage url={image.originalUrl} alt="Picture to remove" name={imageFileName(suggestion, "current")} /> : <span className="wp-image-missing">picture</span>}
         <figcaption>Remove {suggestion.original}</figcaption>
       </figure>
     );
@@ -1386,9 +1387,9 @@ function SuggestionText(props: { suggestion: AiSuggestion; expanded: boolean; on
     const image = suggestion.image;
     return (
       <figure className="wp-image-change">
-        {image.originalUrl ? <img src={image.originalUrl} alt="Current picture" /> : <span className="wp-image-missing">current picture</span>}
+        {image.originalUrl ? <DownloadableImage url={image.originalUrl} alt="Current picture" name={imageFileName(suggestion, "current")} /> : <span className="wp-image-missing">current picture</span>}
         <span className="wp-image-arrow" aria-hidden="true">→</span>
-        <img src={image.url} alt="Proposed picture" />
+        <DownloadableImage url={image.url} alt="Proposed picture" name={imageFileName(suggestion, "proposed")} />
         <figcaption>{suggestion.original}</figcaption>
       </figure>
     );

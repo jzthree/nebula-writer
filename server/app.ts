@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, open, readFile, readdir, writeFile, mkdir, stat } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
@@ -851,6 +851,12 @@ export function createWriterApp() {
       return;
     }
     response.type(served.mime);
+    // ?download=<name>: save it as a file (the panes' Download button), named for the suggestion.
+    const download = typeof request.query.download === "string" ? downloadFilename(request.query.download, served.path) : null;
+    if (download) {
+      // downloadFilename keeps only word characters, dots, brackets, spaces and dashes: safe to quote as is.
+      response.setHeader("Content-Disposition", `attachment; filename="${download}"`);
+    }
     response.sendFile(served.path);
   });
 
@@ -4434,6 +4440,13 @@ function providerHealth(cliEnabled: boolean) {
       version: resolved.path ? knownCliVersion(resolved.path) : null
     };
   });
+}
+
+/** A safe file name for a download, keeping the stored image's extension. */
+export function downloadFilename(requested: string, storedPath: string): string | null {
+  const extension = extname(storedPath).toLowerCase();
+  const stem = requested.replace(/\.[A-Za-z0-9]{1,5}$/, "").replace(/[^\w.() -]+/g, "-").replace(/\.{2,}/g, "-").replace(/-{2,}/g, "-").replace(/^[-. ]+|[-. ]+$/g, "").slice(0, 100);
+  return stem ? `${stem}${extension}` : null;
 }
 
 function requestAbortSignal(request: Request, response: Response): AbortSignal {

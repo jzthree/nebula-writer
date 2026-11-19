@@ -718,3 +718,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .wp-card.draft { opacity: 0.85; border-style: dashed; }
 .wp-card.draft .wp-confidence { font-style: italic; }
+
+/* A picture in a suggestion card, with its Download button (src/imageDownload.tsx). */
+.downloadable-image { display: inline-flex; flex-direction: column; align-items: center; justify-self: center; gap: 4px; min-width: 0; max-width: 100%; }
+.downloadable-image img { max-width: 100%; }
+.image-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 6px; border: 1px solid var(--line, #dadce0); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.image-download:hover { background: rgba(127, 127, 127, 0.12); }
