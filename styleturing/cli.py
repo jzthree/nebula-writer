@@ -57,6 +57,23 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--journals", default=None, help="default: the run's journals")
     i.add_argument("--reviser", default="claude@high")
 
+    ev = sub.add_parser("evolve", help="improve the skill round by round: propose small edits, keep one only if it beats the incumbent on fresh dev items")
+    ev.add_argument("--rounds", type=int, default=6)
+    ev.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
+    ev.add_argument("--journals", default=",".join(JOURNALS))
+    ev.add_argument("--per-journal", type=int, default=24)
+    ev.add_argument("--candidates", type=int, default=3)
+    ev.add_argument("--threshold", type=float, default=0.95, help="bootstrap probability that a candidate beats the incumbent, needed to adopt it")
+    ev.add_argument("--proposer", default="claude@high")
+    ev.add_argument("--generator", default="claude")
+    ev.add_argument("--briefer", default="claude")
+    ev.add_argument("--judge", action="append", default=None)
+    ev.add_argument("--seed", type=int, default=1000, help="round N samples with seed + N")
+    ev.add_argument("--evidence", type=Path, default=None, help="dev run whose results seed round 1's proposals")
+    ev.add_argument("--evidence-condition", default="incumbent", help="the incumbent's condition name in that run")
+    ev.add_argument("--workers", type=int, default=10)
+    ev.add_argument("--runs", type=Path, default=Path("runs"))
+
     args = parser.parse_args(argv)
     if args.command == "corpus":
         start, end = (int(x) for x in args.years.split("-"))
@@ -92,6 +109,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"== {journal}: not revised: {error}\n")
                 continue
             print(f"== {path}\n{changes}\n")
+    elif args.command == "evolve":
+        from .evolve import Evolver
+
+        Evolver(
+            args.skill, args.data, args.runs, args.journals.split(","), args.per_journal, args.candidates,
+            Model.parse(args.proposer), Model.parse(args.generator), Model.parse(args.briefer),
+            [Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])], args.workers, args.threshold,
+        ).run(args.rounds, args.seed, args.evidence, args.evidence_condition)
     return 0
 
 

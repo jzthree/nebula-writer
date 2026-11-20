@@ -139,6 +139,9 @@ class Runner:
     def run(self) -> Path:
         cfg = self.config
         corpus = load(cfg.data_dir, cfg.journals)
+        excluded = set(cfg.extra.get("exclude", []))
+        if excluded:
+            corpus = [p for p in corpus if p.id not in excluded]
         items: list[Paragraph] = []
         for journal in cfg.journals:
             picked = sample(corpus, journal, cfg.split, cfg.per_journal, cfg.sections, cfg.seed)

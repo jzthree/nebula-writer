@@ -161,3 +161,78 @@ def test_copied_wording_guard():
     dev = ["Immune cell function is always dictated by some element of time in 12 donors."]
     assert copied_wording("Keep phrasing like always dictated by some element of time.", dev)[0] == "always dictated by some element of"
     assert copied_wording("Repeat terms rather than vary them.", dev) == []
+
+
+def test_apply_edits_rejects_bad_edits(tmp_path: Path):
+    from styleturing.evolve import apply_edits
+
+    skill = tmp_path / "skill"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Rule one.\nRule two.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    out = tmp_path / "c1"
+    assert apply_edits(skill, out, [{"file": "SKILL.md", "old": "Rule two.", "new": "Rule 2."}]) is None
+    assert (out / "SKILL.md").read_text() == "Rule one.\nRule 2.\n" and (skill / "SKILL.md").read_text() == "Rule one.\nRule two.\n"
+    assert apply_edits(skill, out, [{"file": "references/nature.md", "old": "", "new": "More."}]) is None
+    assert (out / "references" / "nature.md").read_text() == "Nature rules.\n\nMore.\n"
+    assert "occurs 0 times" in apply_edits(skill, out, [{"file": "SKILL.md", "old": "missing", "new": "x"}])
+    assert "may not change" in apply_edits(skill, out, [{"file": "examples/nature/results.md", "old": "", "new": "x"}])
+    assert "may not change" in apply_edits(skill, out, [{"file": "../escape.md", "old": "", "new": "x"}])
+
+
+def test_evolve_adopts_only_a_candidate_that_wins(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    from styleturing.evolve import Evolver
+
+    repo = tmp_path / "repo"
+    data, runs = repo / "data", repo / "runs"
+    (data / "corpus").mkdir(parents=True)
+    rows = [_paragraph("nature", f"P{i}", s, "dev" if i % 3 else "train", k) for i in range(30) for k, s in enumerate(["intro", "results"])]
+    (data / "corpus" / "nature.jsonl").write_text("\n".join(json.dumps(p.__dict__) for p in rows) + "\n")
+    skill = repo / "skills" / "journal-style"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.org", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-qm", "init"], cwd=repo, check=True)
+    proposals = json.dumps({"candidates": [
+        {"idea": "helpful rule", "edits": [{"file": "SKILL.md", "old": "Write plainly.", "new": "Write plainly. HELPFUL."}]},
+        {"idea": "useless rule", "edits": [{"file": "references/nature.md", "old": "", "new": "Useless."}]},
+        {"idea": "broken edit", "edits": [{"file": "SKILL.md", "old": "not there", "new": "x"}]},
+    ]})
+
+    def fake_call(self, model, system, prompt):
+        if "improve a writing skill" in system:
+            return proposals
+        if "content briefs" in system:
+            return '{"function": "f", "points": ["p [1]"]}'
+        helpful = "HELPFUL-OUT" in prompt
+        if "Paragraph:\n<<<" in prompt:
+            if "Generated" not in prompt:
+                return '{"published_probability": 0.7, "tells": []}'
+            return '{"published_probability": %s, "tells": ["smooth"]}' % ("0.9" if helpful else "0.2")
+        if "Paragraph A:" in prompt:
+            if helpful:  # the rewrite fools the judge: it always picks the rewrite's slot
+                first_is_real = prompt.index("Generated") > prompt.index("Paragraph B:")
+                return '{"published": "%s", "confidence": 0.6, "tells": []}' % ("B" if first_is_real else "A")
+            first_is_real = prompt.index("Generated") > prompt.index("Paragraph B:")
+            return '{"published": "%s", "confidence": 0.9, "tells": ["smooth"]}' % ("A" if first_is_real else "B")
+        return "Generated paragraph" + (" HELPFUL-OUT" if "HELPFUL." in system else "") + f" {abs(hash(prompt)) % 997}."
+
+    monkeypatch.setattr(llm.Client, "_call", fake_call)
+    logs: list[str] = []
+    evolver = Evolver(skill, data, runs, ["nature"], per_journal=8, candidates=3, proposer=Model("claude"),
+                      generator=Model("claude"), briefer=Model("claude"), judges=[Model("claude")], workers=2, threshold=0.95, log=logs.append)
+    evolver.run(rounds=1, start_seed=0)
+    assert "HELPFUL." in (skill / "SKILL.md").read_text() and "Useless." not in (skill / "references" / "nature.md").read_text()
+    history = json.loads((runs / "evolve" / "history.json").read_text())
+    outcomes = {h["idea"]: h["outcome"] for h in history if "idea" in h}
+    assert "ACCEPTED" in outcomes["helpful rule"] and "rejected" in outcomes["useless rule"] and "not tested" in outcomes["broken edit"]
+    assert "Evolve round 1: helpful rule" in subprocess.run(["git", "log", "-1", "--format=%s"], cwd=repo, capture_output=True, text=True).stdout
+    # Round 2 never reuses round 1's paragraphs.
+    first = {r["id"] for r in map(json.loads, (runs / "evolve-r1" / "items.jsonl").read_text().splitlines())}
+    evolver.run(rounds=1, start_seed=0)
+    second = {r["id"] for r in map(json.loads, (runs / "evolve-r2" / "items.jsonl").read_text().splitlines())}
+    assert first and second and not first & second
