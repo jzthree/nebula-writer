@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("corpus", help="download open-access papers and extract paragraphs")
     c.add_argument("--journals", default=",".join(JOURNALS))
     c.add_argument("--papers", type=int, default=40, help="papers per journal")
-    c.add_argument("--years", default="2020-2025")
+    c.add_argument("--years", default="2018-2025")
 
     p = sub.add_parser("profile", help="measured style of the published paragraphs (training split)")
     p.add_argument("--journals", default=",".join(JOURNALS))

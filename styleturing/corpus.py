@@ -26,14 +26,14 @@ class Journal:
     key: str
     name: str
     issn: str
-    open_access_only: bool  # Science's full texts are author manuscripts, not OA.
+    open_access_only: bool  # only open-access full texts can be downloaded as XML
 
 
 JOURNALS: dict[str, Journal] = {
     j.key: j
     for j in [
         Journal("nature", "Nature", "0028-0836", True),
-        Journal("science", "Science", "0036-8075", False),
+        Journal("science", "Science", "0036-8075", True),
         Journal("nature-genetics", "Nature Genetics", "1061-4036", True),
         Journal("nature-methods", "Nature Methods", "1548-7091", True),
     ]
@@ -165,10 +165,19 @@ def paragraph_text(p: ET.Element) -> str | None:
     return text or None
 
 
+EXCLUDED = ("supplement", "data availability", "code availability", "acknowledg", "author contribution", "competing", "reporting summary", "online content", "references", "extended data", "funding", "additional information", "ethics", "declaration")
+
+
+def _excluded(title: str) -> bool:
+    t = title.strip().lower()
+    return any(k in t for k in EXCLUDED)
+
+
 def classify(title: str, sec_type: str | None, position: int) -> str | None:
+    """The section a heading names, or None when it names none of ours (or is back matter)."""
     t = (title or "").strip().lower()
     s = (sec_type or "").lower()
-    if any(k in t for k in ("supplement", "data availability", "code availability", "acknowledg", "author contribution", "competing", "reporting summary", "online content", "references", "extended data", "funding")):
+    if _excluded(t):
         return None
     if "method" in t or "methods" in s or "materials" in t:
         return "methods"
@@ -176,9 +185,17 @@ def classify(title: str, sec_type: str | None, position: int) -> str | None:
         return "discussion"
     if "result" in t or "results" in s:
         return "results"
-    if t in ("main", "introduction", "") or "intro" in s:
-        return "intro" if position == 0 or t in ("main", "introduction") else None
+    if t in ("main", "introduction") or "intro" in s or (t == "" and position == 0):
+        return "intro"
     return None
+
+
+def is_legend(text: str) -> bool:
+    """A figure legend that sits in the body as a paragraph ("a, Schematic of … b, …", "(A) Front view …")."""
+    if re.match(r"^(?:[a-zA-Z],|\(?[A-Za-z]\))\s", text) or "Scale bar" in text:
+        return True
+    panels = re.findall(r"(?:^|[.;]\s)(?:[a-z],|\(?[A-Za-z]\))\s", text)
+    return len(panels) >= 2
 
 
 def extract(xml: bytes, record: dict, journal: Journal) -> list[Paragraph]:
@@ -199,28 +216,49 @@ def extract(xml: bytes, record: dict, journal: Journal) -> list[Paragraph]:
     body = root.find("body")
     if body is None:
         return []
-    position = 0
-    loose: list[ET.Element] = []
-    for child in body:
-        tag = _local(child.tag)
-        if tag == "p":
-            loose.append(child)  # an unlabelled opening (Science, some Nature papers)
-            continue
-        if tag != "sec":
-            continue
-        kind = classify(child.findtext("title") or "", child.get("sec-type"), position)
-        position += 1
-        if kind is None:
-            continue
-        for p in child.iter("p"):
+
+    def take(element: ET.Element, kind: str) -> None:
+        for p in element.iter("p"):
             text = paragraph_text(p)
             if text:
                 found.append((kind, text))
-    for p in loose:
-        text = paragraph_text(p)
-        if text:
-            found.append(("intro", text))
-    kept = [(kind, text) for kind, text in found if MIN_WORDS <= len(text.split()) <= MAX_WORDS]
+
+    def walk_main(sec: ET.Element) -> None:
+        # Nature-style "Main": its own paragraphs are the introduction, its
+        # subsections (topical headings) are the Results unless named otherwise.
+        for child in sec:
+            tag = _local(child.tag)
+            if tag == "p":
+                take(child, "intro")
+            elif tag == "sec":
+                named = classify(child.findtext("title") or "", child.get("sec-type"), 1)
+                if named in ("discussion", "methods", "results"):
+                    take(child, named)
+                elif named is None and _excluded(child.findtext("title") or ""):
+                    continue
+                else:
+                    take(child, "results")
+
+    seen_end = False  # after Discussion or Methods, unnamed sections are back matter
+    for index, child in enumerate(body):
+        tag = _local(child.tag)
+        if tag == "p":
+            take(child, "intro")  # an unlabelled opening (Science, some Nature papers)
+            continue
+        if tag != "sec":
+            continue
+        heading = child.findtext("title") or ""
+        if heading.strip().lower() in ("main", "introduction") or (index == 0 and not heading.strip()):
+            walk_main(child)
+            continue
+        kind = classify(heading, child.get("sec-type"), 1)
+        if kind in ("discussion", "methods"):
+            seen_end = True
+        if kind is None and not _excluded(heading) and not seen_end:
+            kind = "results"  # a topical Results heading
+        if kind:
+            take(child, kind)
+    kept = [(kind, text) for kind, text in found if MIN_WORDS <= len(text.split()) <= MAX_WORDS and not is_legend(text)]
     split = split_for(pmcid)
     return [
         Paragraph(f"{journal.key}:{pmcid}:{i}", journal.key, pmcid, title, year, kind, i, text, len(text.split()), split, manuscript)

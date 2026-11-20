@@ -118,3 +118,27 @@ def test_end_to_end_with_a_stand_in_model(tmp_path: Path, monkeypatch):
     Runner(config, log=lambda *_: None).run()
     assert calls["generate"] == 8
     assert write_report(tmp_path / "runs" / "t", data).exists()
+
+
+def test_nature_main_with_topical_subsections():
+    filler = b"word " * 75
+    xml = (b'<article article-type="research-article"><front><article-meta><title-group><article-title>T</article-title></title-group></article-meta></front><body>'
+           b"<sec><title>Main</title><p>Intro " + filler + b"</p>"
+           b"<sec><title>Enhancers drive expression</title><p>Finding " + filler + b"</p></sec>"
+           b"<sec><title>Discussion</title><p>Meaning " + filler + b"</p></sec></sec>"
+           b"<sec><title>A second topical heading</title><p>More " + filler + b"</p></sec>"
+           b"<sec><title>Methods</title><p>Cells " + filler + b"</p></sec>"
+           b"<sec><title>Ethics statement</title><p>Approved " + filler + b"</p></sec>"
+           b"</body></article>")
+    paragraphs = extract(xml, {"pmcid": "PMC2", "pubYear": "2023"}, JOURNALS["nature"])
+    assert [(p.section, p.text.split()[0]) for p in paragraphs] == [("intro", "Intro"), ("results", "Finding"), ("discussion", "Meaning"), ("results", "More"), ("methods", "Cells")]
+    assert paragraphs[0].title == "T"
+
+
+def test_figure_legends_are_not_paragraphs():
+    from styleturing.corpus import is_legend
+    assert is_legend("a, Schematic of the process. b, Plots of loss. Scale bars, 1 cm.")
+    assert is_legend("(A) Front view of the complex. (B) Side view.")
+    assert is_legend("a) Staining of five tissues. b) Signal after deconvolution.")
+    assert not is_legend("We found that a, b and c differ (Fig. 1a).")
+    assert not is_legend("Two groups (A) and (B) were compared (Fig. 2A).")
