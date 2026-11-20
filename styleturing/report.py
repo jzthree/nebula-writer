@@ -82,7 +82,7 @@ def write_report(run_dir: Path, data_dir: Path) -> Path:
     for condition in [c["name"] for c in config["conditions"]]:
         cells = []
         for journal in config["journals"] + ["all"]:
-            journal_rows = [r for r in rows if r["condition"] == condition and r["journal"] == journal]
+            journal_rows = sorted((r for r in rows if r["condition"] == condition and r["journal"] == journal), key=lambda r: config["judges"].index(r["judge"]) if r["judge"] in config["judges"] else 99)
             if not journal_rows:
                 cells.append("–")
                 continue
@@ -123,7 +123,7 @@ def write_report(run_dir: Path, data_dir: Path) -> Path:
     runs = [longest_shared_run(items[g["id"]]["text"], g["text"]) for g in generations if g["id"] in items]
     if runs:
         lines += ["## Leak check", "", f"Longest run of words shared by a published paragraph and its rewrite: median {sorted(runs)[len(runs) // 2]}, max {max(runs)} "
-                  "(names and numbers make short runs normal; runs above ~12 words mean the brief leaked wording).", ""]
+                  "(lists of names and numbers make long runs normal; a long run of ordinary words means the brief leaked wording).", ""]
 
     # What the judges said.
     lines += ["## What gave the rewrites away", ""]

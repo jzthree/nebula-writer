@@ -29,19 +29,20 @@ file (`references/<journal>.md`) adds what is specific to it.
   attention"), no announcing ("In this section, we…", "To address this,
   we sought to…").
 - **Plain verbs.** show, find, identify, use, measure, increase, reduce,
-  require, enable, predict. Not: leverage, harness, delve, unveil,
-  showcase, elucidate (except for a mechanism), underscore, shed light on.
+  require, enable, predict. Leverage, harness, delve, unveil, showcase and
+  "shed light on" are what AI reaches for; avoid them.
+- **Calibrated, not sanitized.** Published papers do use "key", "critical",
+  "novel", "robust", "highlight", "notably" and "however": about one such
+  word per paragraph, where the authors mean it. Text with none of them, or
+  with no connectives at all, reads as edited by a rule. Match the rates in
+  the reference file instead of deleting a word class.
 - **Specific nouns, few adjectives.** Name the thing ("H3K27ac peaks",
-  "a 1.4-fold increase", "in 12 of 14 donors") instead of characterizing it
-  ("a robust and comprehensive set", "a significant increase"). Do not
-  intensify: crucial, pivotal, key, critical, vital, remarkable,
-  unprecedented, powerful, novel, comprehensive, robust (unless it is a
-  measured robustness), intricate, nuanced, multifaceted.
-- **Few connectives.** Most sentences start with their subject. "However"
-  is used when there is a real contrast; "moreover", "furthermore",
-  "additionally", "notably", "importantly", "interestingly" are rare
-  (well under one per paragraph). Logical flow comes from the order of
-  the sentences, not from signposts.
+  "a 1.4-fold increase", "in 12 of 14 donors") instead of characterizing it.
+  Do not stack intensifiers or pair adjectives ("robust and scalable").
+- **Connectives as the journal uses them.** Most sentences start with their
+  subject. "However", "Thus", "Therefore", "Finally", "In contrast" carry
+  real turns; "moreover", "furthermore", "additionally", "notably" appear,
+  but less than once per paragraph. See the reference file for the rate.
 - **Uneven rhythm.** Sentence length varies a lot: a 9-word sentence next
   to a 40-word one with a parenthesis. Do not write runs of medium-length
   sentences, and do not build parallel triplets ("X, Y, and Z" as a
@@ -61,9 +62,31 @@ file (`references/<journal>.md`) adds what is specific to it.
 - **Not a summary of itself.** No "In summary", "Overall", "Taken
   together" except where the journal uses them (see the reference file),
   and never twice in a paper.
-- **Punctuation.** Few colons and semicolons used for effect; em dashes
-  only where the reference file says the journal uses them. No bold, no
-  lists inside paragraphs, no rhetorical questions.
+- **Punctuation at the journal's rate.** Semicolons and colons are
+  occasional (one every two or three paragraphs, mostly inside parentheses or
+  lists of results); do not use them to join balanced clauses. Em dashes
+  only as often as the reference file says. No bold, no lists inside
+  paragraphs, no rhetorical questions.
+
+## Texture: published prose is not perfectly polished
+
+Judges who compare a rewrite with the published paragraph pick the published
+one because it is *less* uniform. Without introducing errors:
+
+- Repeat a term rather than vary it ("contamination … contamination",
+  "we also find … we also find"). Elegant variation is a tell.
+- Let one sentence carry a lot (a long list, two findings and a parenthesis)
+  and the next be short and flat ("Rora and Rorb have similar motifs.").
+- Keep the authors' own terms, coinages in quotation marks, symbols and
+  notation exactly as given, even when a smoother word exists.
+- Mix active and passive voice, and "we" with impersonal constructions, as
+  scientists do; do not convert a paragraph wholly to one.
+- Keep tense natural rather than uniform: past for what was done, present
+  for what the data show and for figures, and an occasional switch.
+- Do not add explanatory clauses, purpose fronting ("To obtain …, we") or
+  tagged-on consequences (", making it possible to …", "which makes it …")
+  that the content does not need.
+- Hedge only where the content is uncertain; do not hedge systematically.
 
 ## Patterns that give AI rewrites away
 
@@ -101,7 +124,8 @@ Blind judges comparing rewrites with published paragraphs name these most:
 ## Checklist before returning a paragraph
 
 - [ ] First sentence carries content; no warm-up or announcement.
-- [ ] No word from the intensifier and AI-vocabulary lists above.
+- [ ] No AI vocabulary (leverage, harness, delve, unveil, showcase, shed light on); evaluative words and connectives at the journal's rate, not zero.
+- [ ] Terms repeated rather than varied; the authors' terms and notation kept as given.
 - [ ] At most one sentence-initial connective, and only for a real contrast or consequence.
 - [ ] Sentence lengths vary (some under 15 words, some over 30, if the paragraph is long enough).
 - [ ] No triplets for rhythm; no paired adjectives ("robust and scalable").
