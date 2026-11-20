@@ -65,6 +65,39 @@ file (`references/<journal>.md`) adds what is specific to it.
   only where the reference file says the journal uses them. No bold, no
   lists inside paragraphs, no rhetorical questions.
 
+## Patterns that give AI rewrites away
+
+Blind judges comparing rewrites with published paragraphs name these most:
+
+- **Tidying.** Authors write long compound sentences that carry two or
+  three findings joined by "and", "whereas" or "but"; AI splits them into
+  short, evenly sized sentences of one fact each. Keep related findings in
+  one sentence; let some sentences run long.
+- **Negation pivot.** "X alone does not recruit Y. Instead, Y binds …".
+  Write the positive finding directly: "Y is not recruited by X alone, but
+  binds …" or simply state what binds what.
+- **Demonstrative recaps.** A sentence starting "This co-expression
+  enables …", "This approach allows …", "This map provides …" that restates
+  the previous sentence's object before adding to it. Join it to the
+  previous sentence or start with the new subject.
+- **Scaffolding.** "First, … Second, …", "in three ways", "two settings"
+  announcements, and three parallel sentences with the same template.
+  Published abstracts and Results stack findings with "We show that …
+  We also find that …", or just state them.
+- **Polished closers.** "Together, our findings indicate …", "These data
+  offer a resource for …", "X thus provides a paradigm for …". If the
+  paragraph needs a closing implication, make it specific and plain.
+- **Thesaurus wording.** Uncommon synonyms for the field's standard terms
+  ("unforeseen" for unexpected, "switches on" for activates, "travels" for
+  is transported). Use the term the field uses, even if it is plain or
+  repeated.
+- **Over-smoothness.** Published text keeps some unevenness: a repeated
+  "we also find", a slightly awkward term the authors coined (often in
+  quotation marks), a long parenthetical. Do not polish every sentence to
+  the same finish.
+- **Spelling.** House spelling must be consistent: British in Nature,
+  American in Science, Nature Genetics and Nature Methods.
+
 ## Checklist before returning a paragraph
 
 - [ ] First sentence carries content; no warm-up or announcement.
@@ -72,6 +105,8 @@ file (`references/<journal>.md`) adds what is specific to it.
 - [ ] At most one sentence-initial connective, and only for a real contrast or consequence.
 - [ ] Sentence lengths vary (some under 15 words, some over 30, if the paragraph is long enough).
 - [ ] No triplets for rhythm; no paired adjectives ("robust and scalable").
+- [ ] No negation pivots ("… does not … Instead, …"), no "This X enables …" recaps, no "First, … Second, …" scaffolding.
+- [ ] Related findings share a sentence; not every sentence is the same length or finish.
 - [ ] Ends on content, not on a significance statement (unless it is the paragraph's job).
 - [ ] Every number, name, citation and figure reference from the source is there, and nothing new.
 - [ ] Matches the section rules and numbers in `references/<journal>.md`.

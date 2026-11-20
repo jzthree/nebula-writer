@@ -165,8 +165,10 @@ class Runner:
             model, g = job
             p = by_id[g["id"]]
             real_first = _stable(p.id, g["condition"], model.label) % 2 == 0
-            first, second = (p.text, g["text"]) if real_first else (g["text"], p.text)
-            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.judge_prompt(p.journal, p.title, p.section, first, second, references_for(corpus, p, cfg.references)))
+            real, fake = prompts.plain(p.text), prompts.plain(g["text"])
+            first, second = (real, fake) if real_first else (fake, real)
+            references = [prompts.plain(text) for text in references_for(corpus, p, cfg.references)]
+            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.judge_prompt(p.journal, p.title, p.section, first, second, references))
             picked = str(answer.get("published", "")).strip().upper()[:1]
             try:
                 confidence = float(answer.get("confidence", 0.5))

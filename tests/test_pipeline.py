@@ -142,3 +142,9 @@ def test_figure_legends_are_not_paragraphs():
     assert is_legend("a) Staining of five tissues. b) Signal after deconvolution.")
     assert not is_legend("We found that a, b and c differ (Fig. 1a).")
     assert not is_legend("Two groups (A) and (B) were compared (Fig. 2A).")
+
+
+def test_plain_gives_both_texts_the_same_surface():
+    from styleturing.prompts import plain
+    assert plain("The *FT* gene **binds** DNA [1,2] and \u2018x\u2019 _y_.") == "The FT gene binds DNA[1,2] and 'x' y."
+    assert plain("a 3*4 grid and snake_case_name stay") == "a 3*4 grid and snake_case_name stay"

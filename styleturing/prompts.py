@@ -12,6 +12,7 @@ The skill succeeds when judges can no longer tell: detection near 50%.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .corpus import JOURNALS
@@ -30,7 +31,7 @@ Rules:
 - Write telegraphic notes, not sentences: fragments, abbreviations and arrows are fine.
 - Keep every fact, claim, comparison, number with its unit, statistic, sample size, name (gene, protein, cell type, organism, method, software, dataset), and the strength of each claim (shown / suggests / speculated / unknown).
 - Keep citation markers exactly as written (for example [12] or [3–5]) next to the claim each supports, and figure or table references exactly as written (for example Fig. 2a, Extended Data Fig. 3b).
-- Do not reuse any phrase of four or more words from the paragraph unless it is a name, an established technical term, or a quantity.
+- Use the field's standard terms, the ones the authors use (do not swap in synonyms to avoid their words), but do not keep their sentences, sentence structure, connectives or distinctive non-technical phrasing.
 - Do not describe or hint at the style (tone, voice, sentence length, connectives).
 - Keep the points in the order the paragraph presents them.
 
@@ -65,10 +66,21 @@ def generate_prompt(journal_key: str, title: str, section: str, words: int, brie
         f"Write the paragraph described below for this section of the paper, as it would appear in {journal}. "
         f"Length: about {words} words. Keep every citation marker in the form [n] exactly as given, attached to the claim it supports, "
         "and keep figure references as given. Do not add facts, numbers or citations that are not in the notes. "
-        "Output the paragraph only: no heading, no notes.\n\n"
+        "Output the paragraph only, as plain text: no heading, no notes, no Markdown.\n\n"
         f"What the paragraph does: {brief.get('function', '')}\n"
         f"Content notes:\n{points}"
     )
+
+
+def plain(text: str) -> str:
+    """The same surface for both texts, so formatting never decides a comparison: no Markdown
+    emphasis, straight quotes, citation markers attached to the preceding word."""
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"\2", text)
+    text = re.sub(r"(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])", r"\1", text)
+    text = re.sub(r"(?<![\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])", r"\1", text)
+    text = text.replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+    text = re.sub(r"\s+(\[\d[\d,\u2013\-]*\])", r"\1", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
 
 
 def judge_system(journal_key: str) -> str:
@@ -90,7 +102,7 @@ def judge_prompt(journal_key: str, title: str, section: str, first: str, second:
         f'Below are two paragraphs written for the {SECTION_NAMES[section]} of a paper titled "{title}". '
         f"Both convey the same content. One is the paragraph as published in {journal}. The other was written by an AI model "
         "from notes listing the published paragraph's content (facts, numbers, citations), without seeing its wording. "
-        "Citation markers have been normalized to [n] in both.\n\n"
+        "Both are shown as plain text with the same normalization: citation markers as [n], straight quotes, no italics.\n\n"
         f"Paragraph A:\n<<<\n{first}\n>>>\n\nParagraph B:\n<<<\n{second}\n>>>\n\n"
         "Which one was published? Judge how each is written. Differences in content are an artifact of the notes, not evidence.\n"
         'Answer with JSON: {"published": "A" or "B", "confidence": a number from 0.5 (a guess) to 1.0 (certain), '

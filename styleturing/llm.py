@@ -49,6 +49,7 @@ class Client:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
         self.retries = retries
+        self.agy_timeout = 240.0
         # A neutral working directory: no CLAUDE.md, AGENTS.md or project files to pick up.
         self.workdir = Path(tempfile.mkdtemp(prefix="style-turing-cli-"))
 
@@ -106,12 +107,13 @@ class Client:
         if model.backend == "agy":
             binary = shutil.which("agy") or "agy"
             text = f"{system}\n\nDo not use any tools; answer from this message alone.\n\n{prompt}"
-            args = [binary, "-p", text, "--output-format", "json", "--disable-slash-commands"]
+            # agy can sit on a turn indefinitely (print-timeout defaults to none): cap it so the call is retried.
+            args = [binary, "-p", text, "--output-format", "json", "--disable-slash-commands", "--print-timeout", f"{int(self.agy_timeout)}s"]
             if model.model:
                 args += ["--model", model.model]
             if model.effort:
                 args += ["--effort", model.effort]
-            done = subprocess.run(args, capture_output=True, text=True, cwd=self.workdir, timeout=self.timeout)
+            done = subprocess.run(args, capture_output=True, text=True, cwd=self.workdir, timeout=self.agy_timeout + 60)
             try:
                 body = json.loads(done.stdout)
             except json.JSONDecodeError:
