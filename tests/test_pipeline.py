@@ -148,3 +148,10 @@ def test_plain_gives_both_texts_the_same_surface():
     from styleturing.prompts import plain
     assert plain("The *FT* gene **binds** DNA [1,2] and \u2018x\u2019 _y_.") == "The FT gene binds DNA[1,2] and 'x' y."
     assert plain("a 3*4 grid and snake_case_name stay") == "a 3*4 grid and snake_case_name stay"
+
+
+def test_copied_wording_guard():
+    from styleturing.improve import copied_wording
+    dev = ["Immune cell function is always dictated by some element of time in 12 donors."]
+    assert copied_wording("Keep phrasing like always dictated by some element of time.", dev)[0] == "always dictated by some element of"
+    assert copied_wording("Repeat terms rather than vary them.", dev) == []

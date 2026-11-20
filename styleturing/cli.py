@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .corpus import JOURNALS, SECTIONS, build
 from .experiment import Condition, RunConfig, Runner
-from .improve import profile_table, revise
+from .improve import RevisionError, profile_table, revise
 from .llm import Model
 from .report import write_report
 
@@ -75,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
 
         config = json.loads((args.run_dir / "config.json").read_text())
         for journal in (args.journals.split(",") if args.journals else config["journals"]):
-            path, changes = revise(args.run_dir, args.data, args.skill, args.condition, journal, Model.parse(args.reviser))
+            try:
+                path, changes = revise(args.run_dir, args.data, args.skill, args.condition, journal, Model.parse(args.reviser))
+            except RevisionError as error:
+                print(f"== {journal}: not revised: {error}\n")
+                continue
             print(f"== {path}\n{changes}\n")
     return 0
 

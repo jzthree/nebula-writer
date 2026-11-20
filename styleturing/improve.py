@@ -19,15 +19,36 @@ from .stylometry import FEATURES, compare, features
 
 REVISER_SYSTEM = """You maintain a writing-style skill that an AI model follows to write paragraphs indistinguishable from those published in a specific journal. You are given evidence of how its latest output was still told apart from the published text, and you rewrite the journal's reference file to fix that.
 
+The skill is used to WRITE new paragraphs for this journal, from notes, data or a rough draft. It is not an editing guide for a given source text: phrase every rule as how to write (never "keep the source's …").
+
 Rules for the reference file:
 - Every rule must generalize: it describes how the journal writes, never what a particular paper is about.
+- Never quote wording from the example pairs or the judges' tells: no phrase of three or more words from them, and none of their distinctive terms. Those paragraphs are evaluation data; copying them makes the next score meaningless. Write neutral, invented illustrations instead.
 - Make rules concrete and checkable (what to do, what to avoid, with numbers where the profile gives them), not adjectives like "concise" or "elegant".
 - Never paste sentences from the example paragraphs. Illustrate a pattern with a short invented example if needed.
 - Keep what already works; remove or fix rules that the evidence shows backfire.
 - Organize by section (abstract, introduction, Results, Discussion, Methods) where the journal differs by section.
-- At most 1,400 words.
+- At most 1,400 words. Keep it shorter than that if you can: the writer reads all of it.
 
 Answer with the complete new file between the lines <<<FILE and FILE>>>, then a short list of what you changed and why between <<<CHANGES and CHANGES>>>."""
+
+
+class RevisionError(RuntimeError):
+    pass
+
+
+def copied_wording(reference: str, texts: list[str], limit: int = 6) -> list[str]:
+    """Runs of `limit`+ ordinary words the reference shares with evaluation paragraphs (names and numbers aside)."""
+    ref_words = re.findall(r"[a-z]+", reference.lower())
+    grams = {" ".join(ref_words[i:i + limit]) for i in range(len(ref_words) - limit + 1)}
+    found: list[str] = []
+    for text in texts:
+        words = re.findall(r"[a-z]+", text.lower())
+        for i in range(len(words) - limit + 1):
+            gram = " ".join(words[i:i + limit])
+            if gram in grams and gram not in found:
+                found.append(gram)
+    return found[:5]
 
 
 def profile(data_dir: Path, journal: str, split: str = "train") -> dict[str, dict[str, float]]:
@@ -107,7 +128,12 @@ Pairs the judges got right (do not copy their sentences):
     answer = client.complete(reviser, REVISER_SYSTEM, prompt)
     file_match = re.search(r"<<<FILE\s*\n(.*?)\n\s*FILE>>>", answer, re.S)
     if not file_match:
-        raise SystemExit("the reviser returned no file")
+        (run_dir / f"revision-{journal}.raw.txt").write_text(answer)
+        raise RevisionError(f"the reviser returned no file for {journal} (raw answer in {run_dir / f'revision-{journal}.raw.txt'})")
+    copied = copied_wording(file_match.group(1), [i["text"] for i in items.values() if i["journal"] == journal])
+    if copied:
+        (run_dir / f"revision-{journal}.rejected.md").write_text(file_match.group(1))
+        raise RevisionError(f"the revision for {journal} copies dev wording, so it was not applied: {copied}")
     changes_match = re.search(r"<<<CHANGES\s*\n(.*?)\n\s*CHANGES>>>", answer, re.S)
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     reference_path.write_text(file_match.group(1).strip() + "\n")
