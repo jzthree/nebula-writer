@@ -1,73 +1,74 @@
 # Nature Genetics
 
-Measured on recent open-access Nature Genetics research articles. Numbers are per paragraph unless stated. Drafts written with the earlier version of this file were identified 91% of the time. They were tidier, more compressed, more impersonal and more symmetrical than published text, and they used fewer connectives and evaluative words. The rules below correct for that.
+Measured on recent open-access Nature Genetics research articles. Numbers are per paragraph unless stated. Judges still picked out 82% of drafts. The main reason was over-correction. Drafts split material into short, even sentences, cut commas, dropped dashes and evaluative words, and used more "we", hedges, semicolons and colons than published text. Published paragraphs have fewer and longer sentences with more commas. They are also slightly looser and less explicit.
 
 ## House conventions
 
-- **American spelling:** analyze, behavior, color, labeled, modeling, signaling, tumor.
-- **Numbers.** Spell out one to nine when counting things in prose, including in lists that also contain larger numbers ("12 cohorts, eight tissues and three ancestries"; "four of 11 loci"; "using six threads"). Use numerals with units (3 h, 5 kb), in statistics, after "n =", and in versions and parameters.
-- **Ranges.** In running text, write "from 4 to 16 weeks" or "between 20 and 35 years". Use the en dash inside parentheses, in confidence intervals, in citation runs and in panel ranges (95% CI 1.2–3.4; Fig. 2b–d).
-- **Approximations** take "~" (~3-fold, ~40%).
-- **Abbreviations in text.** Write out "for example" and "that is", often in parentheses: "(that is, GATA4 and TBX5)". Never use "e.g." or "i.e." in text.
-- **Comparisons** use "compared with".
-- **Figure references** use lowercase panels: (Fig. 2c), (Fig. 2c,d), (Extended Data Fig. 4a–c), (Supplementary Table 5). A count or statistic that belongs with a figure reference shares one parenthesis, separated by a semicolon: "(n = 9; Fig. 3a)", "(P = 0.004; Extended Data Fig. 2b)". Never put two parentheses back to back.
-- **Counts** go in terse parentheticals rather than prose: "in three subgroups (n = 14, 9 and 6)". Do not write "of the 29 samples, 14 were …".
-- **Cited work as a sentence element** is "ref. 14" or "refs. 3,7": "Work in zebrafish (ref. 14) found …", "the pipeline from ref. 22". Use superscript-only citation when the reference is not the subject.
-- **Abbreviations.** Define one only if it is used again. Do not redefine one that the paper has already introduced.
-- **Notation.** Keep it exactly as given: superscripts, italics, gene symbols, version strings.
+- **American spelling:** analyze, behavior, labeled, modeling, signaling, tumor.
+- **No serial comma:** "cohorts, tissues and ancestries".
+- **Numbers.** Spell out one to nine for a count that stands alone in prose ("six of 40 samples", "in three families"). Use numerals with units (3 h, 5 kb), in statistics, after "n =", in versions and parameters, in terse parenthetical breakdowns ("(12 cohort and 4 replication)") and in changes or thresholds ("from 8 to 3 loci", ">1 allele").
+- **Ranges.** In running text, write "between 2 and 5 kb" or "from 4 to 16 weeks". Use the en dash in parentheses, confidence intervals and panel ranges (95% CI 1.2–3.4; Fig. 2b–d). Do not attach "~" to a range. Write "between approximately 2,000 and 6,000 reads".
+- **Approximations** of a single value take "~" (~3-fold, ~40%).
+- **Causal openers:** use "owing to" rather than "because of" when a sentence opens on a cause.
+- **"For example" / "that is"** are written out, never "e.g." / "i.e.".
+- **Comparisons** use "compared with", or "against"/"versus" inside a parenthesis. Use one form per sentence and do not mirror it in a second clause.
+- **Figure references** use lowercase panels: (Fig. 2c), (Fig. 2c,d), (Extended Data Fig. 4a–c). Put the reference right after the noun or result it supports, often mid-sentence ("The second pipeline (Fig. 3b) recovered …"), not always at the clause end.
+- **Citations as sentence elements** are "ref. 14" or "refs. 3,7". Otherwise use superscripts placed where the claim sits.
+- **Abbreviations.** Define one only if it is used again later in the paragraph or paper. Never define one and then leave it unused.
+- **Notation** stays exactly as given: superscripts, italics, gene symbols, version strings, "+" in tool combinations.
 
-## Punctuation and sentence shape
+## Sentence shape (the main gap)
 
-- **Semicolons.** Use them inside parentheses and in Methods parameter lists. In running prose, the only common clause join is "; however,", used about once in three paragraphs. Do not join two independent statements with a semicolon. Do not chain three results with "; … ; and …".
-- **Colons.** Use about one per 700 words. Do not introduce a list, a set of categories or a result with a colon. The exception is a Methods sentence that introduces an equation, which ends with a colon.
-- **Dashes.** An em-dash aside appears about once every two or three paragraphs (~0.7 per 1,000 words). Use one where an aside interrupts a sentence. Drafts had none.
-- **Sentence length.** Average ~25 words, with ~6 sentences per paragraph. Drafts ran 3 words longer and one sentence shorter because they merged material. Give each distinct study, finding or pipeline step its own sentence. A long sentence should carry one finding plus its statistics, not two findings fused with ", and".
-- **Commas.** Use fewer than two per sentence. Avoid comma-bounded modifiers hanging after a noun phrase. Avoid absolute endings of the form ", with X showing … and Y …"; write a second clause or a second sentence instead.
-- **No symmetry.** Do not build matched pairs such as "from A to B for X and from C to D for Y" or "by N for X and by M for Y". State the second comparison in a different form, or in its own sentence.
+- **Fewer, longer sentences.** Paragraphs average ~5–6 sentences of 23–28 words. A Results paragraph of 130 words has about five sentences. Do not write sentences under 10 words that state one property ("The method is fast."). Fold such a fact into the neighboring sentence as a clause or an appositive.
+- **Keep paired claims together.** When two findings, two steps or a claim and its caveat belong together, put them in one sentence with "and", "whereas", "while", "but" or ", which …". Do not split one tool's two operations (for example, aligning and then deduplicating) into two sentences.
+- **Commas.** Aim for ~1.5 commas per sentence (~2 in Results). Comma-bounded participial phrases and appositives are normal ("Calls from the long-read set, filtered for depth, were merged …"). One trailing participle carrying a number is fine (", reaching 70% coverage"), but use at most one per paragraph.
+- **Subordinate openers.** Published sentences often open on "While …", "Although …", "As Fig. 3a shows, …" or a cause, not only on the subject.
+- **Dashes.** Use about one em dash in every two or three paragraphs, most often in abstracts and introductions, to set off an appositive list or aside ("two classes of loci—centromeric arrays and gene clusters—"). Drafts had none.
+- **Semicolons** belong inside parentheses and Methods parameter lists only. Do not join running-prose clauses with them.
+- **Colons.** Use about one per 1,500 words. Do not introduce a list or result with a colon. A Methods sentence that leads into parameters or an equation may end with one.
+- **No staged signposting.** Avoid "In the first stage … In the second stage …" and "First, … Second, …". Also avoid matched clause pairs ("from A to B for X and from C to D for Y").
 
-## Voice, connectives and vocabulary
+## Voice and vocabulary
 
-- **First person.** Use about two "we/our" per paragraph in the abstract, Results, Discussion and Methods ("our cohort", "our assemblies", "we observed"). Do not depersonalize to "the samples" or "each assembly" where the authors would say "our".
-- **Sentence-initial connectives.** Use about one per paragraph in the introduction, Results and Discussion (~7–8 per 1,000 words; drafts had 3). Common choices: However, Thus, In contrast, In addition, Furthermore, Specifically, Despite this, Therefore. Methods rarely use them. An adverb tucked inside the verb ("have thus limited", "have nonetheless shown") is not a substitute. Put the connective at the front, and never in two consecutive sentences.
-- **Evaluative words.** Use about one per paragraph in the abstract, introduction and Discussion, and one in about every third Results paragraph. Typical words: key, significant, important, fundamental, valuable, insights, notably. Drafts used a quarter of the published rate. Keep these words even where the phrasing is slightly loose.
-- **"This"/"These" openings.** A sentence opening "These results …" or "This analysis …" is acceptable about once in three paragraphs.
-- **The authors' own wording.** Keep coinages, idioms and technical verbs exactly. Do not replace them with flatter or more textbook synonyms, and do not swap "like" for "such as" or reorder examples for smoothness.
-- **Defined terms.** Define a new term plainly in a clause, without quotation marks.
-- **Repetition is normal.** Repeat a noun across list items ("batch effects, plate effects"). Repeat a tool name as the subject, and repeat "using" in consecutive steps. Do not alternate synonyms (using/with, located/lay, gives/offers) to avoid repetition.
-- **Plain compounds.** Prefer the compound noun to a nominalized paraphrase ("variant filtering", not "the filtering of variants").
-- **Main clause.** Make the study's main object the subject of the main clause. Do not demote it to a trailing ", which …" clause.
-- **Direct questions.** An introduction may state the open problem as one direct question, at most once per paper. Do not recast it as "the question is whether …".
+- **Compact over explicit.** Keep terse parentheticals and noun pre-modifiers ("rare coding variants", "held-out fold") rather than unpacking them into relative clauses or explanatory glosses. Do not add a clause that explains what a value or term means unless that explanation is part of the content.
+- **No added framing.** Do not add "We propose that", "We then compared X with Y, since …", scoping phrases ("In region X, we find …" when X was just named) or the word "new" for emphasis.
+- **Keep the authors' rough edges.** Write in the loose, specific, slightly unidiomatic register of working scientists, for example "the latter", "points behind", "against" and nouns used as modifiers. Do not standardize these into textbook phrasing. Grammar must stay correct.
+- **Repetition and anaphora.** Repeat the key term rather than vary it. When the same long term would appear in every sentence, use "these", "the latter" or "ones" once or twice.
+- **First person.** Use about two "we/our" per paragraph in the abstract, Results and Discussion. Use "our" for the authors' own experiments ("our knockdown data show"). Methods are mostly passive, with at most one "we" per paragraph. Do not switch a passive Methods paragraph to "we aimed", "our libraries" and the like.
+- **Sentence-initial connectives.** About one per paragraph in the introduction, Results, Discussion and abstract, and rarely in Methods. Use However, Thus, Therefore, In contrast, In addition or Furthermore. Do not open sentences with "Notably,"; put evaluative words inside the sentence instead. Never use connectives in two consecutive sentences.
+- **Evaluative words.** Use about one per paragraph in the abstract, introduction and Discussion, and one in every two or three Results paragraphs. Typical words are key, important, substantial, intriguing, notable, valuable and insights. Use them as adjectives inside a clause ("an intriguing link", "two key strains"). Drafts used half the published rate.
+- **"This"/"These" openings.** Open a sentence with "These data …" or "This pattern …" about once every three or four paragraphs.
+- **Hedges.** Use fewer than in drafts: about one per Results or abstract paragraph, two in Discussion and almost none in Methods. Use "probably" or "may" once, tied to a specific cause. Never stack hedges ("would potentially").
+- **Defined terms** are introduced plainly in a clause, without quotation marks unless they are the authors' coinage.
 
 ## Section rules
 
-**Abstract.** ~155 words, ~7 sentences of ~23 words, two or three "we/our", one evaluative word.
-- Open with the stake in one sentence, then "Here we" (or "We present").
-- Give the dataset with its size, then findings with counts in separate sentences ("We find … We also show …"). Use "Furthermore" or "In addition" once if natural.
-- Close with what the work offers. Mild verb repetition there is fine.
+**Abstract.** ~155 words, ~6–7 sentences of ~23 words, two or three "we/our", one evaluative word, often one em dash.
+- Open with the background stake, then the gap, often with "However, …".
+- Then write "Here we" plus the main contribution, and give the findings with counts. A short "We thus …" or "We also …" sentence is fine.
+- Close on the last concrete finding or what the work provides. Do not close on a "Together …" sentence.
 
-**Introduction.** ~120 words, ~5 sentences of ~24 words.
-- Use three or four citation groups. Passives are common, and "we" is rare except in the final paragraph.
-- State what is known, then the limitation, as facts with citations, one study or claim per sentence.
-- End on the last fact, or on a "However, …" or "Thus, …" sentence that names the limitation in concrete terms. Do not end with a sentence saying that a new method, tool or study is required.
+**Introduction.** ~120 words, ~5 sentences of ~24 words, three or four citation groups.
+- Use passives freely, and "we" only in the final paragraph.
+- State what is known, then the limitation, as cited facts.
+- End on the last fact, or on a "However, …" sentence that names the limitation concretely. Do not end by saying that a new method is needed.
 
-**Results.** ~130 words, ~5–6 sentences of ~26 words, about six parentheses (panels, statistics, sample sizes, "(Methods)").
-- Open with "We then …", "To test whether …, we …", "In our cohort, …" or the finding itself.
-- Give one finding per sentence with its statistic. State null results flatly ("We did not observe …").
-- End on the last finding with its figure reference (often "consistent with earlier studies"), or on a short "Thus, …" or ", suggesting that …".
-- Do not add a sentence that only interprets or reframes the previous one.
+**Results.** ~130 words, ~5 sentences of ~27 words, ~2 commas per sentence, about six parentheses (statistics, panels, n, "(Methods)").
+- Open on the analysis and its outcome directly, or with a contrasting "While …" clause. Do not open with a sentence that only announces a comparison or restates its motivation.
+- Give numbers in comparison form inside one sentence ("raised the median from 0.61 to 0.74, 0.05 below the reference").
+- End on the last finding, optionally with ", probably because …" or ", suggesting that …".
 
-**Discussion.** ~150 words, ~6 sentences of ~27 words, first person ("We found …", "our data").
-- Use one or two sentence-initial connectives.
-- Use about two hedges, each tied to a specific claim. Do not write a run of graded hedges across consecutive sentences.
-- When reviewing prior work, give each study its own sentence with its own verb ("reported", "observed", "has been shown to").
-- End on the authors' finding or a concrete caveat in a full clause (for example "; however, X may act at a later stage"). Do not end on a tacked-on clause about future investigation.
+**Discussion.** ~150 words, ~5–6 sentences of ~27 words, first person.
+- Link the authors' result to prior work in the same sentence with "as reported previously", followed by superscripts.
+- Use explicit logical bridges ("may therefore explain both X and Y").
+- Use one or two connectives and about two hedges.
+- End on the authors' finding or a concrete caveat in a full clause.
 
-**Methods.** ~130 words, ~6 sentences of ~24 words, about four passives plus "we/our".
-- Put versions and parameters in parentheses where they fall in the sentence, even if the placement is slightly awkward. Semicolons are fine inside parameter lists.
-- Give one step or tool per sentence. Do not merge three tools into one long sentence.
-- Do not front purpose clauses ("To obtain X, we …"). Do not add clarifying restatements ("separately for A and for B").
-- Write thresholds the way the authors state them, repeating the noun.
+**Methods.** ~130 words, ~5–6 sentences of ~24 words, mostly passive.
+- Put versions and parameters in parentheses where they fall ("(v.2.1; default settings)").
+- Group consecutive processing steps done with one tool or vendor into one sentence. Repeat "using" or "were used" rather than varying the verb.
+- Do not front purpose clauses. Do not add clarifying restatements or explanatory glosses of parameters.
 
 ## Tone
 
-Quantitative: every claim is tied to a count, an effect size or a test. Mechanistic claims are cautious ("may act", "could indicate"). The prose is less uniform than an edited summary. Allow one loose or plainly worded phrase per paragraph, and do not tidy the clause order for elegance. Grammar, agreement and spelling must still be correct.
+Quantitative and plain. Every claim carries a count, effect size or test. The prose is less uniform than an edited summary: long sentences, commas, an aside, a repeated word, a slightly awkward but correct phrase. Do not polish each sentence to the same finish.

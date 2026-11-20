@@ -31,6 +31,7 @@ Rules:
 - Write telegraphic notes, not sentences: fragments, abbreviations and arrows are fine.
 - Keep every fact, claim, comparison, number with its unit, statistic, sample size, name (gene, protein, cell type, organism, method, software, dataset), and the strength of each claim (shown / suggests / speculated / unknown).
 - Keep citation markers exactly as written (for example [12] or [3–5]) next to the claim each supports, and figure or table references exactly as written (for example Fig. 2a, Extended Data Fig. 3b).
+- Keep names, abbreviations and notation exactly as the authors write them (casing, symbols, ranges). An abbreviation the paragraph uses without defining it was defined earlier in the paper: write it bare and add "(defined earlier)".
 - Use the field's standard terms, the ones the authors use (do not swap in synonyms to avoid their words), but do not keep their sentences, sentence structure, connectives or distinctive non-technical phrasing.
 - Do not describe or hint at the style (tone, voice, sentence length, connectives).
 - Keep the points in the order the paragraph presents them.

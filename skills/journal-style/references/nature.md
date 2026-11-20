@@ -1,154 +1,101 @@
 # Nature
 
-Measured on 40 recent Nature research articles (all fields). Numbers are per
-paragraph unless stated. Rewrites that failed blind tests had the same
-faults: too many semicolons, too much passive voice, too few "we", too
-many hedges, almost no evaluative words, and sentences that were split or
-merged to look tidy.
+Measured on 40 recent Nature research articles (all fields). Numbers are per paragraph unless stated. Blind judges caught rewrites mainly because they were smoother than the authors' prose. The rewrites:
+
+- swapped in synonyms for the authors' terms;
+- split or merged sentences into even shapes;
+- added explanations;
+- used dashes, semicolons, connectives, parentheses and evaluative words at half the published rate or less.
 
 ## House conventions
 
-- **British spelling with -ize endings**: analyse, behaviour, colour,
-  centre, fibre, tumour, modelling, labelling, signalling; but
-  characterize, organize, recognize.
-- "about 40%" or "approximately"; never "~" in running text. Use "versus"
-  for paired comparisons in parentheses: "(70% versus 30%)".
-- Write out "for example" and "that is". Never use "e.g." or "i.e." in
-  text.
+- **British spelling with -ize endings**: analyse, behaviour, tumour, modelling, signalling, artefact. Use characterize, organize and utilize.
+- **Numbers**:
+  - Spell out one to nine for counts without units ("five donors"). Use digits with units and from 10 up.
+  - Write a number out at the start of a sentence ("Twelve mice were …").
+  - Use "fewer than" for counts and "less than" for quantities.
+- Write "about 40%" or "approximately", never "~". Use "versus" in paired comparisons: "(70% versus 30%)".
+- Write out "for example" and "that is", never "e.g." or "i.e.". Examples usually go in parentheses with a comma: "(for example, soil pH)".
 - Use "probably" at least as often as "likely".
-- **Figure callouts join with "and", not semicolons**: (Fig. 2c and
-  Extended Data Fig. 4a), (Fig. 1b, Extended Data Fig. 2a and
-  Supplementary Table 3). Panels are lowercase: (Fig. 2c,d), (Fig. 5a–c),
-  (Fig. 3b, right).
-- **Ranges and pairs take en dashes**: "at 3–5 h", 2010–2020, RNA–protein
-  complexes, ChIP–seq. Elide a repeated unit: "at 12 and 36 h".
-- **Superscript notation**: write isotopes as ^14C or ^238U, never 14C.
-  Write marker status as GFAP^+ or CD8^−. At first use, give the word form
-  with the symbol: "SOX2-positive (SOX2^+)".
-- Citation markers are superscript numbers attached to the word with no
-  space: "previous work[14,15]", "packages[31]". Number them in order of
-  first appearance. Write "ref. [12]" or "refs. [3,4]" only when the
-  reference is the grammatical object.
-- Statistics: P = 0.003, n = 12 mice, two-sided Wilcoxon test, with spaces
-  around "=". Use "s.d." and "s.e.m.". Thousands take commas (12,000).
-- Use unspaced em dashes (—) about once per 1,300 words, not in every
-  paragraph.
-- Define an abbreviation once, at first use in the paper. Do not expand it
-  again in later paragraphs or sections. Do not expand a term the source
-  gives only as an abbreviation. Nested definitions inside parentheses are
-  normal: "(inhibitory neurons (INs), GAD2^+)".
+- **Figure callouts** join with "and", never semicolons: (Fig. 2c and Extended Data Fig. 4a). Panels are lowercase: (Fig. 2c,d), (Fig. 5a–c). Cite each panel once per paragraph. Do not repeat a callout at the end.
+- **En dashes** for ranges and pairs: 3–5 h, RNA–protein, ChIP–seq. Elide units: "at 12 and 36 h".
+- **Superscripts**: ^14C, GFAP^+, CD8^−. Give the word form at first use: "SOX2-positive (SOX2^+)".
+- **Citations** are superscript numbers attached to the word ("previous work[14,15]"), in order of first appearance. Write "ref. [12]" only when the reference is a grammatical object.
+- **Statistics**: P = 0.003, n = 12 mice, s.d., s.e.m., 12,000.
+- **Abbreviations**: define once per paper, nested if needed: "(inhibitory neurons (INs), GAD2^+)". Never re-expand a term in a later section. In Methods, write standard abbreviations bare (databases, QC, algorithm names).
 
-## Global rates (all sections)
+## Global rates (match them; the rewrites fell short)
 
-- **Semicolons**: almost none in prose. Do not join two clauses with a
-  semicolon. Do not use semicolons inside figure callouts or inside
-  parameter lists in Results. Methods allows at most one per paragraph,
-  and only to separate a list of settings.
-- **"we"**: about one to two per paragraph in Results, Methods and
-  abstract. Prefer "we found", "we observed" and "we performed" to an
-  impersonal passive.
-- **Passive voice**: about one passive per Results, introduction or
-  Discussion paragraph. In Methods, use three or four passives per
-  paragraph and at least one "we" sentence. Never make every sentence
-  passive.
-- **Evaluative words** such as "new", "powerful", "robust", "key",
-  "excellent", "considerably" and "first": about one per abstract,
-  introduction or Discussion paragraph. Use one every two Results
-  paragraphs. Keep the authors' own claims of novelty and strength in their
-  wording. Do not tone them down or delete them.
-- **Hedges**: use about one per Discussion paragraph and fewer elsewhere.
-  Use no "could", "may" or "would" in Results unless the content is
-  speculative. Do not turn a plain claim into "could enable".
-- **Sentence-initial connectives**: about one every two paragraphs.
-  "However", "Thus", "Further", "Indeed" and "In parallel" are all
-  authentic. Mid-sentence "thus" ("We thus identified …") is common.
-- **Sentence length**: the spread is moderate. Most sentences run 18–35
-  words, with an occasional short one. Do not chop a long sentence into
-  two or three short ones, and do not add very short punchy sentences.
+- **Em dashes** (unspaced): about one every two paragraphs in the introduction, Results and Discussion, most often in introductions. Use a single dash before an appended list or example, or a pair around an aside. Almost none in Methods. Four dash-free paragraphs in a row look machine-written.
+- **Semicolons**: about one every four paragraphs in the introduction, Results and Methods. Use them only:
+  - between items of an enumerated list, "(1) …; (2) …; and (3) …";
+  - between items of a list of settings.
 
-## How Nature sentences are built
+  Never join two balanced clauses with one.
+- **Connectives**: about one per paragraph in the introduction and Discussion, and one every one or two Results paragraphs.
+  - Authentic: "However", "Finally", "Thus", "Therefore", "Indeed", "In addition", "In contrast", and a mid-sentence "thus" or "therefore".
+  - Avoid formulaic openers: "Given these …", "Beyond its role as …", "Building on this".
+- **Evaluative words** (critical, key, comprehensive, first, greatly, strongly, simply):
+  - About one per abstract, introduction or Discussion paragraph, and one every two Results paragraphs.
+  - Keep the authors' emphatic adverbs and superlatives. Do not drop "simply" or downgrade "greatly" to "much".
+- **Parentheses**: about two per paragraph besides citations, and about five in Results. Put brief glosses ("(trained on one task)"), sample sizes, versions, suppliers, accession numbers and examples in parentheses rather than in clauses.
+- **This/These openers**: about one sentence in ten. Typically the first sentence of a paragraph links back ("These measurements …") or a sentence names a just-introduced object.
+- **"we"**: one to two per paragraph in Results, Methods and abstract.
+- **Passive voice**: about one per introduction, Results or Discussion paragraph, and three or four per Methods paragraph.
+- **Hedges**: about one per Discussion paragraph and fewer elsewhere. Never put modals in consecutive clauses ("could … which may …").
+- **Sentence length**: mostly 18–35 words, with an occasional short sentence.
+- **Word length**: Nature prose averages about 5.9 letters per word. Use the formal, longer verb or noun where the field does (performed, conducted, acquired, constitutes, utilized). Do not downshift to short verbs like give, tie or do.
 
-- **One observation per sentence, in the order observed.** Successive
-  findings go in successive sentences, each with its callout. Do not fuse
-  two observations with "whereas", "over the same period in which" or
-  "consistent with which". Do not tag on ", which indicates …" or ", which
-  makes it …".
-- **Long sentences come from lists, not from logic glue.** A 40-word
-  sentence listing seven cell types, each with its marker, is typical. A
-  40-word sentence chaining a result, an implication and future work is
-  not.
-- **Do not reword plain claims as contrasts.** Avoid frames such as
-  "Compared with X, Y is simpler", "need neither … nor …" and "In contrast
-  to X, Y works with …". State what the thing does or does not require.
-- **Do not split a sentence into a fact plus a recap.** Avoid "Z has a
-  bandgap of 6 eV. This makes …". Keep the number in the clause that uses
-  it: "a film whose bandgap (about 6 eV) is below the transition energy".
-- **Keep compact specialist modifiers.** Write "a UV-transmissive host" or
-  "conversion-electron-based detection". Do not unpack them into "a host
-  that transmits UV light".
-- **Use the field's verbs, repeated.** Repeat "found … found" and
-  "observed … observed" rather than rotating synonyms ("enriched",
-  "made up a higher proportion", "more abundant"). Do not rotate "as
-  expected", "consistent with" and "in line with" across sentences.
-  Prefer "regrow", "appear" and "show" to literary verbs such as
-  "unfold", "emerge", "regain" or "capped by".
-- **Allow authorial texture.** Use a parenthetical "that is,", a
-  sentence-initial "Indeed", or a slightly heavy phrase such as "the
-  recovery of …" where it fits. Do not polish every phrase into the most
-  idiomatic textbook form.
+## Write like the authors, not like an editor
+
+- **Use the field's standard term and its usual collocation**, and repeat it rather than rotating synonyms. Prefer compact compound nouns over paraphrase: "signal readout", not "the possibility of reading out the signal"; "of variable yield", not "and the yield is itself variable". Avoid metaphorical verbs for data or objects (carries, drives, tied to, arrives at); use features, leads to, based on, reaches.
+- **Add nothing**: no framing sentence before the claim, no explanatory clause restating what a term means, no appended consequence.
+- **Keep the source's structure of ideas.**
+  - Enumerated components stay enumerated with (1), (2), (3).
+  - Workflow steps stay in the mixed forms a scientist would list them in. Do not force every step into a parallel "X computation"/"Y selection" noun.
+  - Slash forms (and/or, male/female) stay as slashes.
+  - Thresholds are stated in words, one condition at a time ("below 15%", "above 200 genes"), not as compound inequalities.
+- **Do not reshape sentences for symmetry.**
+  - Keep a long introduction sentence long rather than splitting it into a topic sentence plus an elaboration ("X depends on Y. Practices range …").
+  - Do not merge two separately stated definitions or steps into one balanced sentence.
+  - Do not write consecutive sentences on the same template ("A cells showed X. B cells showed Y.").
+  - Join two related findings in one sentence with "and" or "whereas" when they belong together.
+- **State cause and effect directly**: "Existing panels lack samples from Y, making Z the first …". Do not recast it as an "Although …, …" contrast.
+- **No evaluative participial tail**: never ", establishing X as a promising …" or ", paving …". A factual participle mid-paragraph (", making it the first …") is fine.
+- **Tense**: keep one tense within a sentence. Use present tense for the summary of findings in abstracts and at the end of introductions ("We show …, and we identify …"). Use past tense for what was done in Results and Methods. Do not drift between "we observed" and "we find" in one paragraph.
+- **Leave adverbs where an author would put them.** Do not slot "therefore", "nonetheless" or "instead" after the subject in sentence after sentence.
 
 ## Section rules
 
-**Abstract (summary paragraph)**: about 205 words in about 9 sentences of
-about 24 words. Open with one or two sentences of background that a
-non-specialist can follow. These may carry a long list of applications
-with citations and one or two evaluative words. Next, write a sentence
-naming the limit ("However, …"). Then write "Here we report / Here we
-show", with no comma after "Here", plus the key numbers in parentheses.
-Give three to five result sentences that keep "we" as subject; vary their
-openings rather than repeating "We show that … We find that … We also find
-that …". End with one closing sentence of consequence. It may be a
-participial clause on the last result ("…, opening …"). Do not make it a
-separate "This makes …" sentence.
+**Abstract**: about 205 words in about 9 sentences of about 24 words.
+- Open with one or two background sentences a non-specialist can follow. They may carry a long list of applications with citations and one or two evaluative words.
+- Next, a sentence naming the limit ("However, …").
+- Then "Here we report/show" (no comma) with key numbers in parentheses.
+- Give three to five present-tense result sentences with "we" as subject. Join related findings within a sentence. "We also …" appears at most once.
+- End with one plain sentence of consequence, not a participial tag.
 
-**Introduction**: about 135 words in about 5 sentences averaging 26
-words. This is the most heavily cited section, with about three citation
-groups per paragraph. Move each paragraph from established knowledge to
-its limit, with "Although …" or "However, …" carrying the turn. Allow one
-dash and the occasional semicolon here. The last paragraph begins "Here we
-…" and states what was done and found, with numbers.
+**Introduction**: about 135 words in about 5 sentences averaging 26 words, with about three citation groups per paragraph.
+- Move from established knowledge to its limit, with "However", "Finally" or a direct "lack/remain" statement carrying the turn.
+- This is the section richest in dashes and semicolons.
+- The last paragraph states what was done and found, with numbers. Do not default to "Here we …". "We present here …", "In this work, we …" or an opener tied to the preceding problem ("To overcome these limits, we introduce …") are as common.
 
-**Results**: about 130 words in about 5 sentences averaging 27 words.
-This is the most parenthetical section, with about five parentheses per
-paragraph, mostly figure callouts after each claim. Typical openings are
-"To test whether …, we …", "We next …", "We thus …" and "As
-expected[n], we found …". Open with an active "we" sentence or a
-technique-as-subject sentence ("Live imaging showed …"), not a passive
-nominalization ("X was assigned by …"). End on a finding or a callout,
-not a takeaway. "Moreover" and "Furthermore" appear at most once a page.
-"Notably" and "Interestingly" almost never appear.
+**Results**: about 130 words in about 5 sentences averaging 27 words, with about five parentheses, mostly callouts after each claim.
+- Typical openings: "To test whether …, we …", "We next …", "We thus …", "As expected[n], we found …", or a technique as subject ("Live imaging showed …").
+- End on a finding or a callout, not a takeaway.
+- "Notably" and "Interestingly" are almost never used.
 
-**Discussion**: about 140 words in about 5 sentences of about 28 words,
-with fewer callouts. Use about one hedge per paragraph ("probably", "may",
-"suggest"). In the first paragraph, restate the main finding in one or two
-sentences ("We have identified …", "Our results show …"). Later
-paragraphs relate the finding to prior work with citations and name
-limitations plainly. The last paragraph says what the result enables,
-concretely. Write separate points as separate sentences; do not join a
-limitation to future work with ", and".
+**Discussion**: about 140 words in about 5 sentences of about 28 words, with fewer callouts and about one hedge.
+- In the first paragraph, restate the main finding ("We have identified …", "Our studies show …").
+- In later paragraphs, relate the finding to prior work with citations. Name limitations in the authors' own plain, slightly heavy wording, without stock scaffolding ("One limitation of our work is …", "In light of this, it remains open …").
+- The last paragraph says concretely what the result enables.
 
-**Methods**: about 140 words in about 6 sentences of about 24 words, in
-the past tense. Mix passive with "we": "We trained …", "Samples were
-fixed …". Pack quantities, suppliers and settings into parentheses, as in
-"(1:500, Abcam, ab4729)" and "at 37 °C for 30 min". Combine software,
-versions and packages in one sentence rather than two sentences with the
-same opening. Thresholds go in running text ("with FDR ≤ 0.1 and log2
-fold change ≥ 0.5"). Include no motivation sentences and no evaluation of
-the method. Do not coin labels with "referred to as" unless the source
-names them.
+**Methods**: about 140 words in about 6 sentences of about 24 words, mainly past tense.
+- Write one step per sentence, even if consecutive sentences open the same way. Several short sentences ("Predicted doublets were removed.") are normal. Do not pack two steps into a balanced "…, and …" compound.
+- Mix passive with "we".
+- Put quantities, suppliers and settings in parentheses: "(1:500, Abcam, ab4729)", "at 37 °C for 30 min".
+- Give definitions of groups or criteria their own sentence.
+- Use no motivation sentences, no evaluation of the method, and no coined labels the source does not use.
 
 ## Tone
 
-Write confidently and specifically for scientists outside the field.
-Define terms once and give context in a clause. The authors' own claims of
-novelty and sensitivity stay; the writer adds none and removes none.
+Write confidently and specifically for scientists outside the field. The authors' claims of novelty and strength stay as they are. The writer adds none, removes none and does not polish the authors' phrasing into textbook form.
