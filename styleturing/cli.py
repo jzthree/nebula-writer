@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("exemplars", help="write the skill's bank of published example paragraphs (CC BY, training split)")
     e.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
     e.add_argument("--journals", default=",".join(JOURNALS))
-    e.add_argument("--per-section", type=int, default=6)
+    e.add_argument("--per-section", type=int, default=12)
 
     rep = sub.add_parser("report", help="rewrite a run's report")
     rep.add_argument("run_dir", type=Path)

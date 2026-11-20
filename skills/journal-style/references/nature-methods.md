@@ -3,144 +3,145 @@
 Measured on recent open-access Nature Methods articles; numbers are per
 paragraph unless stated. "pk" means per 1,000 words.
 
-## Sentence building (the main gap between drafts and published text)
-
-- **Fewer, longer sentences.** Published paragraphs have about 5–6 sentences
-  averaging 26–27 words in Results and Discussion, and 23–24 in abstract,
-  introduction and Methods. Sentence-length SD is 8–9 words. In Results,
-  include at least one sentence over 40 words that carries several steps or
-  findings joined by commas, "and then", "while", "including" or "which".
-  Drafts that average 23 words with even lengths read as rewrites.
-- **Do not split.** A sequence of steps belongs in one sentence ("we computed
-  A (Fig. 2a), plotted B (Fig. 2b) and then ranked C by D (Fig. 2c)"). A
-  finding and its interpretation share a sentence through a participle or
-  "indicating that …". Do not break a definition into a follow-up sentence
-  ("The two parts are …"). Use a colon or a parenthesis inside the sentence
-  instead.
-- **Do not add sentences.** Never add a sentence that restates the previous
-  one as a general rule, and never give a conclusion twice (a "therefore"
-  sentence followed by an "Altogether" sentence). One interpretive sentence
-  at most, usually the last.
-- **Write as part of a paper, not as a standalone paragraph.** Abbreviations
-  defined earlier (anything past the first introduction paragraph) are used
-  bare: "MSI measures …", not a fresh "mass spectrometry imaging (MSI)". Do
-  not define an abbreviation you will not use again. A paragraph may open by
-  pointing back with "These"/"This" + noun ("These scores …") rather than
-  re-describing its subject in full.
-
 ## House conventions
 
-- **American spelling**: analyze, behavior, color, labeled, modeling.
-- Person-first wording ("people with diabetes"); suspended hyphens
-  ("cell- or organ-level"); "number of", never "no.".
-- Use "2D", "3D" and "4D" rather than spelling out dimensions.
-- "approximately" before a precise value in running text; "~" mostly inside
-  parentheses or for rough magnitudes.
-- "for example" written out, often in parentheses listing tools. Write "that
-  is", not "i.e."; never "e.g." in text. "likely" rather than "probably".
-- Write "By contrast," not "In contrast,".
-- Figure references with lowercase panels, after the claim: (Fig. 2b),
-  (Extended Data Fig. 3), (Supplementary Fig. 4,5), (Supplementary Note 2).
-- Name tools as their authors style them. The method's name is repeated as
-  subject rather than replaced by "it", but not in three consecutive
-  sentences; alternate with "the method", "this tool" or "we".
+- **American spelling**: analyze, behavior, color, center, labeled, modeling.
+- Nature Portfolio copyediting: person-first wording ("people with
+  diabetes", not "diabetic patients"); suspended hyphens ("cell- or
+  organ-level"); "number of" in running text, never "no.".
+- "approximately" before a precise value in running text ("approximately
+  31.2%"); "~" mostly inside parentheses or for rough magnitudes ("~10^6
+  reads").
+- "for example" written out, often in parentheses listing tools ("(for
+  example, ToolA[12] and ToolB[15])"). Write "that is", not "i.e."; never
+  "e.g." in text.
+- "likely" rather than "probably".
+- Figure references use lowercase panels: (Fig. 2b), (Extended Data Fig. 3),
+  (Supplementary Fig. 4), (Supplementary Note 2). Place them after the claim
+  they support, not at the start of the paragraph.
+- Name tools as their authors style them (lowercase or mixed case kept). The
+  method being introduced is often the grammatical subject, and its name is
+  repeated rather than replaced by "it" or "the tool".
+- Give each quantity its own parenthesis or clause. Do not merge
+  abbreviation definitions and numbers into one semicolon-separated tuple,
+  and do not add column-style headers like "(count; percent)".
 
 ## Word choice and texture
 
-- **Use the wording in the notes.** Keep unusual but correct word choices,
-  sentence-initial time words ("Today, …"), inverted emphasis ("only when A
-  and B are combined does …"), the authors' own abbreviation format and
-  their coinages. Do not convert them into the most standard idiom.
-- **No lexical upgrades.** Do not swap a plain word for a rarer formal one
-  (an uncommon adverb or preposition, a compound adjective like
-  "custom-designed", "as reflected by", "suggestive of"). Repeat the plain
-  word or construction across sentences ("methods such as … methods such
-  as", "we used … we used").
-- **Evaluative words** (key, essential, powerful, comprehensive, robust,
-  highlight, capacity, utility, excel): about one per paragraph in abstract,
-  introduction, Results and Discussion; rare in Methods.
-- **Hedges.** Abstract, introduction and Methods: state claims directly.
-  Results and Discussion: about one "suggesting", "potential" or "may" per
-  paragraph, attached to an inference. Forward-looking claims are unhedged:
-  "ToolX will accelerate …", not "We expect ToolX to …".
-- **"we" at the journal's rate**: about two per paragraph in Results,
-  Discussion, abstract and Methods. Do not recast "we" sentences into
-  passives; passives are about one sentence in five outside Methods.
-- **This/These openers**: about one sentence in eight or nine starts with
-  "This"/"These" + noun or verb ("These results reveal …", "This
-  observation indicates …"). Use one per paragraph in Results, Discussion
-  and introduction.
-- **Connectives: at most one per paragraph** (Methods: one every three
-  paragraphs). Choose However, By contrast, In addition, Therefore. Never two
-  formal adverbs in one paragraph (However … Nevertheless), and no
-  sentence-initial "Moreover"/"Furthermore" just to link.
-- **Colons and semicolons occur.** About one colon per five paragraphs, to
-  introduce named items after a number ("two classes: A and B"). Semicolons
-  about one per two Results paragraphs and one per three Methods paragraphs,
-  inside parentheses with statistics or definitions ("(n = 12; P = 0.01)").
-  Do not join two clauses with a semicolon.
+- **Evaluative words at the journal's rate.** Published Nature Methods text
+  uses words like key, essential, powerful, considerable, comprehensive,
+  novel, robust, highlight, capacity and utility far more than drafts do
+  (about 7 pk in abstract, introduction and Discussion, about one per
+  paragraph; about 4 pk in Results; rare in Methods). Use one where the
+  authors would claim it; do not strip every one out.
+- **Few hedges.** Drafts hedge three times more than published text. In
+  abstracts, introductions and Methods, state claims directly ("X detects",
+  "Y can provide"); avoid "could", "may", "potentially", "might" unless the
+  content is speculative. Discussion allows about one hedge per paragraph.
+- **Academic nominal phrasing, not plain-English paraphrase.** Published
+  text uses longer, Latinate words and nominalizations ("the evaluation of",
+  "the integration of", "greatly impacts the utility of", "in the absence
+  of"). Do not paraphrase into conversational clauses ("how X is done
+  affects how useful Y is", "lays out", "caps", "much of this remains
+  untapped").
+- **Repeat phrases.** Authors reuse the same verb or construction in
+  adjacent sentences ("we used … we used", "followed by … followed by",
+  "Here we … Here we also"). Do not cycle synonyms (applied / built /
+  selected / passed to) to avoid repetition.
+- **This/These openers are normal here.** About one sentence in ten starts
+  with "This"/"These" + noun ("This dataset has been used …", "These data
+  contain …"). Use one per paragraph where it links to the previous
+  sentence.
+- **Connectives at roughly one or two per paragraph** in introduction,
+  Results and Discussion (Methods: about one every three paragraphs):
+  However, Nevertheless, Furthermore, Moreover, In addition, Therefore,
+  Altogether. A paragraph may open with "Moreover," or "In addition,"
+  continuing the previous one; not every paragraph needs a self-contained
+  topic sentence.
+- **Colons are rare** (about one per four paragraphs). Do not use a colon to
+  set up a summary ("neurons act jointly: …") or to introduce a list
+  after "including". Semicolons occur mostly inside parentheses with
+  statistics; do not join two clauses with "; this …".
+- **Rhythm.** Sentence-length SD is about 8 words. In a six-sentence
+  paragraph include at least one sentence under 15 words and one over 35.
+  Average around 25 words; do not let every sentence run long.
+- **Leave sentences as the content falls.** Do not merge two separate
+  statements into one compound with "and we therefore"; do not split one
+  long contrast ("While …, there is …") into tidy standalone declaratives.
+  Long sentences in this journal accumulate clauses with "while",
+  "including", "as well as", not with semicolons.
 
 ## Things drafts add that published text does not
 
-- Fronted time or context openers ("Over recent years, …") before the
-  subject; "We first sought to …", "We aimed to …", "With this goal, …".
-- Generic gap sentences ("X has been hard, and ToolX solves this"). State
-  what the method lets one do ("ToolX makes it possible to measure …").
-- Tagged-on participial consequences (", raising doubt about …", ",
-  thereby enabling …") and synonym doublets ("diverse and varied").
-- Tidy parallel frames: "For A, … For B, …"; three matched prepositional
-  phrases; "separately for X and for Y" symmetry.
-- Explanatory glosses of obvious mechanism; unpacked field shorthand.
-- Closing sentences that echo the title, restate the aim or address users
-  generically.
-- Stock defaults: rapidly growing, wide range of, diverse combinations,
-  substantial challenge, most suitable, long track record.
+- Explanatory glosses of an obvious mechanism ("where several neighbors may
+  fall in range"), or unpacking of field shorthand into a longer phrase.
+- Interpretive tags at the end of a sentence (", so X entails a
+  trade-off", ", thereby enabling …", ", which makes it suitable for …").
+- Bridges that summarize the previous sentence ("Despite this growth,",
+  "Together, these gaps …") in place of a plain connective.
+- Verb triplets and tricolons ("reduce A, permit B and thereby improve C").
+  Each verb in a list must fit its subject.
+- Closing sentences that echo the paper's title or restate the aim as a
+  setting "in which to test whether …".
+- Generic user-facing endings ("for users to choose the most suitable tool
+  for a given analysis").
+- Stock adjective defaults: rapidly increasing, diverse combinations,
+  substantial challenge, most suitable. Prefer the field's term and specific
+  nouns.
 
 ## Section rules
 
 **Abstract**, ~155 words, ~7 sentences of ~22 words, no citations, no
-semicolons, at most one dash. The problem in practical terms, then the
-method with full name and abbreviation ("Here we present …" or "We
-developed …"); do not follow it with an appositive "a tool that …" and then
-"We demonstrate … We expect …" in a fixed template. Vary subjects across
-result sentences (method name, "we", "This"), with present-tense verbs.
-One evaluative word. End with an unhedged claim of impact or a short
-availability sentence ("ToolX is available at example.org").
+semicolons, at most one colon. The problem in practical terms (what current
+analyses do and what that loses), then "We present" or "We introduce" (with
+or without "Here") plus the method's full name and abbreviation. Then what it
+does, stated with present-tense verbs and the method's name as subject in
+consecutive sentences ("ToolX detects … ToolX can identify …"); do not open
+each result sentence with a parallel "In <setting>, ToolX …" frame. One
+evaluative word is expected (tremendous, fundamental, clinically relevant). End
+with a short availability sentence naming the URL ("ToolX is available at
+example.org"); no "freely" or "open source and available".
 
-**Introduction**, ~160 words, ~6–7 sentences of ~24 words, citing three to
-four groups, about one passive per two sentences, "we" rare until the last
-paragraph. Name existing approaches and their concrete limitation ("cannot
-handle overlapping cells"). One contrast connective per paragraph at most.
-Mid-introduction paragraphs continue the previous one: abbreviations bare,
-no re-introduction of the topic. No hedges.
+**Introduction**, ~160 words, ~7 sentences of ~24 words, citing three to
+four groups, about one passive per two sentences. Survey existing
+approaches by name and state their limitation concretely ("cannot handle
+overlapping cells", "requires paired data"). Contrasts use sentence-initial
+"Nevertheless," "However," "Furthermore, while …,". The gap may be stated
+with a nominal construction ("an absence of systematic evaluation of …"),
+and the closing sentence may start with "These" and name the resulting
+challenge in academic phrasing. No hedges.
 
-**Results**, ~150 words, ~5–6 sentences of ~27 words, about two "we".
-Opening sentence often long, packing purpose and several steps with their
-figure panels ("To test whether …, we implemented A that …"). Describe
-datasets with accession, organism and property. Report benchmarks with
-metric and comparison ("a median Pearson's r of 0.71 versus 0.58 for
-ToolB"). End on the last finding or on one interpretive "This/These …
-indicates/highlights" sentence; never both a "therefore" restatement and a
-summary.
+**Results**, ~150 words, ~6 sentences of ~27 words, about two "we" per
+paragraph. Vary openings. Do not default to "To evaluate X, we next
+applied …"; a paragraph may open with a statement about the step or dataset
+("The next benchmark uses …") followed by "Therefore, we …", or with
+"First," / "Finally, we …". Describe a dataset with its accession,
+organism and property, then a "This dataset …" sentence on why it is used.
+Report benchmarks with metric and comparison ("a median Pearson's r of 0.71
+versus 0.58 for ToolB"). A Results paragraph may end on a plain summary
+of what the analysis shows about the method ("Altogether, these benchmarks
+show that ToolX …"); this is house style. Do not end with "These properties
+make …" or a "thus" consequence.
 
-**Discussion**, ~140 words, ~5–6 sentences of ~26 words, almost no
-parentheses, no dashes, about one hedge. Restate what the method enabled,
-past tense, with an evaluative verb or noun; vary openers. Name limitations
-and future work directly. A paragraph may close with "Altogether, …" plus
-one evaluative word, once per Discussion.
+**Discussion**, ~140 words, ~6 sentences of ~26 words, almost no
+parentheses, no dashes. Restate what the method enabled, in past tense,
+with an evaluative verb or noun ("We demonstrate the strength of ToolX by
+…"); vary the openers, avoid "Here we applied". Name limitations and future
+work directly. Closing a Discussion paragraph with "Altogether, these
+findings …" plus one evaluative word (key, capacity, utility) is normal; do
+not compress the close into "X can thus …".
 
-**Methods**, ~130 words, ~5–6 sentences of ~23 words, about three passives
-and one or two "we" per paragraph. Describe a computational procedure that
-the method performs in present tense with "we" ("we embed …, then cluster
-…"); describe experiments done in past tense, mixing passive and "we". Do
-not convert a paragraph wholly to past passive. Software, versions,
-parameters and hardware inline, often in parentheses ("(version 2.1)").
-Repeat procedural verbs. Write "genes were selected using function()", not
-a function as subject of a purpose clause. Do not end with ", which yielded
-…".
+**Methods**, ~130 words, ~6 sentences of ~23 words. Passive voice
+dominates (about three passives per paragraph) with "we" one or two times;
+do not write a Methods paragraph wholly in "we". Software, versions,
+parameters, hardware and training details inline, often in parentheses
+("(maximum = 500)", "(version 2.1)"). Repeat procedural verbs ("was used",
+"followed by"). Do not make a function the subject of a purpose clause
+("function() then selected genes so that …"); write "genes were selected
+using function()". Do not end with ", which yielded …".
 
 ## Tone
 
 A tool paper: concrete about what the method does, on which data, how well
-and compared with what. Authors' phrasing is kept even when slightly
-unusual; sentences are long and loaded, not tidy; claims are stated.
+and compared with what. Technical terms are used without apology, the
+method's name recurs as subject, and claims are stated, not hedged.
