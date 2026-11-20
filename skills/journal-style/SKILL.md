@@ -1,14 +1,14 @@
 ---
 name: journal-style
-description: Write or revise scientific paragraphs so they read like text published in Nature, Science, Nature Genetics or Nature Methods. Use when drafting, rewriting or polishing manuscript prose (abstract, introduction, Results, Discussion, Methods) for one of these journals, or when the user asks for "Nature style", "Science style" or similar. Rules are measured against published papers and validated by a blind test in which judges try to tell skill-written paragraphs from published ones.
+description: Write or revise scientific paragraphs so they read like text published in Nature, Science, Nature Genetics or Nature Methods. Use when drafting, rewriting or polishing manuscript prose (abstract, introduction, Results, Discussion, Methods) for one of these journals, or when the user asks for "Nature style", "Science style" or similar. Rules are measured against published papers and validated by a blind test in which expert readers compare skill-written paragraphs with published ones.
 ---
 
 # Writing like a published paper in a top journal
 
 Published papers in these journals were written by scientists and then
 edited by professional editors. They read as dense, specific and plain.
-AI-written scientific prose is recognized by a small set of habits; most
-of this skill is about not having them. Then the journal's own reference
+Machine-drafted scientific prose has a small set of recognizable habits;
+much of this skill is about not having them. Then the journal's own reference
 file (`references/<journal>.md`) adds what is specific to it.
 
 ## How to use this skill
@@ -70,8 +70,8 @@ file (`references/<journal>.md`) adds what is specific to it.
 
 ## Texture: published prose is not perfectly polished
 
-Judges who compare a rewrite with the published paragraph pick the published
-one because it is *less* uniform. Without introducing errors:
+Published prose is less uniform than a machine draft, and the unevenness is
+part of the house voice. Without introducing errors:
 
 - Repeat a term rather than vary it ("contamination … contamination",
   "we also find … we also find"). Elegant variation is a tell.
@@ -88,12 +88,12 @@ one because it is *less* uniform. Without introducing errors:
   that the content does not need.
 - Hedge only where the content is uncertain; do not hedge systematically.
 
-## Patterns that give AI rewrites away
+## Patterns that separate machine drafts from published prose
 
-Blind judges comparing rewrites with published paragraphs name these most:
+Expert readers comparing drafts with the published paragraphs point to these most often:
 
 - **Tidying.** Authors write long compound sentences that carry two or
-  three findings joined by "and", "whereas" or "but"; AI splits them into
+  three findings joined by "and", "whereas" or "but"; machine drafts split them into
   short, evenly sized sentences of one fact each. Keep related findings in
   one sentence; let some sentences run long.
 - **Negation pivot.** "X alone does not recruit Y. Instead, Y binds …".

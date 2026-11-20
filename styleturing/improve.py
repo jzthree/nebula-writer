@@ -17,7 +17,7 @@ from .experiment import read_jsonl
 from .llm import Client, Model
 from .stylometry import FEATURES, compare, features
 
-REVISER_SYSTEM = """You maintain a writing-style skill that an AI model follows to write paragraphs indistinguishable from those published in a specific journal. You are given evidence of how its latest output was still told apart from the published text, and you rewrite the journal's reference file to fix that.
+REVISER_SYSTEM = """You maintain a writing-style skill that helps scientists write manuscripts in the style of a specific journal. Its output is measured against the journal's published paragraphs: expert readers compare a paragraph written with the skill to the published paragraph with the same content and say what still separates them. You revise the journal's reference file so that the skill's output matches the journal's published style more closely.
 
 The skill is used to WRITE new paragraphs for this journal, from notes, data or a rough draft. It is not an editing guide for a given source text: phrase every rule as how to write (never "keep the source's …").
 
@@ -27,6 +27,7 @@ Rules for the reference file:
 - Make rules concrete and checkable (what to do, what to avoid, with numbers where the profile gives them), not adjectives like "concise" or "elegant".
 - Never paste sentences from the example paragraphs. Illustrate a pattern with a short invented example if needed.
 - Keep what already works; remove or fix rules that the evidence shows backfire.
+- The skill must produce correct, well-edited prose. Never recommend errors (grammar, agreement, articles, spelling, typos) even if published text contains them; match the journal's style, not its slips.
 - Organize by section (abstract, introduction, Results, Discussion, Methods) where the journal differs by section.
 - At most 1,400 words. Keep it shorter than that if you can: the writer reads all of it.
 
@@ -41,6 +42,9 @@ def copied_wording(reference: str, texts: list[str], limit: int = 6) -> list[str
     """Runs of `limit`+ ordinary words the reference shares with evaluation paragraphs (names and numbers aside)."""
     ref_words = re.findall(r"[a-z]+", reference.lower())
     grams = {" ".join(ref_words[i:i + limit]) for i in range(len(ref_words) - limit + 1)}
+    # Figure and reference pointers are house conventions, not wording.
+    convention = {"fig", "figs", "extended", "data", "supplementary", "table", "tables", "note", "notes", "and", "ref", "refs", "s", "a", "b", "c", "d", "e", "f", "g", "h"}
+    grams = {g for g in grams if sum(word in convention for word in g.split()) < 4}
     found: list[str] = []
     for text in texts:
         words = re.findall(r"[a-z]+", text.lower())
