@@ -11,6 +11,7 @@
  * transcripts and thread resume work unchanged.
  */
 
+import { AsyncResource } from "node:async_hooks";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { elideLongPayloads } from "./cli-output";
 import { registerSteerable, steerMessageText, type SteerResult } from "./steering";
@@ -541,7 +542,9 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
     let unregister: () => void = () => undefined;
     const deltas = new TurnDeltaTracker();
     const sink: TurnSink = {
-      notify: (method, params) => {
+      // The app server is shared by every run: its notifications arrive outside this
+      // turn's async context, so bind them back to it (per-run progress follows the context).
+      notify: AsyncResource.bind((method: string, params: Json) => {
         // A stopped turn on this thread can still report in: only this turn's events count.
         const turnOf = typeof params.turnId === "string" ? params.turnId : typeof (params.turn as Json | undefined)?.id === "string" ? (params.turn as Json).id as string : null;
         if (method === "turn/started") {
@@ -570,7 +573,7 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
         } else if (translated.type === "turn.failed" || translated.type === "error") {
           finish({ ok: false, error: new Error(String(translated.message)) });
         }
-      },
+      }),
       closed: (error) => finish({ ok: false, error })
     };
     const finish = (outcome: { ok: true } | { ok: false; error: Error }) => {

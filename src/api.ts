@@ -81,8 +81,8 @@ export async function getHealth(): Promise<HealthResponse> {
   return getHealthFromSidecar();
 }
 
-export async function getAiProgress(): Promise<{ progress: AiProgressSnapshot | null }> {
-  return getAiProgressFromSidecar();
+export async function getAiProgress(runId: string | null = null): Promise<{ progress: AiProgressSnapshot | null }> {
+  return getAiProgressFromSidecar("", runId);
 }
 
 export async function getShareInfo(): Promise<ShareInfo> {
@@ -161,8 +161,8 @@ export async function uploadAiAttachment(file: File, target: "sidecar" | "local"
   return uploadAiAttachmentToSidecar(target === "local" ? LOCAL_AI_BASE : "", file);
 }
 
-export async function getLocalAiProgress(): Promise<{ progress: AiProgressSnapshot | null }> {
-  return getAiProgressFromSidecar(LOCAL_AI_BASE);
+export async function getLocalAiProgress(runId: string | null = null): Promise<{ progress: AiProgressSnapshot | null }> {
+  return getAiProgressFromSidecar(LOCAL_AI_BASE, runId);
 }
 
 /**

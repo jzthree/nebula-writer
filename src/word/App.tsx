@@ -844,22 +844,21 @@ export function App() {
   useEffect(() => {
     return subscribeWriterEvents({
       onSessionUpdated: () => void syncSessionSuggestions("update"),
-      onAiProgress: (incoming, queue) => {
+      onAiProgress: (incoming, runs) => {
         const runningId = runningTurnRef.current;
         if (!runningId) {
           return;
         }
-        // The sidecar runs one request at a time, for every pane and agent: only this
-        // pane's own run is shown as its progress; while it waits, say so instead.
+        // Runs are independent (other panes, other documents, agents run at the same
+        // time): show only this pane's own run.
         const ownRun = runIdRef.current;
-        const progress = incoming && (!incoming.runId || !ownRun || incoming.runId === ownRun) ? incoming : null;
-        const waiting = !progress && ownRun !== null && queue.some((entry) => (entry as { runId?: string | null } | null)?.runId === ownRun);
-        const text = progress
-          ? describeProgress(progress.stage, progress.passIndex, progress.passTotal)
-          : waiting ? `Waiting for another Writer request${incoming?.requestedBy ? ` (from ${incoming.requestedBy})` : ""} to finish` : null;
-        if (!progress && !waiting) {
+        const progress = ownRun
+          ? runs.find((run) => run.runId === ownRun) ?? (incoming?.runId === ownRun ? incoming : null)
+          : incoming && !incoming.runId ? incoming : null;
+        if (!progress) {
           return;
         }
+        const text = describeProgress(progress.stage, progress.passIndex, progress.passTotal);
         setTurns((current) => current.map((turn) => {
           if (turn.id !== runningId || turn.role !== "assistant") {
             return turn;

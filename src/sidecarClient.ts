@@ -270,8 +270,10 @@ export interface AiProgressSnapshot {
   runId?: string | null;
 }
 
-export async function getAiProgressFromSidecar(apiBase = ""): Promise<{ progress: AiProgressSnapshot | null }> {
-  const response = await sidecarFetch(sidecarUrl(apiBase, "/api/ai/progress"));
+/** Progress of one run (by runId) or of the latest, plus every run in flight: runs are independent. */
+export async function getAiProgressFromSidecar(apiBase = "", runId: string | null = null): Promise<{ progress: AiProgressSnapshot | null; runs?: AiProgressSnapshot[] }> {
+  const path = runId ? `/api/ai/progress?runId=${encodeURIComponent(runId)}` : "/api/ai/progress";
+  const response = await sidecarFetch(sidecarUrl(apiBase, path));
   return readJson(response);
 }
 

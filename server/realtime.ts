@@ -264,8 +264,9 @@ function xmlNodeText(node: unknown): string {
  * review advancing (e.g. "coverage pass 3 of 8"), not just the client that
  * started it. A null progress signals completion.
  */
-export function broadcastAiProgress(progress: unknown, queue: unknown[] = []): void {
-  const payload = JSON.stringify({ type: "ai-progress", progress: progress ?? null, queue });
+export function broadcastAiProgress(progress: unknown, runs: unknown[] = []): void {
+  // progress: the run that just changed (null when a run ended); runs: every run in flight.
+  const payload = JSON.stringify({ type: "ai-progress", progress: progress ?? null, runs });
   for (const client of eventClients.keys()) {
     if (client.readyState === client.OPEN) {
       client.send(payload);

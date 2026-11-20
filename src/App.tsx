@@ -1850,25 +1850,23 @@ export function App() {
           payload = null;
         }
         if (payload?.type === "ai-progress") {
-          // Someone (a collaborator or an agent) is running an AI request
-          // through the shared sidecar — show its live stage to everyone.
-          const progress = payload.progress as { provider?: string; requestedBy?: string | null; stage?: string } | null;
-          setRemoteAiProgress(progress && progress.provider && progress.stage
-            ? { provider: progress.provider, requestedBy: progress.requestedBy ?? null, stage: progress.stage }
-            : null);
-          const live = payload.progress as { stage?: string; passIndex?: number | null; passTotal?: number | null; startedAt?: string } | null;
-          liveAiProgressRef.current = live && live.stage
-            ? { stage: live.stage, passIndex: live.passIndex ?? null, passTotal: live.passTotal ?? null, startedAt: live.startedAt ?? new Date().toISOString() }
-            : null;
-          // Drafts preview this tab's own turn only: another request's never show as ours.
-          const liveRun = payload.progress as { drafts?: AiSuggestion[]; runId?: string | null } | null;
+          // Runs are independent: this tab follows its own run, and shows the
+          // others (a collaborator, an agent, another pane) as theirs.
+          type LiveRun = { provider?: string; requestedBy?: string | null; stage?: string; passIndex?: number | null; passTotal?: number | null; startedAt?: string; drafts?: AiSuggestion[]; runId?: string | null };
+          const incoming = payload.progress as LiveRun | null;
+          const listed = (payload as { runs?: LiveRun[] }).runs;
+          const runs: LiveRun[] = Array.isArray(listed) ? listed : incoming ? [incoming] : [];
           const ownRun = aiRunRef.current?.runId ?? null;
-          const liveDrafts = liveRun && (!liveRun.runId || !ownRun || liveRun.runId === ownRun) ? liveRun.drafts : undefined;
-          setAiDrafts(Array.isArray(liveDrafts) ? liveDrafts : []);
-          const queue = (payload as { queue?: Array<{ provider?: string; requestedBy?: string | null }> }).queue;
-          setRemoteAiQueue(Array.isArray(queue)
-            ? queue.filter((entry) => entry?.provider).map((entry) => ({ provider: entry.provider as string, requestedBy: entry.requestedBy ?? null }))
-            : []);
+          const own = ownRun ? runs.find((run) => run.runId === ownRun) ?? null : null;
+          const other = runs.find((run) => run !== own && run.provider && run.stage && (!ownRun || run.runId !== ownRun)) ?? null;
+          setRemoteAiProgress(other && other.provider && other.stage
+            ? { provider: other.provider, requestedBy: other.requestedBy ?? null, stage: other.stage }
+            : null);
+          setRemoteAiQueue(runs.filter((run) => run !== own && run !== other && run.provider).map((run) => ({ provider: run.provider as string, requestedBy: run.requestedBy ?? null })));
+          liveAiProgressRef.current = own && own.stage
+            ? { stage: own.stage, passIndex: own.passIndex ?? null, passTotal: own.passTotal ?? null, startedAt: own.startedAt ?? new Date().toISOString() }
+            : null;
+          setAiDrafts(Array.isArray(own?.drafts) ? own.drafts : []);
           return;
         }
         void refreshSharedSession();
@@ -2313,16 +2311,17 @@ export function App() {
     };
     const poll = async () => {
       try {
-        const result = localAiActiveRef.current ? await getLocalAiProgress() : await getAiProgress();
+        const ownRun = aiRunRef.current?.runId ?? null;
+        const result = localAiActiveRef.current ? await getLocalAiProgress(ownRun) : await getAiProgress(ownRun);
         if (cancelled) {
           return;
         }
-        const progress = result.progress;
+        // Asked by runId: only this tab's run (a server without per-run progress answers with any run).
+        const progress = result.progress && (!result.progress.runId || !ownRun || result.progress.runId === ownRun) ? result.progress : null;
         liveAiProgressRef.current = progress
           ? { stage: progress.stage, passIndex: progress.passIndex, passTotal: progress.passTotal, startedAt: progress.startedAt }
           : null;
-        const ownRun = aiRunRef.current?.runId ?? null;
-        setAiDrafts(progress && (!progress.runId || !ownRun || progress.runId === ownRun) ? progress.drafts ?? [] : []);
+        setAiDrafts(progress?.drafts ?? []);
         render();
       } catch {
         // Sidecar unreachable mid-request; keep the plain busy label.
@@ -6970,11 +6969,9 @@ export function App() {
                 <article className="message assistant thinking" role="status" aria-label={`${providerLabel(provider)} is drafting suggestions`}>
                   <Loader2 size={14} aria-hidden="true" />
                   <span>
-                    {remoteAiProgress && remoteAiProgress.requestedBy && remoteAiProgress.requestedBy !== collabSession.user.name
-                      ? `Queued — waiting for ${remoteAiProgress.requestedBy}'s ${providerName(remoteAiProgress.provider)} request to finish first`
-                      : remoteAiProgress?.stage
-                        ? `${providerLabel(provider)} — ${remoteAiProgress.stage}`
-                        : `${providerLabel(provider)} is drafting suggestions`}
+                    {aiProgressNote
+                      ? `${providerLabel(provider)} — ${aiProgressNote}`
+                      : `${providerLabel(provider)} is drafting suggestions`}
                   </span>
                 </article>
               ) : null}
@@ -6984,7 +6981,7 @@ export function App() {
                   <span>
                     {providerName(remoteAiProgress.provider)} is drafting suggestions
                     {remoteAiProgress.requestedBy ? ` for ${remoteAiProgress.requestedBy}` : ""} — {remoteAiProgress.stage}
-                    {remoteAiQueue.length ? ` (+${remoteAiQueue.length} queued)` : ""}
+                    {remoteAiQueue.length ? ` (+${remoteAiQueue.length} more running)` : ""}
                   </span>
                 </article>
               ) : null}

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxComments, extractDocxImages } from "./docx";
-import { getAiProgress, getAiQueue, proposeChanges, smokeTestProvider } from "./ai";
+import { getAiProgress, getAiRuns, proposeChanges, smokeTestProvider } from "./ai";
 import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, type AgentRunContext } from "./agent-run";
@@ -426,8 +426,10 @@ export function createWriterApp() {
     response.json({ build });
   });
 
-  app.get("/api/ai/progress", (_request, response) => {
-    response.json({ progress: getAiProgress(), queue: getAiQueue() });
+  app.get("/api/ai/progress", (request, response) => {
+    // ?runId= picks one run (a pane asking about its own); every run in flight is listed too.
+    const runId = typeof request.query.runId === "string" && request.query.runId ? request.query.runId : null;
+    response.json({ progress: getAiProgress(runId), runs: getAiRuns() });
   });
 
   // Models and reasoning levels each installed CLI offers, discovered from

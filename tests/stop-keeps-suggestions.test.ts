@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -34,6 +34,7 @@ function fakeClaude(dir: string, mode: "hang" | "linger"): string {
     "  .then(() => {",
     '    process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "sess-stop" }) + "\\n");',
     '    fs.writeFileSync(marker, "1");',
+    '    fs.writeFileSync(new URL(`./staged-${runUrl.split("/").pop()}`, import.meta.url), "1");',
     mode === "linger"
       ? '    process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Staged one edit.", session_id: "sess-stop" }) + "\\n");'
       : "",
@@ -128,5 +129,32 @@ describe("stopping a run keeps what it already proposed", () => {
     const reply = conversationStore().read(key, {}).turns.find((entry) => entry.id === "a-stop")!.turn as { status: string; suggestionIds: string[] };
     expect(reply.status).toBe("done");
     expect(reply.suggestionIds).toEqual(state.result!.ai.suggestions.map((suggestion) => suggestion.id));
+  }, 30_000);
+
+  it("runs panes on different documents at the same time: one never waits for another", async () => {
+    process.env.WRITER_CLAUDE_PATH = fakeClaude(tempDir, "hang");
+    const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const start = (name: string, runId: string) => {
+      const key = `word:${name}`;
+      const userTurn = { id: `u-${runId}`, role: "user", at: "2026-11-20T10:00:00.000Z", text: "Fix it" };
+      const replyTurn = { id: `a-${runId}`, role: "assistant", at: "2026-11-20T10:00:00.000Z", text: "", status: "running", engine: "Claude Code", suggestionIds: [], progress: null, origin: "pane", activity: [], runId, provider: "claude" };
+      return post("/api/word/suggest", {
+        provider: "claude", runId, instruction: "Fix it", mode: "global", documentText: DOC, documentName: name, detach: true,
+        selection: null, record: { key, userTurn, replyTurn, proposedBy: "Claude Code" }
+      });
+    };
+    // The first run never answers; under a global queue the second would never start.
+    expect((await start("word-doc.docx", "run-parallel-word")).status).toBe(202);
+    expect((await start("google-doc", "run-parallel-gdocs")).status).toBe(202);
+    await waitFor(() => readdirSync(tempDir).filter((name) => name.startsWith("staged-")).length === 2);
+    const progress = await (await fetch(`${base}/api/ai/progress?runId=run-parallel-gdocs`)).json() as { progress: { runId: string } | null; runs: Array<{ runId: string }> };
+    expect(progress.progress?.runId).toBe("run-parallel-gdocs");
+    expect(progress.runs.map((run) => run.runId).sort()).toEqual(["run-parallel-gdocs", "run-parallel-word"]);
+    for (const runId of ["run-parallel-word", "run-parallel-gdocs"]) {
+      expect((await post(`/api/ai/runs/${runId}/stop`, {})).status).toBe(200);
+      const state = await (await fetch(`${base}/api/ai/runs/${runId}?wait=20`)).json() as { status: string; result?: { ai: { suggestions: unknown[] } } };
+      expect(state.status).toBe("done");
+      expect(state.result!.ai.suggestions).toHaveLength(1);
+    }
   }, 30_000);
 });

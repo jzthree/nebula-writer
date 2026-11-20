@@ -186,7 +186,8 @@ export async function updateSuggestionStatus(id: string, status: SuggestionStatu
 
 export interface WriterEventHandlers {
   onSessionUpdated?: (revision: number | null) => void;
-  onAiProgress?: (progress: AiProgressSnapshot | null, queue: unknown[]) => void;
+  /** progress: the run that just changed (null when one ended); runs: every run in flight, each pane's independent. */
+  onAiProgress?: (progress: AiProgressSnapshot | null, runs: AiProgressSnapshot[]) => void;
   onConnection?: (connected: boolean) => void;
 }
 
@@ -216,7 +217,7 @@ export function subscribeWriterEvents(handlers: WriterEventHandlers): () => void
       handlers.onConnection?.(true);
     };
     socket.onmessage = (event) => {
-      let message: { type?: string; revision?: number; progress?: AiProgressSnapshot | null; queue?: unknown[] } | null = null;
+      let message: { type?: string; revision?: number; progress?: AiProgressSnapshot | null; runs?: AiProgressSnapshot[] } | null = null;
       try {
         message = JSON.parse(String(event.data));
       } catch {
@@ -228,7 +229,7 @@ export function subscribeWriterEvents(handlers: WriterEventHandlers): () => void
       if (message.type === "session-updated") {
         handlers.onSessionUpdated?.(typeof message.revision === "number" ? message.revision : null);
       } else if (message.type === "ai-progress") {
-        handlers.onAiProgress?.(message.progress ?? null, Array.isArray(message.queue) ? message.queue : []);
+        handlers.onAiProgress?.(message.progress ?? null, Array.isArray(message.runs) ? message.runs : []);
       }
     };
     socket.onclose = () => {

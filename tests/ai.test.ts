@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, describedChangeCount, getAiProgress, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload, elideLongPayloads } from "../server/ai";
+import { AI_RESPONSE_SCHEMA, buildAgentTaskPrompt, buildCliArgs, buildCliPrompt, buildDocumentCoverageChunks, describedChangeCount, getAiProgress, getAiRuns, isMissingSessionError, parseCliResponse, proposeChanges, resolveToolAccess, selectFinalPayload, elideLongPayloads } from "../server/ai";
 import { AI_CONTEXT_CHAR_LIMIT, type AiRequest } from "../src/shared";
 
 // One-shot pipeline coverage. Claude's interactive engine is agentic
@@ -1929,6 +1929,79 @@ describe("proposeChanges", () => {
       const followUp = await proposeChanges({ ...baseRequest, provider: "codex", instruction: "continue", agentSessionId: "thread-1", documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global", selection: null });
       expect(followUp.agentSessionId).toBe("thread-1");
       expect(JSON.parse(readFileSync(join(tempDir, "argv.json"), "utf8")).slice(0, 3)).toEqual(["exec", "resume", "thread-1"]);
+    } finally {
+      clearInterval(sampler);
+      rmSync(tempDir, { recursive: true, force: true });
+      if (previousAllow === undefined) {
+        delete process.env.WRITER_ALLOW_CLI;
+      } else {
+        process.env.WRITER_ALLOW_CLI = previousAllow;
+      }
+      if (previousOverride === undefined) {
+        delete process.env.WRITER_CODEX_PATH;
+      } else {
+        process.env.WRITER_CODEX_PATH = previousOverride;
+      }
+    }
+  });
+
+  it("runs requests from different panes at the same time, each with its own progress", async () => {
+    const previousAllow = process.env.WRITER_ALLOW_CLI;
+    const previousOverride = process.env.WRITER_CODEX_PATH;
+    const tempDir = mkdtempSync(join(process.cwd(), ".writer-codex-parallel-"));
+    const fakeCodexPath = join(tempDir, "fake-codex");
+    const payload = { message: "Tightened one phrase.", suggestions: [{ title: "Drop the intensifier", original: "very unique", replacement: "unique", rationale: "Unique is absolute.", confidence: 0.9 }] };
+    writeFileSync(
+      fakeCodexPath,
+      [
+        "#!/usr/bin/env node",
+        `const lines = ${JSON.stringify([
+          JSON.stringify({ type: "thread.started", thread_id: "thread-p" }),
+          JSON.stringify({ type: "turn.started" }),
+          JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "**Reading the draft**" } }),
+          JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(payload) } }),
+          JSON.stringify({ type: "turn.completed", usage: {} })
+        ])};`,
+        "let index = 0;",
+        "const tick = () => {",
+        "  if (index >= lines.length) { process.exit(0); }",
+        "  process.stdout.write(lines[index++] + '\\n');",
+        "  setTimeout(tick, 150);",
+        "};",
+        "process.stdin.resume();",
+        "setTimeout(tick, 20);"
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.WRITER_ALLOW_CLI = "1";
+    process.env.WRITER_CODEX_PATH = fakeCodexPath;
+
+    let mostAtOnce = 0;
+    const seen = new Set<string>();
+    const sampler = setInterval(() => {
+      const runs = getAiRuns();
+      mostAtOnce = Math.max(mostAtOnce, runs.length);
+      for (const run of runs) {
+        if (run.runId && getAiProgress(run.runId)?.runId === run.runId) {
+          seen.add(run.runId);
+        }
+      }
+    }, 5);
+    try {
+      const request = { ...baseRequest, provider: "codex" as const, documentText: "The results were very unique.", documentHtml: "<p>The results were very unique.</p>", mode: "global" as const, selection: null };
+      const [word, gdocs] = await Promise.all([
+        proposeChanges({ ...request, runId: "run-word" }),
+        proposeChanges({ ...request, runId: "run-gdocs" })
+      ]);
+      clearInterval(sampler);
+      expect(word.suggestions, word.message).toHaveLength(1);
+      expect(gdocs.suggestions, gdocs.message).toHaveLength(1);
+      // Neither waited for the other: both were in flight together, each reporting as itself.
+      expect(mostAtOnce).toBe(2);
+      expect([...seen].sort()).toEqual(["run-gdocs", "run-word"]);
+      expect(getAiRuns()).toEqual([]);
+      expect(getAiProgress("run-word")).toBeNull();
     } finally {
       clearInterval(sampler);
       rmSync(tempDir, { recursive: true, force: true });

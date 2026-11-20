@@ -1,3 +1,4 @@
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -107,94 +108,107 @@ export interface AiProgressSnapshot {
   runId?: string | null;
 }
 
-// Single-slot progress tracker for the local single-user sidecar. The UI polls
-// GET /api/ai/progress while a request is in flight so long CLI calls show
-// per-pass progress instead of a frozen spinner.
-let currentAiProgress: AiProgressSnapshot | null = null;
-
+// Progress of every run in flight. Runs are independent: a Word pane, a
+// Google Doc and the web app (or two documents) each run at once, and each
+// pane shows its own run's progress (matched by runId). The UI polls
+// GET /api/ai/progress and listens on /events while a request is in flight,
+// so long CLI calls show live stages instead of a frozen spinner.
 export interface QueuedAiRequest {
   provider: string;
   requestedBy: string | null;
   runId?: string | null;
 }
 
-// The run whose progress the slot holds (runs are serialized, so one at a time).
-let activeRunId: string | null = null;
-
-// CLI executions are serialized: two collaborators sending at once would race
-// the progress display and contend for CPU; instead the second waits with an
-// honest "queued behind X" state visible to everyone.
-let aiQueue: QueuedAiRequest[] = [];
-let aiChain: Promise<void> = Promise.resolve();
-
-export function getAiProgress(): AiProgressSnapshot | null {
-  return currentAiProgress;
+interface RunSlot {
+  entry: QueuedAiRequest;
+  progress: AiProgressSnapshot | null;
 }
 
-export function getAiQueue(): QueuedAiRequest[] {
-  return [...aiQueue];
+const runSlots = new Set<RunSlot>();
+// The run a progress update belongs to, carried through the run's async calls.
+const runContext = new AsyncLocalStorage<RunSlot>();
+
+/** One run's progress (by runId), or, without a runId, the most recently updated run's. */
+export function getAiProgress(runId?: string | null): AiProgressSnapshot | null {
+  if (runId) {
+    return [...runSlots].find((slot) => slot.entry.runId === runId)?.progress ?? null;
+  }
+  return getAiRuns()[0] ?? null;
 }
 
-function publishAiState(): void {
-  broadcastAiProgress(currentAiProgress, getAiQueue());
+/** Every run in flight that has reported progress, most recently updated first. */
+export function getAiRuns(): AiProgressSnapshot[] {
+  return [...runSlots]
+    .map((slot) => slot.progress)
+    .filter((progress): progress is AiProgressSnapshot => progress !== null)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-async function runQueuedAiRequest<T>(entry: QueuedAiRequest, run: () => Promise<T>): Promise<T> {
-  aiQueue.push(entry);
-  publishAiState();
-  const previous = aiChain;
-  let release!: () => void;
-  aiChain = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+function publishAiState(slot: RunSlot | null): void {
+  broadcastAiProgress(slot?.progress ?? null, getAiRuns());
+}
+
+/**
+ * Run one AI request in its own progress slot. Callbacks that fire from
+ * outside the request (a shared CLI server, an HTTP route) must be wrapped
+ * with `bindToRun` where they are created, so their progress lands here.
+ */
+async function runAiRequest<T>(entry: QueuedAiRequest, run: () => Promise<T>): Promise<T> {
+  const slot: RunSlot = { entry, progress: null };
+  runSlots.add(slot);
   try {
-    await previous;
-    aiQueue = aiQueue.filter((candidate) => candidate !== entry);
-    // A fresh slot: nothing from the previous run (its drafts, its start time) carries over.
-    activeRunId = entry.runId ?? null;
-    currentAiProgress = null;
-    publishAiState();
-    return await run();
+    return await runContext.run(slot, run);
   } finally {
-    if (activeRunId === (entry.runId ?? null)) {
-      activeRunId = null;
-    }
-    aiQueue = aiQueue.filter((candidate) => candidate !== entry);
-    release();
-    publishAiState();
+    runSlots.delete(slot);
+    publishAiState(null);
   }
 }
 
+/** Keep a callback attached to the current run when something outside the run calls it. */
+export function bindToRun<A extends unknown[], R>(callback: (...args: A) => R): (...args: A) => R {
+  return AsyncResource.bind(callback);
+}
+
 function setAiProgress(provider: string, stage: string, pass?: { index: number; total: number }, requestedBy?: string | null, tool = false): void {
+  const slot = runContext.getStore();
+  if (!slot) {
+    return;
+  }
   const now = new Date().toISOString();
-  currentAiProgress = {
+  const current = slot.progress;
+  slot.progress = {
     provider,
     stage,
     ...(tool ? { tool: true } : {}),
-    requestedBy: requestedBy ?? currentAiProgress?.requestedBy ?? null,
+    requestedBy: requestedBy ?? current?.requestedBy ?? null,
     passIndex: pass?.index ?? null,
     passTotal: pass?.total ?? null,
-    startedAt: currentAiProgress?.startedAt ?? now,
+    startedAt: current?.startedAt ?? now,
     updatedAt: now,
     timeoutMs: cliTimeoutMs() || null,
-    ...(currentAiProgress?.drafts?.length ? { drafts: currentAiProgress.drafts } : {}),
-    runId: activeRunId
+    ...(current?.drafts?.length ? { drafts: current.drafts } : {}),
+    runId: slot.entry.runId ?? null
   };
-  publishAiState();
+  publishAiState(slot);
 }
 
 /** Show suggestions finished mid-turn to every client, alongside the stage. */
 function setAiProgressDrafts(drafts: AiSuggestion[]): void {
-  if (!currentAiProgress) {
+  const slot = runContext.getStore();
+  if (!slot?.progress) {
     return;
   }
-  currentAiProgress = { ...currentAiProgress, drafts, updatedAt: new Date().toISOString() };
-  publishAiState();
+  slot.progress = { ...slot.progress, drafts, updatedAt: new Date().toISOString() };
+  publishAiState(slot);
 }
 
 function clearAiProgress(): void {
-  currentAiProgress = null;
-  publishAiState();
+  const slot = runContext.getStore();
+  if (!slot) {
+    return;
+  }
+  slot.progress = null;
+  publishAiState(null);
 }
 
 export const AI_RESPONSE_SCHEMA = {
@@ -289,13 +303,12 @@ export async function proposeChanges(request: AiRequest, options: AiRunOptions =
   }
 
   const provider = request.provider as CliProviderName;
-  return linkRevision(request, await runQueuedAiRequest(
+  return linkRevision(request, await runAiRequest(
     { provider, requestedBy: request.requestedBy ?? null, runId: request.runId ?? options.runId ?? null },
     () => {
-      // The wait in the queue may outlive the requester (Stop button or a
-      // closed tab aborts the HTTP request) — don't burn a CLI run for them.
+      // Stopped before it started (Stop button or a closed tab aborted the HTTP request): don't burn a CLI run.
       if (options.signal?.aborted) {
-        throw new Error("The request was canceled while waiting in the AI queue.");
+        throw new Error("The request was canceled before it started.");
       }
       return cliProvider(provider, request, options);
     }
@@ -475,7 +488,8 @@ function withModelOptions(request: AiRequest, response: AiResponse): AiResponse 
 // the same salvage behavior coverage passes had.
 async function agenticCliProvider(provider: CliProviderName, request: AiRequest, options: AiRunOptions = {}): Promise<AiResponse> {
   const run = createAgentRun(request);
-  run.onStaged = (staged) => setAiProgressDrafts(staged);
+  // Staging arrives through the MCP server's HTTP route, outside this run: keep it attached.
+  run.onStaged = bindToRun((staged: AiSuggestion[]) => setAiProgressDrafts(staged));
   try {
     throwIfAborted(provider, options.signal);
     setAiProgress(provider, `The ${providerLabel(provider)} agent is starting`, undefined, request.requestedBy ?? null);
