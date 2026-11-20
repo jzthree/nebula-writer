@@ -86,11 +86,14 @@ def test_end_to_end_with_a_stand_in_model(tmp_path: Path, monkeypatch):
     (skill / "references").mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\n")
     (skill / "references" / "nature.md").write_text("Nature rules.\n")
-    calls = {"generate": 0, "judge": 0}
+    calls = {"generate": 0, "judge": 0, "single": 0}
 
     def fake_call(self, model, system, prompt):
         if "content briefs" in system:
             return '{"function": "states a result", "points": ["result [1]"]}'
+        if "Paragraph:\n<<<" in prompt:
+            calls["single"] += 1
+            return '{"published_probability": %s, "tells": ["even"]}' % ("0.3" if "Generated paragraph" in prompt else "0.8")
         if "Paragraph A:" in prompt:
             calls["judge"] += 1
             assert "For calibration" in prompt
@@ -108,12 +111,14 @@ def test_end_to_end_with_a_stand_in_model(tmp_path: Path, monkeypatch):
         references=2, workers=2, out_dir=tmp_path / "runs", data_dir=data,
     )
     report = Runner(config, log=lambda *_: None).run()
-    assert calls["generate"] == 8 and calls["judge"] == 16
+    assert calls["generate"] == 8 and calls["judge"] == 16 and calls["single"] == 24
     summary = json.loads((tmp_path / "runs" / "t" / "summary.json").read_text())
     rates = {(r["condition"], r["journal"], r["judge"]): r["rate"] for r in summary["detection"]}
     assert 0.0 < rates[("baseline", "all", "claude")] < 1.0  # "A" is right only when the real one came first
     text = report.read_text()
     assert "## Verdict" in text and "too smooth" in text
+    single = {(r["condition"], r["journal"], r["judge"]): r["auc"] for r in summary["single"]}
+    assert single[("baseline", "all", "claude")] == 1.0 and "## Single-paragraph test" in text
     # Rerunning hits the cache: no new calls.
     Runner(config, log=lambda *_: None).run()
     assert calls["generate"] == 8
@@ -139,6 +144,7 @@ def test_figure_legends_are_not_paragraphs():
     from styleturing.corpus import is_legend
     assert is_legend("a, Schematic of the process. b, Plots of loss. Scale bars, 1 cm.")
     assert is_legend("(A) Front view of the complex. (B) Side view.")
+    assert is_legend("(a–ac) Tree constructed for each cancer.")
     assert is_legend("a) Staining of five tissues. b) Signal after deconvolution.")
     assert not is_legend("We found that a, b and c differ (Fig. 1a).")
     assert not is_legend("Two groups (A) and (B) were compared (Fig. 2A).")

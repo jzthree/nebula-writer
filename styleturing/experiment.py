@@ -35,10 +35,10 @@ class Condition:
             path, name = name, Path(name).name
         return Condition(name, Path(path))
 
-    def system(self, journal_key: str) -> str:
+    def system(self, journal_key: str, section: str | None = None) -> str:
         if self.skill_dir is None:
             return prompts.BASELINE_SYSTEM
-        return prompts.skill_system(self.skill_dir, journal_key)
+        return prompts.skill_system(self.skill_dir, journal_key, section)
 
     def fingerprint(self) -> str:
         """Which exact skill text was tested, so a report says what it measured."""
@@ -62,6 +62,7 @@ class RunConfig:
     briefer: Model
     judges: list[Model]
     references: int = 3
+    mode: str = "both"  # paired | single | both
     seed: int = 7
     workers: int = 6
     out_dir: Path = Path("runs")
@@ -102,7 +103,10 @@ def references_for(paragraphs: list[Paragraph], item: Paragraph, k: int) -> list
     """k published paragraphs from the same journal and section, from training papers only."""
     if k <= 0:
         return []
-    pool = [p for p in paragraphs if p.journal == item.journal and p.section == item.section and p.split == "train" and p.pmcid != item.pmcid]
+    from .exemplars import is_exemplar_paper
+
+    # The other half of the training papers: the skill's examples never reach a judge.
+    pool = [p for p in paragraphs if p.journal == item.journal and p.section == item.section and p.split == "train" and p.pmcid != item.pmcid and not is_exemplar_paper(p.pmcid)]
     pool.sort(key=lambda p: _stable(item.id, p.id))
     return [p.text for p in pool[:k]]
 
@@ -152,7 +156,7 @@ class Runner:
 
         def generate(job):
             condition, p, b = job
-            text = self.client.complete(cfg.generator, condition.system(p.journal), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b))
+            text = self.client.complete(cfg.generator, condition.system(p.journal, p.section), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b))
             return {"id": p.id, "condition": condition.name, "text": text.strip()}
 
         generations = [g for g in self._parallel("generations", gen_jobs, generate) if g and g["text"]]
@@ -182,8 +186,28 @@ class Runner:
                 "tells": [str(t) for t in answer.get("tells", [])][:6],
             }
 
-        judgments = [j for j in self._parallel("judgments", judge_jobs, judge) if j and j["picked"] in ("A", "B")]
+        judgments: list[dict] = []
+        if cfg.mode in ("paired", "both"):
+            judgments = [j for j in self._parallel("paired judgments", judge_jobs, judge) if j and j["picked"] in ("A", "B")]
         self._dump("judgments.jsonl", judgments)
+
+        def single(job):
+            model, kind, p, condition, text = job
+            references = [prompts.plain(t) for t in references_for(corpus, p, cfg.references)]
+            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.single_judge_prompt(p.journal, p.title, p.section, prompts.plain(text), references))
+            try:
+                probability = float(answer.get("published_probability"))
+            except (TypeError, ValueError):
+                return None
+            return {"id": p.id, "journal": p.journal, "section": p.section, "judge": model.label, "kind": kind, "condition": condition,
+                    "probability": max(0.0, min(1.0, probability)), "tells": [str(t) for t in answer.get("tells", [])][:6]}
+
+        singles: list[dict] = []
+        if cfg.mode in ("single", "both"):
+            single_jobs = [(model, "published", by_id[i], None, by_id[i].text) for model in cfg.judges for i in {g["id"] for g in generations}]
+            single_jobs += [(model, "generated", by_id[g["id"]], g["condition"], g["text"]) for model in cfg.judges for g in generations]
+            singles = [s for s in self._parallel("single judgments", single_jobs, single) if s]
+        self._dump("singles.jsonl", singles)
         from .report import write_report
         return write_report(self.dir, cfg.data_dir)
 
@@ -195,7 +219,7 @@ class Runner:
             commit = ""
         (self.dir / "config.json").write_text(json.dumps({
             "name": cfg.name, "journals": cfg.journals, "split": cfg.split, "per_journal": cfg.per_journal,
-            "sections": cfg.sections, "seed": cfg.seed, "references": cfg.references,
+            "sections": cfg.sections, "seed": cfg.seed, "references": cfg.references, "mode": cfg.mode,
             "conditions": [{"name": c.name, "skill": str(c.skill_dir) if c.skill_dir else None, "fingerprint": c.fingerprint()} for c in cfg.conditions],
             "generator": cfg.generator.label, "briefer": cfg.briefer.label, "judges": [j.label for j in cfg.judges],
             "commit": commit, **cfg.extra,

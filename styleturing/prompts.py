@@ -45,15 +45,23 @@ def brief_prompt(paragraph_text: str) -> str:
 BASELINE_SYSTEM = "You are a scientific writer."
 
 
-def skill_system(skill_dir: Path, journal_key: str) -> str:
-    """The skill as an agent would load it: SKILL.md, then the journal's reference file."""
+SECTION_FILE = {"abstract": "abstract", "intro": "introduction", "results": "results", "discussion": "discussion", "methods": "methods"}
+
+
+def skill_system(skill_dir: Path, journal_key: str, section: str | None = None) -> str:
+    """The skill as an agent would load it: SKILL.md, the journal's reference
+    file, and the published examples for the section being written."""
     skill = (skill_dir / "SKILL.md").read_text()
     if skill.startswith("---"):
         skill = skill.split("---", 2)[2].lstrip()
-    reference = skill_dir / "references" / f"{journal_key}.md"
     parts = [skill]
+    reference = skill_dir / "references" / f"{journal_key}.md"
     if reference.exists():
         parts.append(reference.read_text())
+    if section:
+        examples = skill_dir / "examples" / journal_key / f"{SECTION_FILE[section]}.md"
+        if examples.exists():
+            parts.append(examples.read_text())
     return "\n\n---\n\n".join(parts)
 
 
@@ -107,4 +115,22 @@ def judge_prompt(journal_key: str, title: str, section: str, first: str, second:
         "Which one was published? Judge how each is written. Differences in content are an artifact of the notes, not evidence.\n"
         'Answer with JSON: {"published": "A" or "B", "confidence": a number from 0.5 (a guess) to 1.0 (certain), '
         '"tells": ["short, specific features of the paragraph you think the AI wrote that gave it away"]}'
+    )
+
+
+def single_judge_prompt(journal_key: str, title: str, section: str, text: str, references: list[str]) -> str:
+    """One paragraph alone: how likely is it the published one? (The unpaired test.)"""
+    journal = JOURNALS[journal_key].name
+    calibration = ""
+    if references:
+        shown = "\n\n".join(f"<<<\n{t}\n>>>" for t in references)
+        calibration = f"For calibration, here are paragraphs from the {SECTION_NAMES[section]} sections of other {journal} papers:\n\n{shown}\n\n"
+    return (
+        f"{calibration}"
+        f'Below is a paragraph written for the {SECTION_NAMES[section]} of a paper titled "{title}". '
+        f"It is either the paragraph as published in {journal}, or a paragraph an AI model wrote from notes listing the published paragraph's content. "
+        "Half of the paragraphs you are shown are each kind. It is shown as plain text: citation markers as [n], straight quotes, no italics.\n\n"
+        f"Paragraph:\n<<<\n{text}\n>>>\n\n"
+        "How likely is it that this is the published paragraph? Judge how it is written.\n"
+        'Answer with JSON: {"published_probability": a number from 0 to 1, "tells": ["short, specific features behind your judgment"]}'
     )

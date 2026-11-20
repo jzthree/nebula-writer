@@ -192,7 +192,7 @@ def classify(title: str, sec_type: str | None, position: int) -> str | None:
 
 def is_legend(text: str) -> bool:
     """A figure legend that sits in the body as a paragraph ("a, Schematic of … b, …", "(A) Front view …")."""
-    if re.match(r"^(?:[a-zA-Z],|\(?[A-Za-z]\))\s", text) or "Scale bar" in text:
+    if re.match(r"^(?:[a-zA-Z],|\(?[A-Za-z]{1,2}(?:[–-][A-Za-z]{1,2})?\))\s", text) or "Scale bar" in text:
         return True
     panels = re.findall(r"(?:^|[.;]\s)(?:[a-z],|\(?[A-Za-z]\))\s", text)
     return len(panels) >= 2

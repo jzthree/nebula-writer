@@ -1,0 +1,27 @@
+# Nature Methods: published introduction paragraphs
+
+Paragraphs from Nature Methods research articles, reproduced under CC BY 4.0 with attribution. Citation markers are shown as [n]. Read them for rhythm, sentence shape, density and voice; never copy their wording into a new paragraph.
+
+## Example 1
+
+Recent advances in instrumentation[13,16,20–22] have propelled nTDMS toward the study of proteoform-specific interactions in complex cellular and tissue environments[9,19,23–25]. However, these intricate systems present unique challenges that complicate accurate, informative and reproducible interpretation of mass spectral data, hindering discovery of new biology and definitive characterization of proteoforms[26]. In particular, despite ongoing efforts to streamline sample preparation, and ensure high-quality spectra[27–30], many biomolecular complexes are inherently heterogeneous, preventing unambiguous determination of individual subunit masses and consequent detection of protein modifications at the intact protein level[31,32]. While reducing heterogeneity through (bio)chemical methods (for example, delipidation, deglycosylation or in-solution disassembly) is appealing, such approaches may disrupt complexes, and ultimately contradict the goal of complete molecular characterization. Instead, embracing the complexity of these systems is essential, and the challenge lies in extracting meaningful information from these inherently complex nTDMS spectra.
+
+Source: "Uncovering hidden protein modifications with native top-down mass spectrometry", Nature Methods (2025), PMC12510877, CC BY 4.0.
+
+## Example 2
+
+To overcome these limitations, we present scooby, which jointly models scATAC-seq and single-cell RNA-sequencing (scRNA-seq) genomic profiles from sequence without the need for annotations and easily scales to large datasets. scooby builds upon Borzoi[8], a recently released bulk omics model that uses RNA-seq coverage as an annotation-free representation of gene regulation. Using Borzoi as a foundation model, we equip it with a cell-specific decoder, and fine-tune its sequence embeddings to adapt it to the single-cell setting. We call this adapted model ‘scooby’, a nod to both its single-cell focus and its canine-named model ancestry. We demonstrate scooby’s capabilities to accurately model genomic profiles at single-cell resolution, identify lineage-specific regulators and their putative target genes, and delineate cell-type-specific variant effects on a multiome hematopoiesis dataset, benchmarking it against state-of-the-art models.
+
+Source: "scooby: modeling multimodal genomic profiles from DNA sequence at single-cell resolution", Nature Methods (2025), PMC12615262, CC BY 4.0.
+
+## Example 3
+
+Spatially resolved transcriptomics (SRT) profiling technologies provide spatially resolved mapping of gene expression and hold the potential to revolutionize our understanding of multicellular biological systems. SRT can enable new insights to improve the prediction of key clinical outcomes of complex diseases, including cancers[1–4]. The recent subcellular in situ imaging-based SRT, herein referred to as subcellular spatial transcriptomics (SST), platforms (for example, 10x Xenium[5], NanoString CosMx[6] and Vizgen MERSCOPE) can map spatial gene expression (SGE) at subcellular resolution. Spot-based SRT platforms (for example, 10x Visium) typically capture the gene expression of multiple cells per spot, generating spot-based SGE. In contrast, the newer SST data are assayed at a resolution smaller than the typical cell and are typically passed through a cell segmentation workflow to provide ‘single-cell SGE’. This finer spatial resolution of gene expression unlocks the capacity to explore a variety of hypotheses that were previously inaccessible and provide deeper biological insights.
+
+Source: "Spatial gene expression at single-cell resolution from histology using deep learning with GHIST", Nature Methods (2025), PMC12446070, CC BY 4.0.
+
+## Example 4
+
+Rigorous assessment of cell morphology in research settings enables detailed analysis of processes such as organelle dynamics, cell migration and intracellular trafficking[1] and also plays a central role in the histopathological diagnosis of disease[2]. Rapid innovations in optical microscopy have enabled ever more precise three-dimensional (3D) characterization of cultured cells and model organisms[3]. Multiplexed tissue imaging (‘spatial proteomics’)[4] extends both histopathology and tissue biology by enabling the measurement of dozens of molecular markers in a preserved tissue environment. However, with a few noteworthy exceptions[5–7], most contemporary spatial proteomics is performed using widefield two-dimensional (2D) imaging methods at a resolution (commonly 0.6–2.0 µm laterally) that obscures fine morphological and intracellular details. The current emphasis on assay plex[8] and rapid data acquisition has merit, but the precise distribution of proteins within and outside of cells represents an invaluable source of information about cell types and states[9,10]. Opportunities therefore exist to marry high-resolution 3D microscopy with spatial proteomics, particularly of the formaldehyde fixed paraffin-embedded (FFPE) specimens universally used for human diagnosis[11] and analysis of murine models[12].
+
+Source: "Highly multiplexed 3D profiling of cell states and immune niches in human tumors", Nature Methods (2025), PMC12510885, CC BY 4.0.

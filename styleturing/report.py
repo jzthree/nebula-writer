@@ -54,6 +54,33 @@ def detection_table(judgments: list[dict]) -> list[dict]:
     return rows
 
 
+def single_table(singles: list[dict], seed: int = 0, resamples: int = 2000) -> list[dict]:
+    """Unpaired test: for each published paragraph and its rewrite, does the judge rate the published one
+    as more likely published? Matched-pair AUC (ties count half), with a bootstrap 95% interval over paragraphs."""
+    import random
+
+    real = {(s["judge"], s["id"]): s["probability"] for s in singles if s["kind"] == "published"}
+    groups: dict[tuple, list[float]] = defaultdict(list)
+    for s in singles:
+        if s["kind"] != "generated" or (s["judge"], s["id"]) not in real:
+            continue
+        r, g = real[(s["judge"], s["id"])], s["probability"]
+        score = 1.0 if r > g else 0.5 if r == g else 0.0
+        groups[(s["condition"], s["journal"], s["judge"])].append(score)
+        groups[(s["condition"], "all", s["judge"])].append(score)
+    rows = []
+    rng = random.Random(seed)
+    for (condition, journal, judge), scores in sorted(groups.items()):
+        n = len(scores)
+        auc = sum(scores) / n
+        boots = sorted(sum(rng.choice(scores) for _ in range(n)) / n for _ in range(resamples))
+        low, high = boots[int(0.025 * resamples)], boots[int(0.975 * resamples) - 1]
+        gen_mean = mean(s["probability"] for s in singles if s["kind"] == "generated" and s["condition"] == condition and s["judge"] == judge and (journal == "all" or s["journal"] == journal))
+        rows.append({"condition": condition, "journal": journal, "judge": judge, "n": n, "auc": auc, "ci_low": low, "ci_high": high,
+                     "generated_rated_published": gen_mean, "indistinguishable": low <= 0.5})
+    return rows
+
+
 def verdicts(rows: list[dict]) -> dict[str, dict[str, bool]]:
     """condition -> journal -> passes (every judge's interval includes chance)."""
     out: dict[str, dict[str, bool]] = defaultdict(dict)
@@ -138,9 +165,23 @@ def write_report(run_dir: Path, data_dir: Path) -> Path:
                 lines.append(f"- {tell}")
             lines.append("")
 
+    singles = read_jsonl(run_dir / "singles.jsonl")
+    single_rows = single_table(singles) if singles else []
+    if single_rows:
+        lines += ["## Single-paragraph test", "",
+                  "Each paragraph is rated alone: how likely is it the published one? AUC = how often the published paragraph is rated "
+                  "more likely published than its rewrite (0.5 = cannot tell, 1.0 = always tells). 'Rewrites rated' = mean probability "
+                  "the judge gave the rewrites of being published.", "",
+                  "| Condition | Journal | Judge | n | AUC | 95% CI | Rewrites rated |", "|---|---|---|---|---|---|---|"]
+        for r in single_rows:
+            name = "All journals" if r["journal"] == "all" else JOURNALS[r["journal"]].name
+            mark = "✅" if r["indistinguishable"] else "❌"
+            lines.append(f"| {r['condition']} | {name} | {r['judge']} | {r['n']} | {mark} {r['auc']:.2f} | {r['ci_low']:.2f}–{r['ci_high']:.2f} | {r['generated_rated_published']:.2f} |")
+        lines.append("")
+
     report = run_dir / "report.md"
     report.write_text("\n".join(lines) + "\n")
-    (run_dir / "summary.json").write_text(json.dumps({"detection": rows, "passing": passing, "stylometry": summary_style,
+    (run_dir / "summary.json").write_text(json.dumps({"detection": rows, "single": single_rows, "passing": passing, "stylometry": summary_style,
                                                       "judgments": len(judgments), "generations": len(generations)}, indent=2))
     return report
 

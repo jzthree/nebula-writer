@@ -16,9 +16,13 @@ file (`references/<journal>.md`) adds what is specific to it.
 1. Identify the journal and the section (abstract, introduction, Results,
    Discussion, Methods). Read `references/<journal>.md`:
    `nature.md`, `science.md`, `nature-genetics.md`, `nature-methods.md`.
-2. Draft the paragraph from the content you have. Keep every fact, number
+2. Read the published examples for that journal and section,
+   `examples/<journal>/<section>.md` (abstract, introduction, results,
+   discussion, methods). Take their rhythm, density, voice and how they
+   open and close; never their wording.
+3. Draft the paragraph from the content you have. Keep every fact, number
    and citation; add none.
-3. Check the draft against the list below and the reference file's
+4. Check the draft against the list below and the reference file's
    section rules, and revise. Read it once more as the journal's editor
    would.
 

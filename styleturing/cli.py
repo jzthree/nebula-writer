@@ -37,9 +37,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--briefer", default="claude")
     r.add_argument("--judge", action="append", default=None, help="model spec, e.g. claude or agy:gemini-4-neon-high (repeatable)")
     r.add_argument("--references", type=int, default=3, help="published paragraphs shown to each judge for calibration")
+    r.add_argument("--mode", default="both", choices=["paired", "single", "both"], help="paired: pick the published one of two; single: rate one paragraph alone")
     r.add_argument("--seed", type=int, default=7)
     r.add_argument("--workers", type=int, default=6)
     r.add_argument("--runs", type=Path, default=Path("runs"))
+
+    e = sub.add_parser("exemplars", help="write the skill's bank of published example paragraphs (CC BY, training split)")
+    e.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
+    e.add_argument("--journals", default=",".join(JOURNALS))
+    e.add_argument("--per-section", type=int, default=6)
 
     rep = sub.add_parser("report", help="rewrite a run's report")
     rep.add_argument("run_dir", type=Path)
@@ -65,9 +71,14 @@ def main(argv: list[str] | None = None) -> int:
             sections=args.sections.split(","), conditions=[Condition.parse(s) for s in (args.condition or ["baseline", "skill=skills/journal-style"])],
             generator=Model.parse(args.generator), briefer=Model.parse(args.briefer),
             judges=[Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])],
-            references=args.references, seed=args.seed, workers=args.workers, out_dir=args.runs, data_dir=args.data,
+            references=args.references, mode=args.mode, seed=args.seed, workers=args.workers, out_dir=args.runs, data_dir=args.data,
         )
         print(Runner(config).run())
+    elif args.command == "exemplars":
+        from .exemplars import build as build_exemplars
+
+        for path in build_exemplars(args.data, args.skill, args.journals.split(","), args.per_section):
+            print(path)
     elif args.command == "report":
         print(write_report(args.run_dir, args.data))
     elif args.command == "improve":
