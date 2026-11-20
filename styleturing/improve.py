@@ -129,12 +129,18 @@ Pairs the judges got right (do not copy their sentences):
 {chr(10).join(shown)}
 """
     client = Client(data_dir / "cache")
-    answer = client.complete(reviser, REVISER_SYSTEM, prompt)
-    file_match = re.search(r"<<<FILE\s*\n(.*?)\n\s*FILE>>>", answer, re.S)
-    if not file_match:
-        (run_dir / f"revision-{journal}.raw.txt").write_text(answer)
-        raise RevisionError(f"the reviser returned no file for {journal} (raw answer in {run_dir / f'revision-{journal}.raw.txt'})")
-    copied = copied_wording(file_match.group(1), [i["text"] for i in items.values() if i["journal"] == journal])
+    dev_texts = [i["text"] for i in items.values() if i["journal"] == journal]
+    request = prompt
+    for attempt in range(2):
+        answer = client.complete(reviser, REVISER_SYSTEM, request)
+        file_match = re.search(r"<<<FILE\s*\n(.*?)\n\s*FILE>>>", answer, re.S)
+        if not file_match:
+            (run_dir / f"revision-{journal}.raw.txt").write_text(answer)
+            raise RevisionError(f"the reviser returned no file for {journal} (raw answer in {run_dir / f'revision-{journal}.raw.txt'})")
+        copied = copied_wording(file_match.group(1), dev_texts)
+        if not copied:
+            break
+        request = prompt + "\n\nYour previous draft copied these phrases from the evaluation paragraphs: " + "; ".join(f'"{c}"' for c in copied) + ". Write the file again without them or any other wording from those paragraphs."
     if copied:
         (run_dir / f"revision-{journal}.rejected.md").write_text(file_match.group(1))
         raise RevisionError(f"the revision for {journal} copies dev wording, so it was not applied: {copied}")
