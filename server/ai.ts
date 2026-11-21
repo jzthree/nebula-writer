@@ -657,6 +657,19 @@ export function describeConversation(request: AiRequest, reported: Record<string
   return lines;
 }
 
+/** Other agents running on this document at the same time: their parts are theirs. */
+export function describeParallelWork(request: AiRequest): string[] {
+  const others = (request.parallelWork ?? []).filter((work) => work && typeof work.instruction === "string" && work.instruction.trim());
+  if (!others.length) {
+    return [];
+  }
+  return [
+    "",
+    `Other agents are working on this document at the same time (${others.length}). Leave their parts to them: do not stage changes to passages they were asked about, and stay within what you were asked.`,
+    ...others.slice(0, 8).map((work) => `- Asked: ${clipForPrompt(work.instruction, 300)}${work.scope ? ` (about: ${clipForPrompt(work.scope, 200)})` : ""}`)
+  ];
+}
+
 function describeDecisionsSince(request: AiRequest, reported: Record<string, string>): string[] {
   const changed: string[] = [];
   for (const turn of request.conversation ?? []) {
@@ -818,6 +831,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
       : []),
     ...(request.hostContext ? ["", ...describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "mcp" })] : []),
     ...describeConversation(request, reportedDecisions),
+    ...describeParallelWork(request),
     ...describeFocus(request.focus, "agentic"),
     "",
     "How to work:",
@@ -1098,6 +1112,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
       selectionContext: request.mode === "selection" ? matchCommentsToSelection(request.documentText, request.selection, request.documentComments ?? []) : null }),
     ...(request.hostContext && !options.coveragePass ? describeWordHostContext(request.hostContext, { mode: request.mode, tooling: "inline" }) : []),
     ...(options.coveragePass ? [] : describeConversation(request, options.reportedDecisions ?? null)),
+    ...describeParallelWork(request),
     ...(options.coveragePass ? [] : describeFocus(request.focus, "oneshot")),
     ...(options.documentDelta && request.mode !== "selection" && !options.coveragePass
       ? options.documentDelta

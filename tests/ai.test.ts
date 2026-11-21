@@ -1945,6 +1945,18 @@ describe("proposeChanges", () => {
     }
   });
 
+  it("tells a parallel agent what the others are working on, in both engines", () => {
+    const parallelWork = [{ instruction: "Tighten Aim 2", scope: "Aim 2: Map enhancer activity" }, { instruction: "Fix the methods" }];
+    const agentic = buildAgentTaskPrompt({ ...baseRequest, mode: "global", selection: null, parallelWork }, { maxSuggestions: null, attachments: [] });
+    const oneShot = buildCliPrompt({ ...baseRequest, mode: "global", selection: null, parallelWork });
+    for (const prompt of [agentic, oneShot]) {
+      expect(prompt).toContain("Other agents are working on this document at the same time (2)");
+      expect(prompt).toContain("- Asked: Tighten Aim 2 (about: Aim 2: Map enhancer activity)");
+      expect(prompt).toContain("- Asked: Fix the methods");
+    }
+    expect(buildCliPrompt({ ...baseRequest, mode: "global", selection: null })).not.toContain("Other agents");
+  });
+
   it("runs requests from different panes at the same time, each with its own progress", async () => {
     const previousAllow = process.env.WRITER_ALLOW_CLI;
     const previousOverride = process.env.WRITER_CODEX_PATH;

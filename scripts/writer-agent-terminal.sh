@@ -79,6 +79,11 @@ in the review queue, so don't repeat them.
 
 If a tool says "no active Writer session", tell the user to open or create a
 document in Writer, then retry.
+
+Other Writer agents may be working on other parts of the same document at the
+same time (other terminal tabs, the Word or Google Docs pane). Work only on
+what the user asks you here, and re-read a passage just before staging an edit
+to it, in case it changed.
 BRIEF_EOF
 
 printf '%s\n' "$BRIEF" > "$WORKSPACE/CLAUDE.md"
@@ -108,11 +113,11 @@ cat > "$MCP_DIR/mcp.json" <<JSON
 }
 JSON
 
-echo "Nebula Writer agent terminal — $PROVIDER. The 'writer' tools drive your document; staged edits appear in Writer's review queue."
+echo "Nebula Writer agent terminal — $PROVIDER${WRITER_AGENT_SLOT:+ (agent ${WRITER_AGENT_SLOT})}. The 'writer' tools drive your document; staged edits appear in Writer's review queue."
 echo
 cd "$WORKSPACE"
 
-SYSTEM_BRIEF="You are the editing agent inside Nebula Writer. Help revise the user's DOCUMENT (which lives in Writer, not on disk) using ONLY the 'writer' MCP tools: writer_read_document, writer_search_document, writer_get_selection, writer_read_attachment, and writer_stage_suggestions (each 'original' must be copied VERBATIM from the document; staged edits go to the user's review queue). Do not read or edit files on disk. Read the document with the tools before proposing edits, then stage precise suggestions."
+SYSTEM_BRIEF="You are the editing agent inside Nebula Writer. Help revise the user's DOCUMENT (which lives in Writer, not on disk) using ONLY the 'writer' MCP tools: writer_read_document, writer_search_document, writer_get_selection, writer_read_attachment, and writer_stage_suggestions (each 'original' must be copied VERBATIM from the document; staged edits go to the user's review queue). Do not read or edit files on disk. Read the document with the tools before proposing edits, then stage precise suggestions. Other agents may be working on other parts of the same document at the same time: work only on what the user asks you here, and re-read a passage just before staging an edit to it."
 
 case "$PROVIDER" in
   claude)

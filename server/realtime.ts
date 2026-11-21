@@ -22,7 +22,7 @@ import type * as Y from "yjs";
 // @ts-ignore -- y-websocket ships this server helper without type declarations.
 import { docs, setupWSConnection } from "y-websocket/bin/utils";
 import { upgradeIsAuthorized } from "./shareAuth";
-import { attachTerminal, isTerminalProvider } from "./terminal-pty";
+import { attachTerminal, isTerminalProvider, terminalSlot } from "./terminal-pty";
 import { publishSuggestionsToBridge, touchBridge } from "./collab-bridge";
 
 // Rooms are keyed by document id (the #doc= fragment in share URLs); the
@@ -70,7 +70,7 @@ export function attachWriterRealtime(server: Server): void {
     const size = Number.isFinite(cols) && Number.isFinite(rows) && cols >= 2 && rows >= 1
       ? { cols: Math.floor(cols), rows: Math.floor(rows) }
       : undefined;
-    attachTerminal(socket, isTerminalProvider(provider) ? provider : "claude", size);
+    attachTerminal(socket, isTerminalProvider(provider) ? provider : "claude", size, terminalSlot(params.get("slot")));
   });
 
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {

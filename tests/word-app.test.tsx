@@ -541,6 +541,62 @@ describe("Word task pane", () => {
     expect(screen.queryByLabelText("Draft suggestion: Draft title here")).not.toBeInTheDocument();
   });
 
+  it("runs several agents at once: each its own reply, progress and Stop, and each told what the others do", async () => {
+    await renderPane();
+    send("Stoppable: tighten the aims");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Instruction for Writer"), { target: { value: "Stoppable: fix the methods" } });
+    fireEvent.click(screen.getByLabelText("Start another agent (⌥⌘↩)"));
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    const [first, second] = captured.requests;
+    expect(first.runId).not.toBe(second.runId);
+    expect(first.parallelWork).toBeUndefined();
+    expect(second.parallelWork).toEqual([{ instruction: "Stoppable: tighten the aims", scope: expect.any(String) }]);
+    expect(second.agentSessionId).toBeUndefined();
+    expect((second as { record?: { parallel?: boolean } }).record?.parallel).toBe(true);
+    await waitFor(() => expect(screen.getByLabelText("Stop all 2 agents")).toBeInTheDocument());
+    expect(screen.getAllByLabelText("Stop this agent")).toHaveLength(2);
+
+    // Progress lands on the reply of the run it belongs to.
+    const now = new Date().toISOString();
+    const secondStage = { provider: "codex", stage: "Reading the Methods", runId: second.runId, passIndex: null, passTotal: null, startedAt: now, updatedAt: now, timeoutMs: null };
+    act(() => sessionFetch.onProgress?.(secondStage, [secondStage]));
+    const replies = () => screen.getAllByLabelText("Writer reply");
+    await waitFor(() => expect(replies()[1].textContent).toContain("Reading the Methods"));
+    expect(replies()[0].textContent).not.toContain("Reading the Methods");
+
+    // "Add to this" on the first reply: the next message goes into that run, not the latest.
+    fireEvent.click(within(replies()[0]).getByText("Add to this"));
+    expect(within(replies()[0]).getByText("Adding to this")).toBeInTheDocument();
+    send("also keep the citation");
+    await waitFor(() => expect(captured.steers).toHaveLength(1));
+    expect(captured.steers[0].runId).toBe(first.runId);
+
+    // Stop one agent: the other keeps running.
+    fireEvent.click(within(replies()[1]).getByLabelText("Stop this agent"));
+    await waitFor(() => expect(captured.stops).toEqual([second.runId]));
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    expect(screen.queryByLabelText("Stop this agent")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Stop the request"));
+    await waitFor(() => expect(captured.stops).toEqual([second.runId, first.runId]));
+    await waitFor(() => expect(screen.queryByLabelText("Stop the request")).not.toBeInTheDocument());
+  });
+
+  it("starts another agent with ⌥⌘↩ while one runs", async () => {
+    await renderPane();
+    send("Stoppable: review the aims");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    const box = screen.getByLabelText("Instruction for Writer");
+    fireEvent.change(box, { target: { value: "Stoppable: review the budget justification" } });
+    fireEvent.keyDown(box, { key: "Enter", metaKey: true, altKey: true });
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.steers).toHaveLength(0);
+    expect(captured.requests[1].parallelWork?.[0]?.instruction).toBe("Stoppable: review the aims");
+    fireEvent.click(screen.getByLabelText("Stop all 2 agents"));
+    await waitFor(() => expect(captured.stops).toHaveLength(2));
+  });
+
   it("runs alongside other requests, showing only its own run's progress and drafts", async () => {
     await renderPane();
     send("Slow: review the document.");

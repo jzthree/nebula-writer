@@ -15,7 +15,8 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
 const MAX_RETRIES = 8;
 
-export function AgentTerminal({ provider }: { provider: "claude" | "codex" }) {
+/** `slot`: which of the provider's terminals (tabs) to attach to; each runs its own agent. */
+export function AgentTerminal({ provider, slot = 1 }: { provider: "claude" | "codex"; slot?: number }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -86,7 +87,7 @@ export function AgentTerminal({ provider }: { provider: "claude" | "codex" }) {
         // real dimensions — spawning at the 80x24 default and resizing after the
         // socket opens leaves the CLI's banner hard-wrapped at the wrong width in
         // the scrollback forever.
-        const ws = new WebSocket(`${protocol}//${window.location.host}/agent-terminal?provider=${provider}&cols=${term.cols}&rows=${term.rows}`);
+        const ws = new WebSocket(`${protocol}//${window.location.host}/agent-terminal?provider=${provider}&slot=${slot}&cols=${term.cols}&rows=${term.rows}`);
         socket = ws;
         // The server replays the room's full scrollback on attach, so start
         // this connection's view from a clean slate — otherwise a reconnect
@@ -177,7 +178,7 @@ export function AgentTerminal({ provider }: { provider: "claude" | "codex" }) {
       disposed = true;
       cleanup?.();
     };
-  }, [provider]);
+  }, [provider, slot]);
 
   return <div className="agent-terminal-surface" ref={containerRef} />;
 }

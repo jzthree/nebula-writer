@@ -181,6 +181,18 @@ export interface AiRequest {
    * could not be resumed.
    */
   conversation?: AiConversationTurn[];
+  /**
+   * Other agents working on the same document at the same time (parallel runs
+   * started from the same pane): what each was asked and where, so this run
+   * leaves their parts alone.
+   */
+  parallelWork?: AiParallelWork[];
+}
+
+export interface AiParallelWork {
+  instruction: string;
+  /** What it is about: an earlier suggestion's title, or the selected passage (clipped). */
+  scope?: string | null;
 }
 
 export interface AiConversationDecision {
@@ -326,6 +338,8 @@ export interface AiRunRecord {
   replyTurn: { id: string } & Record<string, unknown>;
   /** Who proposed suggestions that do not say (the provider's name). */
   proposedBy: string;
+  /** Started alongside another run: its CLI session stays on its reply and does not become the document's. */
+  parallel?: boolean;
 }
 
 export interface WordLiveSuggestionResponse {

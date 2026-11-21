@@ -289,9 +289,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: var(--blue);
   color: #fff;
 }
-.wp-send.stop { background: var(--red); right: 75px; }
-/* While a turn runs, Stop, Queue and Send sit side by side, never on top of each other. */
-.wp-form.running textarea { padding-right: 110px; }
+.wp-send.stop { background: var(--red); right: 109px; }
+/* While a turn runs, Stop, Queue, New agent and Send sit side by side, never on top of each other. */
+.wp-form.running textarea { padding-right: 144px; }
+.wp-send.new-agent { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line-strong); right: 75px; }
 
 .wp-statusline {
   margin: 0;
@@ -682,6 +683,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* Mid-turn steering */
 .wp-send.queue { background: var(--surface-soft); color: var(--ink); border: 1px solid var(--line-strong); right: 41px; }
 .wp-turn-steered { margin: 2px 0 0; font-size: 11px; color: var(--ink-soft); font-style: italic; }
+
+/* Several agents at once: each running reply can be stopped, or picked for the next message. */
+.wp-turn-agent { color: var(--ink-soft); font-weight: 400; white-space: nowrap; }
+.wp-turn-run-actions { display: flex; align-items: center; gap: 6px; margin: 3px 0 0; font-size: 11px; }
+.wp-turn-run-actions .wp-text-button { white-space: nowrap; }
+.wp-turn-run-actions .wp-text-button.active { color: var(--blue); font-weight: 600; }
+.wp-turn.assistant.steer-target { outline: 2px solid var(--accent-border); outline-offset: 1px; }
 
 .wp-show-earlier {
   align-self: center;

@@ -17,14 +17,14 @@ import { readAgentRunContext } from "./agent-context";
 import { hostContextSelection, parseWordHostContext } from "./word-context";
 import { getProviderCatalogs, validateModelOptions } from "./model-catalog";
 import { cliChildEnv } from "./ai";
-import type { AiRunAccepted, AiRunRecord, AiRunStatus, WordLiveSuggestionResponse, AiConversationDecision, AiConversationTurn, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
+import type { AiRunAccepted, AiRunRecord, AiRunStatus, WordLiveSuggestionResponse, AiConversationDecision, AiConversationTurn, AiParallelWork, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
 import { isSuggestionAnchor } from "../src/shared";
 import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
 import { isRunId, markRunInFlight, steerRun } from "./steering";
 import { DOCUMENT_COMMENT_LIMIT, describeDocumentComments, isDocumentCommentList, isDocumentCommentsStatus, locateCommentAnchor, type DocumentComment, type DocumentCommentsStatus } from "../src/shared";
 import type { AiSteerResponse } from "../src/shared";
 import { agentTerminalStatus, ensureAgentTerminal } from "./agent-terminal";
-import { restartTerminalRoom } from "./terminal-pty";
+import { restartTerminalRoom, terminalSlot, terminalSlots } from "./terminal-pty";
 import { bridgeStatus, bridgedSuggestions, cloudSyncBaseUrl, ensureCloudBridge, publishSuggestionsToBridge, registerCollabBridgeHooks } from "./collab-bridge";
 import { inlineSuggestionDiagnostics, listInlineSuggestions, resolveInlineSuggestion } from "./inline-suggestions";
 import { writerAttachmentsDirectory, writerRecoveryDirectory } from "./maintenance";
@@ -755,9 +755,22 @@ export function createWriterApp() {
   // fresh launch. The escape hatch when the CLI failed to start (update
   // needed, auth expired) and the room is stuck in a bare shell.
   app.post("/api/agent-terminal/restart", (request, response) => {
-    const body = request.body as { provider?: unknown } | null;
+    const body = request.body as { provider?: unknown; slot?: unknown } | null;
     const provider = body?.provider === "codex" ? "codex" : "claude";
-    response.json({ ok: true, restarted: restartTerminalRoom(provider), provider });
+    if (body?.slot === undefined || body.slot === null) {
+      // No slot: every agent terminal of this provider (a failed CLI launch affects them all).
+      const slots = terminalSlots()[provider];
+      const restarted = slots.map((slot) => restartTerminalRoom(provider, slot)).some(Boolean);
+      response.json({ ok: true, restarted, provider, slots });
+      return;
+    }
+    const slot = terminalSlot(body.slot);
+    response.json({ ok: true, restarted: restartTerminalRoom(provider, slot), provider, slot });
+  });
+
+  // Every agent terminal running now (tabs), so a reloaded page shows them all.
+  app.get("/api/agent-terminal/slots", (_request, response) => {
+    response.json({ slots: terminalSlots() });
   });
 
   // Cross-user collaboration: bridge this local Writer's room for a document
@@ -1937,9 +1950,22 @@ async function suggestForWordPane(request: WordLiveSuggestionRequest, signal: Ab
     ai.undeliveredSteers = undeliveredSteers;
   }
   if (!signal.aborted || ai.suggestions.length) {
+    // Runs overlap (other agents on this document, other documents): merge into the
+    // document's session as it is now, not as it was when this run started, and keep
+    // whichever other document is active in the stash rather than dropping it.
+    const sourceDocumentId = baseSession.sourceDocumentId;
+    const latest = activeWriterSession?.sourceDocumentId === sourceDocumentId
+      ? activeWriterSession
+      : (sourceDocumentId ? displacedSessions.get(sourceDocumentId)?.session : null) ?? baseSession;
+    if (activeWriterSession && activeWriterSession.sourceDocumentId !== sourceDocumentId) {
+      stashActiveSession();
+    }
+    if (sourceDocumentId) {
+      displacedSessions.delete(sourceDocumentId);
+    }
     activeWriterSession = {
-      ...baseSession,
-      suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, baseSession.suggestions), ai.suggestions, request.requestedBy ?? "Word"),
+      ...latest,
+      suggestions: supersedeRevisedSuggestions(mergeSessionSuggestions(ai.suggestions, latest.suggestions), ai.suggestions, request.requestedBy ?? "Word"),
       revision: nextSessionRevision(),
       updatedAt: new Date().toISOString()
     };
@@ -1961,7 +1987,8 @@ function saveFinishedRun(record: AiRunRecord, payload: WordLiveSuggestionRespons
     conversationStore().write(record.key, {
       turns: [{ id: reply.id, turn: reply }],
       suggestions: staged.map((suggestion) => ({ id: suggestion.id, turnId: reply.id, suggestion })),
-      ...(provider && payload.ai.agentSessionId ? { sessions: { [provider]: payload.ai.agentSessionId } } : {})
+      // A parallel run's CLI session stays on its reply; the document keeps its main one.
+      ...(provider && payload.ai.agentSessionId && !record.parallel ? { sessions: { [provider]: payload.ai.agentSessionId } } : {})
     });
   } catch (error) {
     console.error("[writer-sidecar] could not save a finished run:", error);
@@ -4226,6 +4253,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       focus: focus.value,
       agentSessionId: agentSessionId.value,
       conversation: conversation.value,
+      ...(parallelWorkFrom((body as { parallelWork?: unknown }).parallelWork).length ? { parallelWork: parallelWorkFrom((body as { parallelWork?: unknown }).parallelWork) } : {}),
       requestedBy: typeof (body as { requestedBy?: unknown }).requestedBy === "string" && ((body as { requestedBy?: string }).requestedBy ?? "").trim()
         ? ((body as { requestedBy?: string }).requestedBy ?? "").trim().slice(0, 80)
         : null
@@ -4274,7 +4302,7 @@ function parseRunRecord(value: unknown): AiRunRecord | { error: string } {
   if (JSON.stringify(record).length > RUN_RECORD_CHAR_LIMIT) {
     return { error: "record is too large." };
   }
-  return { key: record.key, userTurn: record.userTurn!, replyTurn: record.replyTurn!, proposedBy: record.proposedBy };
+  return { key: record.key, userTurn: record.userTurn!, replyTurn: record.replyTurn!, proposedBy: record.proposedBy, ...(record.parallel === true ? { parallel: true } : {}) };
 }
 
 const WORD_CONTEXT_DOCUMENT_TEXT_LIMIT = 4_000_000;
@@ -4292,6 +4320,20 @@ function parseAgentSessionId(value: unknown): { value: string | null } | { error
     return { error: "agentSessionId must be the session id a previous response returned." };
   }
   return { value: value.trim() };
+}
+
+/** Other agents running on the same document (bounded; anything malformed is left out). */
+function parallelWorkFrom(value: unknown): AiParallelWork[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.slice(0, 8).flatMap((entry) => {
+    const raw = entry as { instruction?: unknown; scope?: unknown } | null;
+    if (!raw || typeof raw.instruction !== "string" || !raw.instruction.trim()) {
+      return [];
+    }
+    return [{ instruction: raw.instruction.trim().slice(0, 2000), scope: typeof raw.scope === "string" && raw.scope.trim() ? raw.scope.trim().slice(0, 600) : null }];
+  });
 }
 
 function parseConversation(value: unknown): { value: AiConversationTurn[] | undefined } | { error: string } {

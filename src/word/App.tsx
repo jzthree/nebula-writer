@@ -136,6 +136,44 @@ const CONTEXT_PUSH_DEBOUNCE_MS = 700;
 const HEALTH_POLL_MS = 30_000;
 /** After Stop, how long to wait for the run's last answer (with what it kept) before giving up on it. */
 const STOP_ANSWER_WAIT_MS = 20_000;
+
+/** One agent run going on in this pane (several can run at once). */
+interface PaneRun {
+  runId: string;
+  /** The reply turn it fills. */
+  turnId: string;
+  controller: AbortController;
+  /** Stop was pressed: the run is ending on the sidecar, and its last answer (what it kept) is on the way. */
+  stopping: boolean;
+  /** The sidecar has the run (it answered the request, or the pane picked the run up again). */
+  accepted: boolean;
+  /** The selection the request went out with (a steered message names a newer one). */
+  sentSelection: SelectionContext | null;
+  /** What it was asked and where: told to agents that start while it runs. */
+  instruction: string;
+  scope: string | null;
+  /** Started while another ran: its own CLI session, not the document's. */
+  parallel: boolean;
+}
+
+/** A message waiting for a run to end (null: for no run in particular). */
+interface QueuedMessage {
+  text: string;
+  focus: AiRequestFocus | null;
+  afterRunId: string | null;
+}
+
+interface AskOverrides {
+  instruction?: string;
+  focus?: AiRequestFocus | null;
+  /** The running reply to send it into; null starts a new agent; undefined = the default (into the running reply). */
+  into?: string | null;
+}
+
+function clipText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 const MAX_TURNS = 200;
 
 /** Card detail of a pending card the user applied and then reverted. */
@@ -302,12 +340,16 @@ export function App() {
   const focusInFlightRef = useRef(false);
   const snapshotInFlightRef = useRef<Promise<WordDocumentSnapshot | null> | null>(null);
   const lastStaleRefreshRef = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
   const imageUploadsRef = useRef(new Map<string, AiDocumentImage>());
-  // One request runs at a time (the CLIs take a single prompt per turn), but
-  // typing never stops: a message sent meanwhile waits here and goes out the
-  // moment the current turn ends — in the same thread.
-  const runningRef = useRef(false);
+  // Several agents can run at once, each on its own part of the document (New
+  // agent). A message sent while they work goes into one of them (the reply the
+  // author picked with "Add to this", else the latest); if it cannot take it,
+  // it waits and goes out the moment that run ends — in the same thread.
+  const runsRef = useRef(new Map<string, PaneRun>());
+  const [runCount, setRunCount] = useState(0);
+  /** The running reply a message goes into ("Add to this"); null = the latest run. */
+  const [steerTarget, setSteerTargetState] = useState<string | null>(null);
+  const steerTargetRef = useRef<string | null>(null);
   /** When Word last reported an edit (paragraph change): reads wait for a pause after it. */
   const lastEditAtRef = useRef(0);
   /** Last edit or caret move in the document. */
@@ -315,22 +357,13 @@ export function App() {
   /** The document changed since the last snapshot; re-read at the next break (or when the author turns to the pane). */
   const snapshotDirtyRef = useRef(false);
   const requestBackgroundSnapshotRef = useRef<() => void>(() => undefined);
-  /** Run id of the request in flight (mid-turn steering addresses it). */
-  const runIdRef = useRef<string | null>(null);
-  /** Stop was pressed: the run is ending on the sidecar, and its last answer (what it kept) is on the way. */
-  const stoppingRef = useRef(false);
-  /** The sidecar has the run (it answered the request, or the pane picked the run up again). */
-  const runAcceptedRef = useRef(false);
-  /** The selection the running request went out with (a steered message names a newer one). */
-  const sentSelectionRef = useRef<SelectionContext | null>(null);
-  const askRef = useRef<((overrides?: { instruction?: string; focus?: AiRequestFocus | null }) => Promise<void>) | null>(null);
+  const askRef = useRef<((overrides?: AskOverrides) => Promise<void>) | null>(null);
   const patchCardRef = useRef<((id: string, patch: Partial<CardState>) => void) | null>(null);
   const resumeRunRef = useRef<((turn: Extract<ChatTurn, { role: "assistant" }>) => Promise<void>) | null>(null);
-  const [queued, setQueued] = useState<{ text: string; focus: AiRequestFocus | null } | null>(null);
-  const queuedRef = useRef<{ text: string; focus: AiRequestFocus | null } | null>(null);
+  const [queued, setQueued] = useState<QueuedMessage | null>(null);
+  const queuedRef = useRef<QueuedMessage | null>(null);
   const decisionsRecordedRef = useRef(0);
 
-  const runningTurnRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   // Provider conversation ids, keyed by provider + document, so follow-ups
   // resume the CLI's own session ("make it shorter" keeps its referent).
@@ -459,9 +492,8 @@ export function App() {
     const unfinished = restoredTurns.filter((turn): turn is Extract<ChatTurn, { role: "assistant" }> => turn.role === "assistant" && turn.status === "running" && !!turn.runId);
     if (unfinished.length) {
       void (async () => {
-        for (const turn of unfinished) {
-          await resumeRunRef.current?.(turn);
-        }
+        // Each picked up at once: several agents may have been running.
+        await Promise.all(unfinished.map((turn) => resumeRunRef.current?.(turn)));
       })();
     }
     sync.markSaved({
@@ -845,31 +877,27 @@ export function App() {
     return subscribeWriterEvents({
       onSessionUpdated: () => void syncSessionSuggestions("update"),
       onAiProgress: (incoming, runs) => {
-        const runningId = runningTurnRef.current;
-        if (!runningId) {
-          return;
-        }
-        // Runs are independent (other panes, other documents, agents run at the same
-        // time): show only this pane's own run.
-        const ownRun = runIdRef.current;
-        const progress = ownRun
-          ? runs.find((run) => run.runId === ownRun) ?? (incoming?.runId === ownRun ? incoming : null)
-          : incoming && !incoming.runId ? incoming : null;
-        if (!progress) {
-          return;
-        }
-        const text = describeProgress(progress.stage, progress.passIndex, progress.passTotal);
-        setTurns((current) => current.map((turn) => {
-          if (turn.id !== runningId || turn.role !== "assistant") {
-            return turn;
+        // Runs are independent (other agents in this pane, other panes and documents):
+        // each of this pane's runs shows only its own progress, on its own reply.
+        for (const run of runsRef.current.values()) {
+          const progress = runs.find((entry) => entry.runId === run.runId) ?? (incoming?.runId === run.runId ? incoming : null);
+          if (!progress) {
+            continue;
           }
-          const last = turn.activity[turn.activity.length - 1];
-          const isTool = Boolean(progress?.tool) || /^Staging|^Reading|^Searching|^Looking/i.test(text ?? "");
-          const activity = text && (isTool || !last || last.summary !== text)
-            ? [...turn.activity, { at: new Date().toISOString(), kind: isTool ? "tool" as const : "status" as const, summary: text }]
-            : turn.activity;
-          return { ...turn, progress: text, activity, drafts: progress?.drafts?.length ? progress.drafts : undefined };
-        }));
+          const runningId = run.turnId;
+          const text = describeProgress(progress.stage, progress.passIndex, progress.passTotal);
+          setTurns((current) => current.map((turn) => {
+            if (turn.id !== runningId || turn.role !== "assistant") {
+              return turn;
+            }
+            const last = turn.activity[turn.activity.length - 1];
+            const isTool = Boolean(progress.tool) || /^Staging|^Reading|^Searching|^Looking/i.test(text);
+            const activity = isTool || !last || last.summary !== text
+              ? [...turn.activity, { at: new Date().toISOString(), kind: isTool ? "tool" as const : "status" as const, summary: text }]
+              : turn.activity;
+            return { ...turn, progress: text, activity, drafts: progress.drafts?.length ? progress.drafts : undefined };
+          }));
+        }
       }
     });
   }, [patchTurn, syncSessionSuggestions]);
@@ -995,43 +1023,86 @@ export function App() {
     return [providerLabel(provider), modelText, reasoningText].filter(Boolean).join(" · ");
   }, []);
 
+  /** The runs going on now; `steerTarget` when set and still running, else the latest started. */
+  const latestRun = (): PaneRun | null => {
+    const target = steerTargetRef.current ? runsRef.current.get(steerTargetRef.current) : undefined;
+    return target ?? [...runsRef.current.values()].pop() ?? null;
+  };
+
+  const setSteerTarget = useCallback((runId: string | null) => {
+    steerTargetRef.current = runId;
+    setSteerTargetState(runId);
+  }, []);
+
   /**
-   * Stop the running reply. The sidecar ends the run and answers with the
+   * Stop a running reply. The sidecar ends the run and answers with the
    * suggestions it had already proposed, so the wait here goes on for that
    * answer; it gives up only if none comes (an older sidecar, a lost run).
    */
-  function stopActiveRun(): void {
-    const runId = runIdRef.current;
-    const controller = abortRef.current;
-    if (!runId || !controller || !runAcceptedRef.current) {
+  function stopRun(run: PaneRun): void {
+    if (!run.accepted) {
       // Not running on the sidecar yet: nothing to wait for.
-      if (runId) void stopWordRun(runId);
-      controller?.abort();
+      void stopWordRun(run.runId);
+      run.controller.abort();
       return;
     }
-    if (stoppingRef.current) {
+    if (run.stopping) {
       return;
     }
-    stoppingRef.current = true;
-    const turnId = runningTurnRef.current;
-    if (turnId) {
-      patchTurn(turnId, { progress: "Stopping — keeping what it already proposed…" });
-    }
-    void stopWordRun(runId);
+    run.stopping = true;
+    patchTurn(run.turnId, { progress: "Stopping — keeping what it already proposed…" });
+    void stopWordRun(run.runId);
     setTimeout(() => {
-      if (abortRef.current === controller) controller.abort();
+      if (runsRef.current.get(run.runId) === run) run.controller.abort();
     }, STOP_ANSWER_WAIT_MS);
   }
 
+  /** Stop every running agent in this pane. */
+  function stopActiveRun(): void {
+    for (const run of [...runsRef.current.values()]) {
+      stopRun(run);
+    }
+  }
+
+  /** Track a run from its start: the pane is running while any run is. */
+  const startRun = (run: PaneRun) => {
+    runsRef.current.set(run.runId, run);
+    setRunCount(runsRef.current.size);
+    setRequestState("running");
+  };
+
+  /** A run ended: what it waited for goes out, and the pane settles once none is left. */
+  const finishRun = (run: PaneRun, outcome: RequestState) => {
+    if (runsRef.current.get(run.runId) !== run) {
+      return;
+    }
+    runsRef.current.delete(run.runId);
+    setRunCount(runsRef.current.size);
+    if (steerTargetRef.current === run.runId) {
+      steerTargetRef.current = null;
+      setSteerTargetState(null);
+    }
+    if (!runsRef.current.size) {
+      setRequestState(outcome);
+    }
+    const next = queuedRef.current;
+    if (next && (!next.afterRunId || next.afterRunId === run.runId || !runsRef.current.has(next.afterRunId))) {
+      queuedRef.current = null;
+      setQueued(null);
+      void askRef.current?.({ instruction: next.text, focus: next.focus, into: null });
+    }
+  };
+
   /** Take a finished run's result into the pane: its suggestions, the reply, the CLI session. */
-  const applyRunResponse = useCallback((response: WordLiveSuggestionResponse, run: { turnId: string; provider: LocalAiProviderName; engine: string; sessionKey: string }): { fresh: AiSuggestion[]; replyText: string } => {
+  const applyRunResponse = useCallback((response: WordLiveSuggestionResponse, run: { turnId: string; provider: LocalAiProviderName; engine: string; sessionKey: string; runId?: string; parallel?: boolean }): { fresh: AiSuggestion[]; replyText: string } => {
     if (response.ai.undeliveredSteers?.length) {
       // Sent during the run but no session could take them: they become the next turn.
-      queuedRef.current = { text: response.ai.undeliveredSteers.join("\n\n"), focus: null };
+      queuedRef.current = { text: response.ai.undeliveredSteers.join("\n\n"), focus: null, afterRunId: run.runId ?? null };
       setQueued(queuedRef.current);
     }
     sessionIdRef.current = response.session?.id ?? sessionIdRef.current;
-    if (response.ai.agentSessionId) {
+    // A parallel agent's CLI session is its own: the document keeps its main thread.
+    if (response.ai.agentSessionId && !run.parallel) {
       agentSessionsRef.current[run.sessionKey] = response.ai.agentSessionId;
       if (conversationKeyRef.current) {
         void conversationSyncRef.current?.saveSessions({ [run.provider]: response.ai.agentSessionId });
@@ -1062,86 +1133,75 @@ export function App() {
 
   /** Pick up a reply still running on the sidecar, after the pane was refreshed or reopened. */
   const resumeRun = useCallback(async (turn: Extract<ChatTurn, { role: "assistant" }>): Promise<void> => {
-    if (!turn.runId || runningRef.current) {
+    if (!turn.runId || runsRef.current.has(turn.runId)) {
       return;
     }
-    runningRef.current = true;
-    runIdRef.current = turn.runId;
-    runAcceptedRef.current = true;
-    runningTurnRef.current = turn.id;
-    setRequestState("running");
-    const controller = new AbortController();
-    abortRef.current = controller;
+    const run: PaneRun = { runId: turn.runId, turnId: turn.id, controller: new AbortController(), stopping: false, accepted: true, sentSelection: null, instruction: "", scope: null, parallel: Boolean(turn.parallel) };
+    startRun(run);
     const provider = (turn.provider as LocalAiProviderName | undefined) ?? settingsRef.current.provider;
+    let outcome: RequestState = "idle";
     try {
-      const response = await awaitWordRun(turn.runId, { signal: controller.signal });
-      if (controller.signal.aborted) {
+      const response = await awaitWordRun(turn.runId, { signal: run.controller.signal });
+      if (run.controller.signal.aborted) {
         return;
       }
       const label = snapshotRef.current?.documentName ?? documentIdentityRef.current?.documentName ?? "untitled";
-      const { fresh } = applyRunResponse(response, { turnId: turn.id, provider, engine: turn.engine, sessionKey: `${provider}:${label}` });
-      setRequestState(fresh.length ? "done" : "empty");
+      const { fresh } = applyRunResponse(response, { turnId: turn.id, provider, engine: turn.engine, sessionKey: `${provider}:${label}`, runId: run.runId, parallel: run.parallel });
+      outcome = fresh.length ? "done" : "empty";
     } catch (error) {
-      if (controller.signal.aborted || stoppingRef.current) {
+      if (run.controller.signal.aborted || run.stopping) {
         patchTurn(turn.id, { text: "Stopped.", status: "error", progress: null });
-        setRequestState("idle");
       } else {
         patchTurn(turn.id, { text: error instanceof RunGoneError ? "Interrupted — Writer's sidecar restarted while this ran, so the reply was lost. Send the message again." : errorMessage(error), status: "error", progress: null });
-        setRequestState("error");
+        outcome = "error";
       }
     } finally {
-      abortRef.current = null;
-      runningTurnRef.current = null;
-      runningRef.current = false;
-      runIdRef.current = null;
-      stoppingRef.current = false;
-      runAcceptedRef.current = false;
-      const next = queuedRef.current;
-      if (next) {
-        queuedRef.current = null;
-        setQueued(null);
-        void askRef.current?.({ instruction: next.text, focus: next.focus });
-      }
+      finishRun(run, outcome);
     }
   }, [applyRunResponse, patchTurn]);
   resumeRunRef.current = resumeRun;
 
-  const ask = useCallback(async (overrides: { instruction?: string; focus?: AiRequestFocus | null } = {}) => {
+  const ask = useCallback(async (overrides: AskOverrides = {}) => {
     const typed = (overrides.instruction ?? instruction).trim();
     if (!typed || hostStatus !== "ready") {
       return;
     }
     const activeFocus = overrides.focus ?? null;
-    if (runningRef.current) {
-      // Like the Codex and Claude CLIs: a message sent while the AI works goes
-      // into the running turn; if that turn cannot take it, it is queued.
+    // Like the Codex and Claude CLIs: a message sent while the AI works goes into
+    // the running reply (the one picked with "Add to this", else the latest); if it
+    // cannot take it, it is queued. "New agent" (into: null) starts another run instead.
+    const into = overrides.into === undefined ? latestRun()?.runId ?? null : overrides.into;
+    if (into && runsRef.current.has(into)) {
       if (overrides.instruction === undefined) {
         setInstruction("");
       }
-      void steerOrQueue(typed, activeFocus);
+      void steerOrQueue(typed, activeFocus, into);
       return;
     }
-    runningRef.current = true;
+    const others = [...runsRef.current.values()];
     const runId = newAiRunId();
-    runIdRef.current = runId;
-    sentSelectionRef.current = focusRef.current?.selection ?? null;
-    setNotice(null);
-    setRequestState("running");
     const controller = new AbortController();
-    abortRef.current = controller;
+    const assistantTurnId = turnId();
+    const run: PaneRun = {
+      runId, turnId: assistantTurnId, controller, stopping: false, accepted: false,
+      sentSelection: focusRef.current?.selection ?? null, instruction: typed,
+      scope: activeFocus ? `${activeFocus.ref ? `${activeFocus.ref} ` : ""}"${activeFocus.title}"` : null,
+      parallel: others.length > 0
+    };
+    startRun(run);
+    setNotice(null);
     const provider = settingsRef.current.provider;
     const modelOptions = currentModelOptions();
     const engine = engineLabel(provider, modelOptions);
     const askedText = typed;
-    const assistantTurnId = turnId();
-    runningTurnRef.current = assistantTurnId;
     setInstruction("");
     // Into the chat before anything can fail: what was sent is always on record.
     const userTurn: ChatTurn = { id: turnId(), role: "user", at: new Date().toISOString(), text: askedText, focus: activeFocus ? { ref: activeFocus.ref ?? null, title: activeFocus.title } : null };
     appendTurn(userTurn);
-    const replyTurn: ChatTurn = { id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: "Reading the document…", origin: "pane", activity: [], runId, provider };
+    const replyTurn: ChatTurn = { id: assistantTurnId, role: "assistant", at: new Date().toISOString(), text: "", status: "running", engine, suggestionIds: [], progress: "Reading the document…", origin: "pane", activity: [], runId, provider, ...(run.parallel ? { parallel: true } : {}) };
     appendTurn(replyTurn);
     let reachedAi = false;
+    let outcome: RequestState = "idle";
     try {
       const snap = (await refreshSnapshot({ full: true })) ?? snapshotRef.current;
       if (!snap) {
@@ -1152,13 +1212,17 @@ export function App() {
       }
       const currentFocus = focusRef.current;
       const resolved = resolveScope(settingsRef.current.scope, snap, currentFocus);
+      // What the other agents are told this one is working on.
+      run.scope = run.scope ?? (resolved.selection?.text ? clipText(resolved.selection.text, 200) : resolved.label);
       const hostContext = buildHostContext(snap, currentFocus, trailRef.current);
       const documentImages = await syncDocumentImages(snap);
       if (uploadsRef.current.size) {
         await Promise.allSettled([...uploadsRef.current]);
       }
       const sessionKey = `${provider}:${snap.documentName ?? "untitled"}`;
-      const agentSessionId = agentSessionsRef.current[sessionKey] ?? null;
+      // A parallel agent starts its own CLI session: two runs cannot resume one thread at once.
+      const agentSessionId = run.parallel ? null : agentSessionsRef.current[sessionKey] ?? null;
+      const parallelWork = others.filter((other) => runsRef.current.has(other.runId)).map((other) => ({ instruction: other.instruction, scope: other.scope }));
       // This message goes as the instruction, so the digest is only what came before it.
       const conversation = buildConversationDigest(turnsRef.current.filter((turn) => turn.id !== userTurn.id && turn.id !== assistantTurnId), suggestionsRef.current, cardsRef.current);
       const request: WordLiveSuggestionRequest = {
@@ -1181,6 +1245,7 @@ export function App() {
         ...(attachmentsRef.current.length ? { attachments: attachmentsRef.current } : {}),
         ...(agentSessionId ? { agentSessionId } : {}),
         ...(conversation.length ? { conversation } : {}),
+        ...(parallelWork.length ? { parallelWork } : {}),
         ...(activeFocus ? { focus: activeFocus } : {})
       };
       const sent = summarizeSent(request, resolved.label, snap, currentFocus, hostContext.recentFocus.length, hostContext.outline.length, engine);
@@ -1196,127 +1261,134 @@ export function App() {
         await conversationSyncRef.current?.flush();
       }
       const record: AiRunRecord | undefined = key
-        ? { key, userTurn: { ...userTurn, sent }, replyTurn: { ...replyTurn, progress: null }, proposedBy: providerLabel(provider) }
+        ? { key, userTurn: { ...userTurn, sent }, replyTurn: { ...replyTurn, progress: null }, proposedBy: providerLabel(provider), ...(run.parallel ? { parallel: true } : {}) }
         : undefined;
       reachedAi = true;
-      const response = await requestWordSuggestions({ ...request, ...(record ? { record } : {}) }, { signal: controller.signal, onAccepted: () => { runAcceptedRef.current = true; } });
+      const response = await requestWordSuggestions({ ...request, ...(record ? { record } : {}) }, { signal: controller.signal, onAccepted: () => { run.accepted = true; } });
       if (controller.signal.aborted) {
         return;
       }
       lastPushedTextRef.current = snap.bodyText;
-      const { fresh, replyText } = applyRunResponse(response, { turnId: assistantTurnId, provider, engine, sessionKey });
-      setRequestState(fresh.length ? "done" : "empty");
+      const { fresh, replyText } = applyRunResponse(response, { turnId: assistantTurnId, provider, engine, sessionKey, runId, parallel: run.parallel });
+      outcome = fresh.length ? "done" : "empty";
       const assistantMessage: WriterChatMessage = { id: assistantTurnId, role: "assistant", content: replyText, author: engine, createdAt: new Date().toISOString() };
       // The first request creates the session, so the author's turn may not have had one to land in yet.
       mirrorChat(userMirrored ? [assistantMessage] : [userMessage, assistantMessage]);
     } catch (error) {
-      if (controller.signal.aborted || stoppingRef.current) {
+      if (controller.signal.aborted || run.stopping) {
         patchTurn(assistantTurnId, { text: "Stopped.", status: "error", progress: null });
-        setRequestState("idle");
+        outcome = "idle";
       } else {
         patchTurn(assistantTurnId, { text: errorMessage(error), status: "error", progress: null });
-        setRequestState("error");
+        outcome = "error";
         if (!reachedAi) {
           // Never reached the AI: ready to send again once the problem is fixed.
           setInstruction((current) => current || askedText);
         }
       }
-      if (!askedText) {
-        return;
-      }
     } finally {
-      abortRef.current = null;
-      runningTurnRef.current = null;
-      runningRef.current = false;
-      runIdRef.current = null;
-      stoppingRef.current = false;
-      runAcceptedRef.current = false;
-      const next = queuedRef.current;
-      if (next) {
-        queuedRef.current = null;
-        setQueued(null);
-        void ask({ instruction: next.text, focus: next.focus });
-      }
+      finishRun(run, outcome);
     }
   }, [appendTurn, applyRunResponse, currentModelOptions, engineLabel, hostStatus, instruction, mirrorChat, patchTurn, refreshSnapshot]);
 
   askRef.current = ask;
 
-  /** Hold a message for the turn after this one. */
-  const queueMessage = useCallback((text: string, focus: AiRequestFocus | null) => {
-    queuedRef.current = { text, focus };
+  /** Hold a message for after a run (in the same thread). */
+  const queueMessage = useCallback((text: string, focus: AiRequestFocus | null, afterRunId: string | null) => {
+    queuedRef.current = { text, focus, afterRunId };
     setQueued(queuedRef.current);
   }, []);
 
-  /** Deliver a message into the running turn; true when the AI took it. */
-  const steerRunning = useCallback(async (text: string, focus: AiRequestFocus | null): Promise<boolean> => {
-    const runId = runIdRef.current;
-    if (!runId) {
+  /** Deliver a message into a running reply; true when the AI took it. */
+  const steerRunning = useCallback(async (text: string, focus: AiRequestFocus | null, runId: string): Promise<boolean> => {
+    const run = runsRef.current.get(runId);
+    if (!run) {
       return false;
     }
     // Read it now: the selection-changed event may not have landed yet.
     const selectionNow = (await refreshFocus())?.selection ?? null;
-    const result = await steerRun(runId, steerMessageBody(text, focus, selectionNow, sentSelectionRef.current));
-    if (!result.ok || runIdRef.current !== runId) {
+    const result = await steerRun(runId, steerMessageBody(text, focus, selectionNow, run.sentSelection));
+    if (!result.ok || runsRef.current.get(runId) !== run) {
       return false;
     }
     const excerpt = selectionExcerpt(selectionNow);
-    appendTurn({ id: turnId(), role: "user", at: new Date().toISOString(), text, steered: true, focus: focus ? { ref: focus.ref ?? null, title: focus.title } : null, ...(excerpt ? { selectionExcerpt: excerpt } : {}) });
+    appendTurn({ id: turnId(), role: "user", at: new Date().toISOString(), text, steered: true, ...(runsRef.current.size > 1 ? { steeredInto: run.turnId } : {}), focus: focus ? { ref: focus.ref ?? null, title: focus.title } : null, ...(excerpt ? { selectionExcerpt: excerpt } : {}) });
     return true;
   }, [appendTurn, refreshFocus]);
 
-  const steerOrQueue = useCallback(async (text: string, focus: AiRequestFocus | null) => {
-    if (await steerRunning(text, focus)) {
+  const steerOrQueue = useCallback(async (text: string, focus: AiRequestFocus | null, runId: string) => {
+    if (await steerRunning(text, focus, runId)) {
       return;
     }
-    if (runningRef.current) {
-      queueMessage(text, focus);
+    if (runsRef.current.has(runId)) {
+      queueMessage(text, focus, runId);
       setNotice({ tone: "info", text: "This turn can't take new input right now — your message is queued and goes out when it finishes." });
     } else {
-      void askRef.current?.({ instruction: text, focus });
+      void askRef.current?.({ instruction: text, focus, into: null });
     }
   }, [queueMessage, steerRunning]);
 
-  /** Typed while a request runs: hold it for the next turn instead of sending it into this one. */
+  /** Typed while a request runs: hold it for after that run instead of sending it into it. */
   const queueTyped = useCallback(() => {
     const typed = instruction.trim();
     if (!typed) {
       return;
     }
     setInstruction("");
-    if (runningRef.current) {
-      queueMessage(typed, null);
+    const run = latestRun();
+    if (run) {
+      queueMessage(typed, null, run.runId);
     } else {
       void askRef.current?.({ instruction: typed });
     }
   }, [instruction, queueMessage]);
 
-  /** The queued message, now: into the running turn when it can take it, else stop the turn and send it. */
+  /** Start another agent alongside the running ones, on what is typed now. */
+  const askNewAgent = useCallback(() => {
+    void askRef.current?.({ into: null });
+  }, []);
+
+  /** The queued message, now: into the run it waits for when it can take it, else stop that run and send it. */
   const sendQueuedNow = useCallback(async () => {
     const next = queuedRef.current;
     if (!next) {
       return;
     }
-    if (runningRef.current) {
-      if (await steerRunning(next.text, next.focus)) {
+    const waitingFor = next.afterRunId ? runsRef.current.get(next.afterRunId) : undefined;
+    if (waitingFor) {
+      if (await steerRunning(next.text, next.focus, waitingFor.runId)) {
         if (queuedRef.current === next) {
           queuedRef.current = null;
           setQueued(null);
         }
         return;
       }
-      stopActiveRun();
+      stopRun(waitingFor);
       return;
     }
     queuedRef.current = null;
     setQueued(null);
-    void ask({ instruction: next.text, focus: next.focus });
+    void ask({ instruction: next.text, focus: next.focus, into: null });
   }, [ask, steerRunning]);
 
   const cancelQueued = useCallback(() => {
     queuedRef.current = null;
     setQueued(null);
   }, []);
+
+  /** "Stop" on one running reply. */
+  const stopTurn = useCallback((turnId: string) => {
+    const run = [...runsRef.current.values()].find((entry) => entry.turnId === turnId);
+    if (run) {
+      stopRun(run);
+    }
+  }, []);
+
+  /** "Add to this" on one running reply: the next message goes into it (again to undo). */
+  const steerIntoTurn = useCallback((turnId: string) => {
+    const run = [...runsRef.current.values()].find((entry) => entry.turnId === turnId);
+    setSteerTarget(run && steerTargetRef.current !== run.runId ? run.runId : null);
+  }, [setSteerTarget]);
 
   const stop = useCallback(() => {
     stopActiveRun();
@@ -1927,7 +1999,7 @@ export function App() {
   useEffect(() => {
     // A rebuilt Writer reaches the open pane by itself (paneUpdate.ts), between turns.
     let stopped = false;
-    const idle = () => !stopped && !runningRef.current && !busyRef.current && !uploadsRef.current.size && conversationKeyRef.current !== null;
+    const idle = () => !stopped && !runsRef.current.size && !busyRef.current && !uploadsRef.current.size && conversationKeyRef.current !== null;
     const reloadWith = (reload: () => void) => {
       stopped = true;
       try {
@@ -2128,6 +2200,11 @@ export function App() {
       onScopeChange={(scope) => setSettings((current) => ({ ...current, scope }))}
       onSettingsChange={(patch) => setSettings((current) => ({ ...current, ...patch }))}
       onStop={stop}
+      runCount={runCount}
+      onNewAgent={askNewAgent}
+      onStopTurn={stopTurn}
+      onSteerIntoTurn={steerIntoTurn}
+      steerTargetTurnId={steerTarget ? runsRef.current.get(steerTarget)?.turnId ?? null : null}
       onSync={() => {
         lastPushedTextRef.current = null;
         void runBusy("Re-reading the document…", async () => {

@@ -61,7 +61,7 @@ import {
   X,
   Eye,
   EyeOff, ListPlus } from "lucide-react";
-import { AgentTerminal } from "./AgentTerminal";
+import { ProviderTerminal } from "./ProviderTerminal";
 import { appendWriterChatMessages, createWriterSession, downloadWriterRoutineArtifact, ensureAgentTerminal, ensureCollabBridge, getLocalAiHealth, getLocalAiProgress, exportDocxLocally, importDocxLocally, requestLocalAiSuggestion, exportDocx, exportWriterSessionReview, exportWriterSessionState, getAiProgress, getHealth, getShareInfo, getWriterAutosavedSessions, getWriterSession, getWriterSessionDocument, importDocx, importWriterSessionState, loadWriterAutosavedSession, recordWriterSuggestions, requestAiSuggestion, runProviderSmokeTest, setWriterRoutineProgress, setWriterRoutineRun, setWriterSuggestionStatus, SidecarHttpError, syncWriterRoutineSuggestions, uploadAiAttachment, type ExportDocxResult, type ExportReport, type HealthResponse, type SuggestionStatusConflict, steerAiRun, fetchConversation, writeConversation, resetConversation, LOCAL_AI_BASE } from "./api";
 import { DownloadableImage, imageFileName } from "./imageDownload";
 import { isLocalAiProvider, LOCAL_AI_PROVIDER_INFO, LOCAL_AI_PROVIDERS, providerName } from "./providers";
@@ -9212,13 +9212,6 @@ function providerLabel(provider: InteractiveProviderName): string {
 /** The provider Writer's inline terminal runs for this choice; null when that CLI has no terminal mode in Writer. */
 function terminalProvider(provider: InteractiveProviderName): "codex" | "claude" | null {
   return provider === "codex" || provider === "claude" ? provider : null;
-}
-
-function ProviderTerminal({ provider }: { provider: InteractiveProviderName }) {
-  const terminal = terminalProvider(provider);
-  return terminal
-    ? <AgentTerminal provider={terminal} />
-    : <p className="agent-terminal-unavailable">{providerLabel(provider)} can't run in Writer's terminal yet: it takes Writer's document tools only through its ACP server, not its interactive mode. Use it from the Word or Google Docs pane, or pick Codex or Claude Code here.</p>;
 }
 
 function availableAlternateProvider(provider: InteractiveProviderName, health: HealthResponse | null): InteractiveProviderName | null {

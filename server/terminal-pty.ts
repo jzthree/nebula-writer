@@ -36,8 +36,10 @@ ensureSpawnHelperExecutable();
  * no tunnel, no cross-origin: on your own machine the terminal is just part of
  * the app. (hop is only for reaching this Writer from another device.)
  *
- * One persistent, reattachable PTY per provider (a "room"): reloading the page
- * reattaches to the running claude with its scrollback, rather than killing it.
+ * One persistent, reattachable PTY per provider and slot (a "room"): reloading
+ * the page reattaches to the running claude with its scrollback, rather than
+ * killing it. Slots let several agents run side by side (terminal tabs), each
+ * on its own part of the manuscript.
  */
 
 type Provider = "claude" | "codex";
@@ -45,6 +47,7 @@ type Provider = "claude" | "codex";
 interface TerminalRoom {
   pty: IPty;
   provider: Provider;
+  slot: number;
   // A bounded ring of recent output so a (re)attaching client sees scrollback.
   scrollback: Buffer[];
   scrollbackBytes: number;
@@ -53,7 +56,19 @@ interface TerminalRoom {
 }
 
 const SCROLLBACK_MAX_BYTES = 256 * 1024;
-const rooms = new Map<Provider, TerminalRoom>();
+const rooms = new Map<string, TerminalRoom>();
+
+/** Terminal tabs per provider: slot 1 is the default terminal. */
+export const MAX_TERMINAL_SLOTS = 8;
+
+export function terminalSlot(value: unknown): number {
+  const slot = Number(value);
+  return Number.isInteger(slot) && slot >= 1 && slot <= MAX_TERMINAL_SLOTS ? slot : 1;
+}
+
+function roomKey(provider: Provider, slot: number): string {
+  return `${provider}:${slot}`;
+}
 
 function repoRoot(): string {
   try {
@@ -136,7 +151,7 @@ export function scrubTerminalQueries(data: string): string {
     .replace(/\x1b\[\??\d+\$p/g, "");
 }
 
-function createRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
+function createRoom(provider: Provider, slot: number, size?: TerminalSize): TerminalRoom {
   const shell = process.env.SHELL?.trim() || "/bin/zsh";
   // Launch the agent terminal script in a login shell so the user also gets a
   // normal prompt if claude/codex exits.
@@ -148,9 +163,9 @@ function createRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
     cols: size?.cols ?? 80,
     rows: size?.rows ?? 24,
     cwd: repoRoot(),
-    env: terminalEnv(provider)
+    env: { ...terminalEnv(provider), WRITER_AGENT_SLOT: String(slot) }
   });
-  const room: TerminalRoom = { pty, provider, scrollback: [], scrollbackBytes: 0, clients: new Set(), disposed: false };
+  const room: TerminalRoom = { pty, provider, slot, scrollback: [], scrollbackBytes: 0, clients: new Set(), disposed: false };
   pty.onData((data) => {
     const buf = Buffer.from(data, "utf8");
     room.scrollback.push(buf);
@@ -166,7 +181,9 @@ function createRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
   });
   pty.onExit(() => {
     room.disposed = true;
-    rooms.delete(provider);
+    if (rooms.get(roomKey(provider, slot)) === room) {
+      rooms.delete(roomKey(provider, slot));
+    }
     for (const client of room.clients) {
       try {
         client.close();
@@ -178,14 +195,27 @@ function createRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
   return room;
 }
 
-function ensureRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
-  const existing = rooms.get(provider);
+function ensureRoom(provider: Provider, slot: number, size?: TerminalSize): TerminalRoom {
+  const existing = rooms.get(roomKey(provider, slot));
   if (existing && !existing.disposed) {
     return existing;
   }
-  const room = createRoom(provider, size);
-  rooms.set(provider, room);
+  const room = createRoom(provider, slot, size);
+  rooms.set(roomKey(provider, slot), room);
   return room;
+}
+
+/** Slots with a live terminal, per provider (so a reloaded page shows every agent's tab). */
+export function terminalSlots(): Record<Provider, number[]> {
+  const out: Record<Provider, number[]> = { claude: [], codex: [] };
+  for (const room of rooms.values()) {
+    if (!room.disposed) {
+      out[room.provider].push(room.slot);
+    }
+  }
+  out.claude.sort((a, b) => a - b);
+  out.codex.sort((a, b) => a - b);
+  return out;
 }
 
 /**
@@ -195,8 +225,8 @@ function ensureRoom(provider: Provider, size?: TerminalSize): TerminalRoom {
  * initial dimensions if this attach creates the room (existing rooms keep
  * theirs; clients still send resize frames as usual).
  */
-export function attachTerminal(socket: WebSocket, provider: Provider, size?: TerminalSize): void {
-  const room = ensureRoom(provider, size);
+export function attachTerminal(socket: WebSocket, provider: Provider, size?: TerminalSize, slot = 1): void {
+  const room = ensureRoom(provider, slot, size);
   room.clients.add(socket);
 
   // Replay scrollback so a reattaching client sees the running session.
@@ -245,8 +275,8 @@ export function attachTerminal(socket: WebSocket, provider: Provider, size?: Ter
  * Returns false when there is no room to restart (the next attach will
  * create one anyway).
  */
-export function restartTerminalRoom(provider: Provider): boolean {
-  const room = rooms.get(provider);
+export function restartTerminalRoom(provider: Provider, slot = 1): boolean {
+  const room = rooms.get(roomKey(provider, slot));
   if (!room || room.disposed) {
     return false;
   }

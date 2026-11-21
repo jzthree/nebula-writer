@@ -39,7 +39,7 @@ import {
   Trash2,
   Undo2,
   User,
-  X, ListPlus } from "lucide-react";
+  X, ListPlus, Plus } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
@@ -123,8 +123,8 @@ export interface SentSummary {
 }
 
 export type ChatTurn =
-  | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean; selectionExcerpt?: string }
-  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[]; drafts?: AiSuggestion[]; /** The sidecar run producing this reply, so a reopened pane can pick it up again. */ runId?: string; provider?: string }
+  | { id: string; role: "user"; at: string; text: string; sent?: SentSummary; focus?: { ref: string | null; title: string } | null; steered?: boolean; /** With several agents running: the reply it went into. */ steeredInto?: string; selectionExcerpt?: string }
+  | { id: string; role: "assistant"; at: string; text: string; status: "running" | "done" | "error"; engine: string; suggestionIds: string[]; progress: string | null; origin: "pane" | "session"; activity: AiActivityEntry[]; drafts?: AiSuggestion[]; /** The sidecar run producing this reply, so a reopened pane can pick it up again. */ runId?: string; provider?: string; /** Started alongside another agent (its own CLI session). */ parallel?: boolean }
   | { id: string; role: "system"; at: string; text: string; tone: "info" | "error" };
 
 export interface ModelControls {
@@ -197,6 +197,16 @@ export interface WordPaneProps {
   onScopeChange: (scope: RequestScope) => void;
   onSettingsChange: (patch: Partial<WordPaneProps["settings"]>) => void;
   onStop: () => void;
+  /** Agents running in this pane now (each its own reply). */
+  runCount: number;
+  /** Start another agent alongside the running ones, on what is typed. */
+  onNewAgent: () => void;
+  /** Stop one running reply. */
+  onStopTurn: (turnId: string) => void;
+  /** Send the next message into this running reply (again to undo). */
+  onSteerIntoTurn: (turnId: string) => void;
+  /** The running reply the next message goes into, when the author picked one. */
+  steerTargetTurnId: string | null;
   onSync: () => void;
   pendingCount: number;
   presets: PresetOption[];
@@ -365,6 +375,10 @@ function WordPaneBody(props: WordPaneProps) {
         suggestionById={props.suggestionById}
         trackChanges={props.settings.trackChanges}
         turns={props.turns}
+        runCount={props.runCount}
+        steerTargetTurnId={props.steerTargetTurnId}
+        onStopTurn={props.onStopTurn}
+        onSteerIntoTurn={props.onSteerIntoTurn}
       />
 
       <section className="wp-composer" aria-label="Ask Writer">
@@ -468,7 +482,7 @@ function WordPaneBody(props: WordPaneProps) {
             value={props.instruction}
             onChange={(event) => props.onInstructionChange(event.currentTarget.value)}
             placeholder={running
-              ? "Add to the running turn (⌘↩), or queue it for after (⇧⌘↩)"
+              ? "Add to the running turn (⌘↩), start another agent on another part (⌥⌘↩), or queue it for after (⇧⌘↩)"
               : "Tighten this paragraph… / Sharpen the visible pages for reviewers… / Review the whole Aims page"}
             aria-label="Instruction for Writer"
             rows={3}
@@ -476,7 +490,9 @@ function WordPaneBody(props: WordPaneProps) {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                 event.preventDefault();
                 if (props.canAsk) {
-                  if (running && event.shiftKey) {
+                  if (running && event.altKey) {
+                    props.onNewAgent();
+                  } else if (running && event.shiftKey) {
                     props.onQueue();
                   } else {
                     props.onAsk();
@@ -486,7 +502,7 @@ function WordPaneBody(props: WordPaneProps) {
             }}
           />
           {running ? (
-            <button type="button" className="wp-send stop" onClick={props.onStop} aria-label="Stop the request" title="Stop">
+            <button type="button" className="wp-send stop" onClick={props.onStop} aria-label={props.runCount > 1 ? `Stop all ${props.runCount} agents` : "Stop the request"} title={props.runCount > 1 ? `Stop all ${props.runCount} agents` : "Stop"}>
               <Square size={15} aria-hidden="true" />
             </button>
           ) : null}
@@ -495,12 +511,17 @@ function WordPaneBody(props: WordPaneProps) {
               <ListPlus size={15} aria-hidden="true" />
             </button>
           ) : null}
+          {running ? (
+            <button type="button" className="wp-send new-agent" onClick={props.onNewAgent} disabled={!props.canAsk} aria-label="Start another agent (⌥⌘↩)" title="New agent — works on this alongside the running one, on another part of the document (⌥⌘↩)">
+              <Plus size={15} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="submit"
             className="wp-send"
             disabled={!props.canAsk}
             aria-label={running ? "Send now, into the running turn (⌘↩)" : "Send to Writer (⌘↩)"}
-            title={running ? "Send now — the AI takes it into account in this turn (⌘↩)" : "Send (⌘↩)"}
+            title={running ? `Send now — ${props.steerTargetTurnId ? "the reply you picked" : props.runCount > 1 ? "the latest agent" : "the AI"} takes it into account in this turn (⌘↩)` : "Send (⌘↩)"}
           >
             <Send size={16} aria-hidden="true" />
           </button>
@@ -726,6 +747,10 @@ function Transcript(props: {
   suggestionById: (id: string) => AiSuggestion | null;
   trackChanges: "always" | "word";
   turns: ChatTurn[];
+  runCount: number;
+  steerTargetTurnId: string | null;
+  onStopTurn: (turnId: string) => void;
+  onSteerIntoTurn: (turnId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastTurnId = props.turns[props.turns.length - 1]?.id ?? null;
@@ -804,6 +829,10 @@ function Transcript(props: {
             suggestionById={props.suggestionById}
             trackChanges={props.trackChanges}
             turn={turn}
+            runCount={props.runCount}
+            steerTarget={props.steerTargetTurnId === turn.id}
+            onStopTurn={props.onStopTurn}
+            onSteerIntoTurn={props.onSteerIntoTurn}
           />
         )) : (
           <div className="wp-empty" role="status">
@@ -834,6 +863,11 @@ function TurnView(props: {
   suggestionById: (id: string) => AiSuggestion | null;
   trackChanges: "always" | "word";
   turn: ChatTurn;
+  runCount: number;
+  /** The author picked this running reply for the next message. */
+  steerTarget: boolean;
+  onStopTurn: (turnId: string) => void;
+  onSteerIntoTurn: (turnId: string) => void;
 }) {
   const { turn } = props;
   if (turn.role === "system") {
@@ -845,7 +879,7 @@ function TurnView(props: {
         <div className="wp-turn-head"><User size={12} aria-hidden="true" /> You <time dateTime={turn.at}>{clock(turn.at)}</time></div>
         {turn.focus ? <p className="wp-turn-focus"><Sparkles size={11} aria-hidden="true" /> About {turn.focus.ref ? `${turn.focus.ref} ` : ""}"{turn.focus.title}"</p> : null}
         <p className="wp-turn-text">{turn.text}</p>
-        {turn.steered ? <p className="wp-turn-steered">Sent into the running turn{turn.selectionExcerpt ? <>, about the selection “{turn.selectionExcerpt}”</> : null} — the AI takes it into account in this reply</p> : null}
+        {turn.steered ? <p className="wp-turn-steered">Sent into the running turn{turn.steeredInto ? " it was added to" : ""}{turn.selectionExcerpt ? <>, about the selection “{turn.selectionExcerpt}”</> : null} — the AI takes it into account in this reply</p> : null}
         {turn.sent ? <SentDetails sent={turn.sent} /> : null}
       </article>
     );
@@ -887,11 +921,27 @@ function TurnView(props: {
   const allPending = layout ? layout.groups.flatMap(applicable) : [];
   const replyApplyAll = layout && layout.groups.length > 1 && allPending.length > 1;
   return (
-    <article className={`wp-turn assistant ${turn.status}`} aria-label="Writer reply">
+    <article className={`wp-turn assistant ${turn.status}${props.steerTarget ? " steer-target" : ""}`} aria-label="Writer reply">
       <div className="wp-turn-head">
-        <Bot size={12} aria-hidden="true" /> {turn.engine} <time dateTime={turn.at}>{clock(turn.at)}</time>
+        <Bot size={12} aria-hidden="true" /> {turn.engine}{turn.parallel ? <span className="wp-turn-agent" title="Started alongside another agent"> · parallel agent</span> : null} <time dateTime={turn.at}>{clock(turn.at)}</time>
         {turn.status === "running" ? <Loader2 size={12} className="spin" aria-hidden="true" /> : null}
       </div>
+      {turn.status === "running" && turn.runId && props.runCount > 1 ? (
+        <div className="wp-turn-run-actions">
+          <button
+            type="button"
+            className={`wp-text-button${props.steerTarget ? " active" : ""}`}
+            onClick={() => props.onSteerIntoTurn(turn.id)}
+            aria-pressed={props.steerTarget}
+            title={props.steerTarget ? "Messages go into this reply — click to stop" : "Send the next message into this reply"}
+          >
+            {props.steerTarget ? "Adding to this" : "Add to this"}
+          </button>
+          <button type="button" className="wp-icon-button tiny" onClick={() => props.onStopTurn(turn.id)} aria-label="Stop this agent" title="Stop this agent (keeps what it already proposed)">
+            <Square size={11} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
       {replyApplyAll ? (
         <div className="wp-reply-apply-all">
           <button

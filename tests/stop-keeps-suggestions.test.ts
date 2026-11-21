@@ -26,7 +26,8 @@ function fakeClaude(dir: string, mode: "hang" | "linger"): string {
     'const config = JSON.parse(fs.readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"));',
     "const runUrl = config.mcpServers.writer.env.WRITER_AGENT_RUN_URL;",
     'const marker = new URL("./staged", import.meta.url);',
-    'const staged = { title: "Justify the sample size", original: "The sample size is adequate.", replacement: "The sample size is justified by a power analysis.", rationale: "Reviewers ask." };',
+    'const runName = runUrl.split("/").pop();',
+    'const staged = { title: "Justify the sample size", original: "The sample size is adequate.", replacement: `The sample size is justified by a power analysis (${runName}).`, rationale: "Reviewers ask." };',
     "process.stdin.resume();",
     "setInterval(() => {}, 1000);",
     'fetch(`${runUrl}/stage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ suggestions: [staged] }) })',
@@ -34,7 +35,7 @@ function fakeClaude(dir: string, mode: "hang" | "linger"): string {
     "  .then(() => {",
     '    process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: "sess-stop" }) + "\\n");',
     '    fs.writeFileSync(marker, "1");',
-    '    fs.writeFileSync(new URL(`./staged-${runUrl.split("/").pop()}`, import.meta.url), "1");',
+    '    fs.writeFileSync(new URL(`./staged-${runName}`, import.meta.url), "1");',
     mode === "linger"
       ? '    process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Staged one edit.", session_id: "sess-stop" }) + "\\n");'
       : "",
@@ -156,5 +157,37 @@ describe("stopping a run keeps what it already proposed", () => {
       expect(state.status).toBe("done");
       expect(state.result!.ai.suggestions).toHaveLength(1);
     }
+  }, 30_000);
+
+  it("keeps every agent's suggestions when two work on the same document at once", async () => {
+    process.env.WRITER_CLAUDE_PATH = fakeClaude(tempDir, "hang");
+    const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const key = "word:shared-manuscript.docx";
+    const start = (runId: string, instruction: string, parallelWork: Array<{ instruction: string }> = []) => {
+      const userTurn = { id: `u-${runId}`, role: "user", at: "2026-11-21T10:00:00.000Z", text: instruction };
+      const replyTurn = { id: `a-${runId}`, role: "assistant", at: "2026-11-21T10:00:00.000Z", text: "", status: "running", engine: "Claude Code", suggestionIds: [], progress: null, origin: "pane", activity: [], runId, provider: "claude" };
+      return post("/api/word/suggest", {
+        provider: "claude", runId, instruction, mode: "global", documentText: DOC, documentName: "shared-manuscript.docx", detach: true,
+        selection: null, parallelWork, record: { key, userTurn, replyTurn, proposedBy: "Claude Code", parallel: parallelWork.length > 0 }
+      });
+    };
+    expect((await start("run-same-doc-1", "Tighten the aims")).status).toBe(202);
+    expect((await start("run-same-doc-2", "Fix the methods", [{ instruction: "Tighten the aims" }])).status).toBe(202);
+    await waitFor(() => readdirSync(tempDir).filter((name) => name.startsWith("staged-")).length === 2);
+    for (const runId of ["run-same-doc-1", "run-same-doc-2"]) {
+      expect((await post(`/api/ai/runs/${runId}/stop`, {})).status).toBe(200);
+      expect(((await (await fetch(`${base}/api/ai/runs/${runId}?wait=20`)).json()) as { status: string }).status).toBe("done");
+    }
+    // The second run to finish merged into the session the first had already updated.
+    const { suggestions } = await (await fetch(`${base}/api/session/suggestions`)).json() as { suggestions: Array<{ replacement: string }> };
+    // Each stand-in agent tags its replacement with its own agent-run id (the markers name them).
+    const agentRuns = readdirSync(tempDir).filter((name) => name.startsWith("staged-")).map((name) => name.slice("staged-".length));
+    const replacements = suggestions.map((suggestion) => suggestion.replacement).join("\n");
+    for (const agentRun of agentRuns) {
+      expect(replacements).toContain(`(${agentRun})`);
+    }
+    // Both replies are saved; only the first (non-parallel) run's CLI session would become the document's.
+    const saved = conversationStore().read(key, {});
+    expect(saved.turns.map((entry) => entry.id).sort()).toEqual(expect.arrayContaining(["a-run-same-doc-1", "a-run-same-doc-2"]));
   }, 30_000);
 });

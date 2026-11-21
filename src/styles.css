@@ -4807,3 +4807,15 @@ button:disabled {
 .downloadable-image img { max-width: 100%; }
 .image-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 6px; border: 1px solid var(--line, #dadce0); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .image-download:hover { background: rgba(127, 127, 127, 0.12); }
+
+/* Agent terminals as tabs: each tab is its own agent, working alongside the others. */
+.agent-terminal-tabbed { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.agent-terminal-tabs { display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--paper, #fff); color: var(--ink, #24292f); border-bottom: 1px solid var(--line, #d0d7de); overflow-x: auto; flex: none; }
+.agent-terminal-tab { display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 6px; }
+.agent-terminal-tab.active { border-color: var(--line-strong, #afb8c1); background: var(--surface-soft, #f6f8fa); }
+.agent-terminal-tab button { border: 0; background: none; padding: 2px 6px; font-size: 12px; cursor: pointer; color: inherit; }
+.agent-terminal-tab .agent-terminal-tab-close { padding: 2px 5px 2px 0; opacity: 0.6; }
+.agent-terminal-tab .agent-terminal-tab-close:hover { opacity: 1; }
+.agent-terminal-tab-add { border: 1px dashed var(--line-strong, #afb8c1); border-radius: 6px; background: none; padding: 2px 8px; font-size: 12px; cursor: pointer; color: inherit; white-space: nowrap; }
+.agent-terminal-tab-add:disabled { opacity: 0.5; cursor: default; }
+
