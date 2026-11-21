@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--seed", type=int, default=1000, help="round N samples with seed + N")
     ev.add_argument("--evidence", type=Path, default=None, help="dev run whose results seed round 1's proposals")
     ev.add_argument("--evidence-condition", default="incumbent", help="the incumbent's condition name in that run")
+    ev.add_argument("--method", default="textgrad", choices=["textgrad", "propose"], help="textgrad: critics explain each caught paragraph and suggest guide changes, aggregated into edits")
+    ev.add_argument("--critic", action="append", default=None, help="critic model for textual gradients (repeatable; default: the judges)")
+    ev.add_argument("--gradients", type=int, default=48, help="caught paragraphs critiqued per round")
     ev.add_argument("--workers", type=int, default=10)
     ev.add_argument("--runs", type=Path, default=Path("runs"))
 
@@ -116,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             args.skill, args.data, args.runs, args.journals.split(","), args.per_journal, args.candidates,
             Model.parse(args.proposer), Model.parse(args.generator), Model.parse(args.briefer),
             [Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])], args.workers, args.threshold,
+            method=args.method, critics=[Model.parse(s) for s in args.critic] if args.critic else None, gradients=args.gradients,
         ).run(args.rounds, args.seed, args.evidence, args.evidence_condition)
     return 0
 

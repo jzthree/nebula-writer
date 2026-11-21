@@ -46,6 +46,101 @@ Answer with JSON only:
 {"candidates": [{"idea": "one sentence: what this changes and why", "edits": [{"file": "SKILL.md or references/<journal>.md", "old": "exact text currently in that file, to be replaced (copy it exactly; empty string to append at the end of the file)", "new": "replacement text"}]}]}"""
 
 
+CRITIC_SYSTEM = """You are an experienced editor at {journal}. A writer drafted a paragraph from notes listing the content of a paragraph published in {journal}, following a style guide for the journal. You compare the draft with the published paragraph and say how the draft's writing departs from the journal's published style, then how the style guide should change so that writers following it produce paragraphs closer to the journal's published prose.
+
+Rules for your suggestions:
+- They must generalize to other papers in {journal}: describe how the journal writes, never what this paper is about.
+- Never quote wording from the two paragraphs (no phrase of three or more words); describe patterns, with short invented illustrations if needed.
+- The guide must produce correct, well-edited prose: never suggest errors (grammar, agreement, spelling, typos, wrong facts) even where the published text has them.
+- Differences that come only from content (a fact the notes lacked) are not style; leave them out.
+- Point at the guide: say which rule is missing, wrong or ignored, and what it should say instead.
+
+Answer with JSON only:
+{{"differences": ["specific ways the draft's writing departs from the published style, most important first"], "suggestions": [{{"file": "SKILL.md or references/<journal>.md", "change": "the rule to add, or how to change an existing rule (quote the guide's current wording when changing it)", "why": "which difference it fixes"}}]}}"""
+
+
+def critic_prompt(guide: str, section: str, published: str, draft: str, tells: list[str]) -> str:
+    noted = "".join(f"\n- {t}" for t in tells) or "\n- (none recorded)"
+    return (
+        f"The style guide the writer followed:\n<<<\n{guide}\n>>>\n\n"
+        f"Section: {section}\n\nPublished paragraph:\n<<<\n{published}\n>>>\n\nDraft:\n<<<\n{draft}\n>>>\n\n"
+        f"What readers noted when they told the two apart:{noted}"
+    )
+
+
+def textual_gradients(run_dir: Path, condition: str, skill_dir: Path, critics: list[Model], data_dir: Path, limit: int = 48, workers: int = 10, log=print) -> list[dict]:
+    """TextGrad's backward pass: for paragraphs where the condition's draft was told apart from the published one,
+    a critic explains the difference and suggests how the guide should change. Critics alternate across items."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .llm import LLMError
+
+    items = {i["id"]: i for i in read_jsonl(run_dir / "items.jsonl")}
+    generations = {(g["id"], g["condition"]): g["text"] for g in read_jsonl(run_dir / "generations.jsonl")}
+    tells: dict[str, list[str]] = {}
+    caught: dict[str, float] = {}
+    for j in read_jsonl(run_dir / "judgments.jsonl"):
+        if j["condition"] == condition and j["correct"]:
+            tells.setdefault(j["id"], []).extend(j["tells"])
+            caught[j["id"]] = caught.get(j["id"], 0.0) + j["confidence"]
+    for s in read_jsonl(run_dir / "singles.jsonl"):
+        if s["kind"] == "generated" and s["condition"] == condition and s["probability"] < 0.5:
+            tells.setdefault(s["id"], []).extend(s["tells"])
+            caught[s["id"]] = caught.get(s["id"], 0.0) + (0.5 - s["probability"])
+    # The most confidently caught first, spread over journals.
+    ranked = sorted((i for i in caught if (i, condition) in generations), key=lambda i: -caught[i])
+    by_journal: dict[str, list[str]] = {}
+    for i in ranked:
+        by_journal.setdefault(items[i]["journal"], []).append(i)
+    chosen: list[str] = []
+    while len(chosen) < limit and any(by_journal.values()):
+        for queue in by_journal.values():
+            if queue and len(chosen) < limit:
+                chosen.append(queue.pop(0))
+    client = Client(data_dir / "cache")
+
+    def backward(job):
+        index, item_id = job
+        item = items[item_id]
+        critic = critics[index % len(critics)]
+        files = _skill_files(skill_dir)
+        reference = f"references/{item['journal']}.md"
+        guide = "\n\n".join(f"=== {name} ===\n{files[name]}" for name in ("SKILL.md", reference) if name in files)
+        system = CRITIC_SYSTEM.format(journal=JOURNALS[item["journal"]].name)
+        prompt = critic_prompt(guide, item["section"], item["text"], generations[(item_id, condition)], tells.get(item_id, [])[:8])
+        try:
+            answer = client.complete_json(critic, system, prompt)
+        except LLMError as error:
+            log(f"  gradient for {item_id} failed: {str(error)[:160]}")
+            return None
+        if not isinstance(answer, dict):
+            return None
+        return {"id": item_id, "journal": item["journal"], "section": item["section"], "critic": critic.label,
+                "differences": [str(d) for d in answer.get("differences") or []][:6],
+                "suggestions": [s for s in answer.get("suggestions") or [] if isinstance(s, dict)][:5]}
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        out = [g for g in pool.map(backward, list(enumerate(chosen))) if g]
+    log(f"  textual gradients: {len(out)} of {len(chosen)} caught paragraphs")
+    return out
+
+
+def format_gradients(gradients: list[dict]) -> str:
+    blocks = []
+    for n, g in enumerate(gradients, 1):
+        lines = [f"[{n}] {JOURNALS[g['journal']].name}, {g['section']} (critic: {g['critic']})", "Differences:"]
+        lines += [f"  - {d}" for d in g["differences"]]
+        lines.append("Suggested guide changes:")
+        lines += [f"  - ({s.get('file', '?')}) {s.get('change', '')} [fixes: {s.get('why', '')}]" for s in g["suggestions"]]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+OPTIMIZER_SYSTEM = PROPOSER_SYSTEM.replace(
+    "You propose small, independent edits.",
+    "You receive per-paragraph feedback from journal editors: for paragraphs where a skill draft was told apart from the published one, how the draft's writing departed from the journal's style and how they would change the guide (textual gradients). Aggregate them: an idea suggested for many paragraphs, by both critics, or across journals is stronger evidence than a one-off; weigh conflicting suggestions. You propose small, independent edits.",
+)
+
 @dataclass
 class Candidate:
     name: str
@@ -164,11 +259,14 @@ def used_ids(runs_dir: Path) -> set[str]:
 
 class Evolver:
     def __init__(self, skill_dir: Path, data_dir: Path, runs_dir: Path, journals: list[str], per_journal: int, candidates: int,
-                 proposer: Model, generator: Model, briefer: Model, judges: list[Model], workers: int, threshold: float, log=print):
+                 proposer: Model, generator: Model, briefer: Model, judges: list[Model], workers: int, threshold: float, log=print,
+                 method: str = "textgrad", critics: list[Model] | None = None, gradients: int = 48, retest_threshold: float = 0.85):
         self.skill_dir, self.data_dir, self.runs_dir = skill_dir, data_dir, runs_dir
         self.journals, self.per_journal, self.candidates = journals, per_journal, candidates
         self.proposer, self.generator, self.briefer, self.judges = proposer, generator, briefer, judges
         self.workers, self.threshold, self.log = workers, threshold, log
+        # textgrad: per-paragraph critiques (textual gradients) aggregated into edits; propose: one proposer reads the tells.
+        self.method, self.critics, self.gradients, self.retest_threshold = method, critics or judges, gradients, retest_threshold
         self.home = runs_dir / "evolve"
         self.home.mkdir(parents=True, exist_ok=True)
         self.history_path = self.home / "history.json"
@@ -189,12 +287,21 @@ class Evolver:
             + "\n\n".join(f"=== {name} ===\n{text}" for name, text in files.items())
             + f"\n\nIdeas tried in earlier rounds and their outcomes:\n{tried}\n\n"
             + "Published profile from the training split (means per paragraph; *_pk = per 1,000 words):\n" + "\n".join(profiles) + "\n\n"
-            + (evidence(last_run, condition) if last_run else "(no evidence yet)")
-            + f"\n\nPropose {self.candidates} candidates, each testing a different idea."
         )
+        system = PROPOSER_SYSTEM
+        if self.method == "textgrad" and last_run:
+            gradients = textual_gradients(last_run, condition, self.skill_dir, self.critics, self.data_dir, self.gradients, self.workers, self.log)
+            (self.home / f"r{round_no}-gradients.json").write_text(json.dumps(gradients, indent=2))
+            drift = evidence(last_run, condition).split("Measured drift", 1)[-1].split("Pairs the readers", 1)[0]
+            prompt += (f"Editors' feedback on {len(gradients)} paragraphs where the skill's draft was told apart from the published one:\n\n"
+                       + format_gradients(gradients) + "\n\nMeasured drift" + drift)
+            system = OPTIMIZER_SYSTEM
+        else:
+            prompt += evidence(last_run, condition) if last_run else "(no evidence yet)"
+        prompt += f"\n\nPropose {self.candidates} candidates, each testing a different idea."
         client = Client(self.data_dir / "cache")
         dev_texts = [row["text"] for path in self.runs_dir.glob("*/items.jsonl") for row in read_jsonl(path)]
-        answer = client.complete_json(self.proposer, PROPOSER_SYSTEM, prompt + f"\n\n(Round {round_no}.)")
+        answer = client.complete_json(self.proposer, system, prompt + f"\n\n(Round {round_no}.)")
         out: list[Candidate] = []
         for index, proposal in enumerate((answer or {}).get("candidates", [])[: self.candidates], 1):
             idea = str(proposal.get("idea", "")).strip() or "(no description)"
@@ -210,10 +317,66 @@ class Evolver:
                 self.history.append({"round": round_no, "idea": idea, "outcome": f"not tested ({error[:120]})"})
                 continue
             (target / "IDEA.txt").write_text(idea + "\n\n" + json.dumps(proposal.get("edits"), indent=2))
+            (target / "EDITS.json").write_text(json.dumps(proposal.get("edits") or []))
             out.append(Candidate(f"c{index}", idea, target))
             self.log(f"  candidate {index}: {idea}")
         self._save()
         return out
+
+    def retest_candidate(self, round_no: int) -> Candidate | None:
+        """Ideas that came close (or won but lost to a better one) and were never adopted or retested:
+        applied together on top of the current skill, tested once as one candidate."""
+        done = {h.get("retested_idea") for h in self.history}
+        ideas, edits = [], []
+        for h in self.history:
+            stats = h.get("stats") or {}
+            if not h.get("idea") or "ACCEPTED" in h.get("outcome", "") or h["idea"] in done or h.get("retest"):
+                continue
+            if stats.get("gain", 0) > 0 and stats.get("p_better", 0) >= self.retest_threshold:
+                saved = self._edits_for(h)
+                if saved is not None:
+                    ideas.append(h["idea"])
+                    edits.extend(saved)
+        if not ideas:
+            return None
+        target = self.data_dir / "evolve" / f"r{round_no}" / "retest"
+        error = apply_edits(self.skill_dir, target, edits)
+        if error:
+            # Some no longer apply after later changes: keep the ones that do, one at a time.
+            kept_ideas, kept_edits = [], []
+            for idea in ideas:
+                h = next(x for x in self.history if x.get("idea") == idea)
+                trial = kept_edits + (self._edits_for(h) or [])
+                if apply_edits(self.skill_dir, target, trial) is None:
+                    kept_ideas.append(idea)
+                    kept_edits = trial
+            for idea in ideas:
+                if idea not in kept_ideas:
+                    self.history.append({"round": round_no, "retested_idea": idea, "outcome": "no longer applies"})
+            if not kept_ideas:
+                return None
+            ideas, edits = kept_ideas, kept_edits
+            apply_edits(self.skill_dir, target, edits)
+        (target / "EDITS.json").write_text(json.dumps(edits))
+        idea = "Together, earlier near-misses: " + " | ".join(ideas)
+        (target / "IDEA.txt").write_text(idea)
+        for i in ideas:
+            self.history.append({"round": round_no, "retested_idea": i, "outcome": "retested together"})
+        self.log(f"  retest candidate: {len(ideas)} earlier near-misses together")
+        return Candidate("retest", idea, target)
+
+    def _edits_for(self, entry: dict) -> list[dict] | None:
+        if entry.get("edits") is not None:
+            return entry["edits"]
+        # Older rounds: find the candidate by its idea.
+        for idea_file in (self.data_dir / "evolve" / f"r{entry['round']}").glob("c*/IDEA.txt"):
+            if idea_file.read_text().split("\n\n", 1)[0].strip() == entry["idea"]:
+                text = idea_file.read_text().split("\n\n", 1)
+                try:
+                    return json.loads(text[1]) if len(text) > 1 else None
+                except json.JSONDecodeError:
+                    return None
+        return None
 
     def round(self, round_no: int, last_run: Path | None, seed: int, evidence_condition: str = "incumbent") -> Path | None:
         self.log(f"== round {round_no}")
@@ -225,6 +388,9 @@ class Evolver:
         if not candidates:
             self.log("  no usable candidates; proposing again")
             candidates = self.propose(round_no, last_run, evidence_condition)
+        retest = self.retest_candidate(round_no)
+        if retest:
+            candidates.append(retest)
         if not candidates:
             self.log("  no usable candidates this round")
             return last_run
@@ -249,7 +415,9 @@ class Evolver:
         best = max(winners, key=lambda cs: cs[1]["gain"]) if winners else None
         for c, s in results:
             outcome = f"gain {s['gain']:+.3f}, P(better) {s['p_better']:.2f}: " + ("ACCEPTED" if best and c is best[0] else "rejected")
-            self.history.append({"round": round_no, "idea": c.idea, "outcome": outcome, "stats": s})
+            saved = c.path / "EDITS.json"
+            edits = json.loads(saved.read_text()) if saved.exists() else None
+            self.history.append({"round": round_no, "idea": c.idea, "outcome": outcome, "stats": s, "edits": edits, "retest": c.name == "retest"})
         incumbent_score = mean(item_scores(run_dir, "incumbent").values())
         self.history.append({"round": round_no, "incumbent_detectability": incumbent_score, "run": str(run_dir)})
         self._save()
@@ -277,6 +445,8 @@ class Evolver:
             if "incumbent_detectability" in h:
                 lines.append(f"**Round {h['round']}**: incumbent detectability {h['incumbent_detectability']:.3f} ({h['run']})")
                 lines.append("")
+            elif "retested_idea" in h:
+                lines.append(f"- round {h['round']}: retest of \"{h['retested_idea']}\" → {h['outcome']}")
             else:
                 lines.append(f"- round {h['round']}: {h['idea']} → {h['outcome']}")
         (self.home / "log.md").write_text("\n".join(lines) + "\n")

@@ -236,3 +236,64 @@ def test_evolve_adopts_only_a_candidate_that_wins(tmp_path: Path, monkeypatch):
     evolver.run(rounds=1, start_seed=0)
     second = {r["id"] for r in map(json.loads, (runs / "evolve-r2" / "items.jsonl").read_text().splitlines())}
     assert first and second and not first & second
+
+
+def test_textgrad_round_critiques_caught_paragraphs_and_retests_near_misses(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    from styleturing.evolve import Evolver
+
+    repo = tmp_path / "repo"
+    data, runs = repo / "data", repo / "runs"
+    (data / "corpus").mkdir(parents=True)
+    rows = [_paragraph("nature", f"P{i}", s, "dev" if i % 3 else "train", k) for i in range(40) for k, s in enumerate(["intro", "results"])]
+    (data / "corpus" / "nature.jsonl").write_text("\n".join(json.dumps(p.__dict__) for p in rows) + "\n")
+    skill = repo / "skills" / "journal-style"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\nUse dashes rarely.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    seen = {"critic": [], "optimizer": []}
+    round_no = {"n": 0}
+
+    def fake_call(self, model, system, prompt):
+        if "experienced editor at Nature" in system:
+            seen["critic"].append(prompt)
+            return json.dumps({"differences": ["draft is evenly paced"], "suggestions": [{"file": "SKILL.md", "change": "vary sentence length", "why": "even pacing"}]})
+        if "improve a writing skill" in system:
+            round_no["n"] += 1
+            if "textual gradients" in system:
+                seen["optimizer"].append(prompt)
+            # Round 1: a near miss (dashes); round 2: an unrelated idea.
+            edit = {"file": "SKILL.md", "old": "Use dashes rarely.", "new": "Use dashes at the journal's rate. NEARMISS."} if round_no["n"] == 1 else {"file": "references/nature.md", "old": "", "new": "Vary sentence length."}
+            return json.dumps({"candidates": [{"idea": f"idea {round_no['n']}", "edits": [edit]}]})
+        if "content briefs" in system:
+            return '{"function": "f", "points": ["p [1]"]}'
+        near = "NEARMISS-OUT" in prompt
+        if "Paragraph:\n<<<" in prompt:
+            if "Generated" not in prompt:
+                return '{"published_probability": 0.7, "tells": []}'
+            # The near miss fools the single judge on about one item in three.
+            return '{"published_probability": %s, "tells": ["even"]}' % ("0.9" if near and hash(prompt) % 3 == 0 else "0.2")
+        if "Paragraph A:" in prompt:
+            first_is_real = prompt.index("Generated") > prompt.index("Paragraph B:")
+            return '{"published": "%s", "confidence": 0.9, "tells": ["even pacing"]}' % ("A" if first_is_real else "B")
+        return "Generated paragraph" + (" NEARMISS-OUT" if "NEARMISS." in system else "") + f" {abs(hash(prompt)) % 997}."
+
+    monkeypatch.setattr(llm.Client, "_call", fake_call)
+    evolver = Evolver(skill, data, runs, ["nature"], per_journal=12, candidates=1, proposer=Model("claude"),
+                      generator=Model("claude"), briefer=Model("claude"), judges=[Model("claude")], workers=2,
+                      threshold=1.01, retest_threshold=0.5, log=lambda *_: None)
+    evolver.run(rounds=1, start_seed=0)
+    assert "NEARMISS." not in (skill / "SKILL.md").read_text()  # nothing clears a bar above 1
+    evolver.run(rounds=1, start_seed=0)
+    # Round 2 critiqued round 1's caught paragraphs, with the guide and the pair in view, and aggregated them.
+    assert seen["critic"] and "=== SKILL.md ===" in seen["critic"][0] and "=== references/nature.md ===" in seen["critic"][0]
+    assert "Published paragraph:" in seen["critic"][0] and "Draft:" in seen["critic"][0]
+    assert seen["optimizer"] and "vary sentence length" in seen["optimizer"][0]
+    assert (runs / "evolve" / "r2-gradients.json").exists()
+    # The round-1 near miss was retested on top of the incumbent, as one candidate.
+    config = json.loads((runs / "evolve-r2" / "config.json").read_text())
+    assert [c["name"] for c in config["conditions"]] == ["incumbent", "c1", "retest"]
+    history = json.loads((runs / "evolve" / "history.json").read_text())
+    assert any(h.get("retested_idea") == "idea 1" for h in history)
