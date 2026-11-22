@@ -62,7 +62,13 @@ if [ "$PUSH" = "1" ]; then
   fi
   if [ ! -f "$SCRIPT_DIR/.clasp.json" ]; then
     step "Creating the Apps Script project (once)"
-    (cd "$SCRIPT_DIR" && npx clasp create --type standalone --title "Nebula Writer" --rootDir .)
+    # clasp create replaces appsscript.json with Google's default manifest,
+    # which drops the add-in's scopes (current document only); keep ours.
+    manifest="$(cat "$SCRIPT_DIR/appsscript.json")"
+    created=0
+    (cd "$SCRIPT_DIR" && npx clasp create --type standalone --title "Nebula Writer" --rootDir .) && created=1
+    printf '%s\n' "$manifest" > "$SCRIPT_DIR/appsscript.json"
+    [ "$created" = "1" ] || exit 1
   fi
   step "Pushing the add-in code"
   (cd "$SCRIPT_DIR" && npx clasp push -f)

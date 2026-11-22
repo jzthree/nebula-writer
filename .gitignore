@@ -11,3 +11,6 @@ chrome-extension/dist/
 chrome-extension/manifest.json
 chrome-extension/local.json
 chrome-extension/key.pem
+
+# Google Docs add-in: the Apps Script project id clasp create made for this account
+gdocs/script/.clasp.json
