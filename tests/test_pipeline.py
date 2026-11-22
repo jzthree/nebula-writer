@@ -297,3 +297,50 @@ def test_textgrad_round_critiques_caught_paragraphs_and_retests_near_misses(tmp_
     assert [c["name"] for c in config["conditions"]] == ["incumbent", "c1", "retest"]
     history = json.loads((runs / "evolve" / "history.json").read_text())
     assert any(h.get("retested_idea") == "idea 1" for h in history)
+
+
+def test_evolve_round_with_failing_calls_records_nothing_and_resumes(tmp_path: Path, monkeypatch):
+    from styleturing.evolve import Evolver
+
+    repo = tmp_path / "repo"
+    data, runs = repo / "data", repo / "runs"
+    (data / "corpus").mkdir(parents=True)
+    rows = [_paragraph("nature", f"P{i}", s, "dev" if i % 3 else "train", k) for i in range(30) for k, s in enumerate(["intro", "results"])]
+    (data / "corpus" / "nature.jsonl").write_text("\n".join(json.dumps(p.__dict__) for p in rows) + "\n")
+    skill = repo / "skills" / "journal-style"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    proposals = json.dumps({"candidates": [{"idea": "a rule", "edits": [{"file": "SKILL.md", "old": "Write plainly.", "new": "Write plainly. RULE."}]}]})
+    limited = {"on": True}
+
+    def fake_call(self, model, system, prompt):
+        if "improve a writing skill" in system:
+            return proposals
+        if limited["on"]:
+            raise llm.LLMError("claude: You've hit your limit")
+        if "content briefs" in system:
+            return '{"function": "f", "points": ["p [1]"]}'
+        if "Paragraph:\n<<<" in prompt:
+            return '{"published_probability": 0.7, "tells": []}'
+        if "Paragraph A:" in prompt:
+            first_is_real = prompt.index("Generated") > prompt.index("Paragraph B:")
+            return '{"published": "%s", "confidence": 0.9, "tells": []}' % ("A" if first_is_real else "B")
+        return f"Generated paragraph {abs(hash(prompt)) % 997}."
+
+    monkeypatch.setattr(llm.Client, "_call", fake_call)
+    monkeypatch.setattr(llm.time, "sleep", lambda _: None)
+    evolver = Evolver(skill, data, runs, ["nature"], per_journal=8, candidates=1, proposer=Model("claude"),
+                      generator=Model("claude"), briefer=Model("claude"), judges=[Model("claude")], workers=2, threshold=0.95, log=lambda _: None)
+    with pytest.raises(RuntimeError, match="rerun the same command"):
+        evolver.run(rounds=1, start_seed=0)
+    history_path = runs / "evolve" / "history.json"
+    assert not any("incumbent_detectability" in h for h in (json.loads(history_path.read_text()) if history_path.exists() else []))
+    # Once calls work again, the same command runs round 1 on the same paragraphs.
+    planned = {r["id"] for r in map(json.loads, (runs / "evolve-r1" / "items.jsonl").read_text().splitlines())}
+    limited["on"] = False
+    Evolver(skill, data, runs, ["nature"], per_journal=8, candidates=1, proposer=Model("claude"),
+            generator=Model("claude"), briefer=Model("claude"), judges=[Model("claude")], workers=2, threshold=0.95, log=lambda _: None).run(rounds=1, start_seed=0)
+    history = json.loads((runs / "evolve" / "history.json").read_text())
+    assert [h["round"] for h in history if "incumbent_detectability" in h] == [1]
+    assert {r["id"] for r in map(json.loads, (runs / "evolve-r1" / "items.jsonl").read_text().splitlines())} == planned

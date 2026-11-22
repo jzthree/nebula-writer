@@ -380,6 +380,8 @@ class Evolver:
 
     def round(self, round_no: int, last_run: Path | None, seed: int, evidence_condition: str = "incumbent") -> Path | None:
         self.log(f"== round {round_no}")
+        # A round that stopped part-way may have saved some entries: start it again from scratch.
+        self.history = [h for h in self.history if h.get("round") != round_no]
         incumbent_copy = self.data_dir / "evolve" / f"r{round_no}" / "incumbent"
         if incumbent_copy.exists():
             shutil.rmtree(incumbent_copy)
@@ -411,6 +413,10 @@ class Evolver:
                 continue
             results.append((c, stats))
             self.log(f"  {c.name}: detectability {stats['candidate']:.3f} vs incumbent {stats['incumbent']:.3f} (gain {stats['gain']:+.3f}, P(better) {stats['p_better']:.2f}, n={stats['n']})")
+        incumbent_items = item_scores(run_dir, "incumbent")
+        if not results or not incumbent_items:
+            # Model calls failed (a usage limit, an outage): record nothing, so the same command resumes this round.
+            raise RuntimeError(f"round {round_no}: no items were scored, so nothing was recorded; rerun the same command to resume this round")
         winners = [(c, s) for c, s in results if s["gain"] > 0 and s["p_better"] >= self.threshold]
         best = max(winners, key=lambda cs: cs[1]["gain"]) if winners else None
         for c, s in results:
@@ -418,7 +424,7 @@ class Evolver:
             saved = c.path / "EDITS.json"
             edits = json.loads(saved.read_text()) if saved.exists() else None
             self.history.append({"round": round_no, "idea": c.idea, "outcome": outcome, "stats": s, "edits": edits, "retest": c.name == "retest"})
-        incumbent_score = mean(item_scores(run_dir, "incumbent").values())
+        incumbent_score = mean(incumbent_items.values())
         self.history.append({"round": round_no, "incumbent_detectability": incumbent_score, "run": str(run_dir)})
         self._save()
         if best:
@@ -434,7 +440,7 @@ class Evolver:
         for name in ["SKILL.md"] + [f"references/{p.name}" for p in (candidate.path / "references").glob("*.md")]:
             shutil.copyfile(candidate.path / name, self.skill_dir / name)
         self.log(f"  adopted {candidate.name}: {candidate.idea}")
-        message = f"Evolve round {round_no}: {candidate.idea}\n\nDetectability {stats['incumbent']:.3f} -> {stats['candidate']:.3f} on {stats['n']} fresh dev items (P(better) {stats['p_better']:.2f}).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+        message = f"Evolve round {round_no}: {candidate.idea}\n\nDetectability {stats['incumbent']:.3f} -> {stats['candidate']:.3f} on {stats['n']} fresh dev items (P(better) {stats['p_better']:.2f})."
         repo = self.skill_dir.resolve().parents[1]
         subprocess.run(["git", "add", str(self.skill_dir.resolve())], cwd=repo, check=False)
         subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=False)
