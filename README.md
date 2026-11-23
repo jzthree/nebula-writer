@@ -55,6 +55,8 @@ stl run --name dev-v1 --per-journal 12 --condition baseline --condition skill=sk
 stl improve runs/dev-v1 --condition skill   # revise each journal's reference from dev evidence
 stl run --name dev-v2 --seed 8 ...          # measure again on fresh dev paragraphs; repeat
 stl run --name test-v1 --split test --per-journal 24 ...   # held-out score, once
+stl evolve --rounds 4                       # automated loop: propose one-idea edits, score each on fresh dev paragraphs, adopt only a confident win
+stl run --name test-v2 --split test --exclude-run runs/test-v1 ...   # a second held-out test on unused paragraphs
 ```
 
 Models are local CLIs, signed in as you: `claude` (Claude Code), `agy:<model>`
@@ -91,6 +93,11 @@ Paired: % of comparisons where the judge picked the published paragraph.
 | | v5 (12 examples per section) | 92% / 92% | 0.89 / 0.85 |
 | **test (n=96, held out)** | baseline | 95% / 98% | 0.91 / 0.88 |
 | | **v3 (shipped)** | **94% / 91%** | **0.89 / 0.80** |
+| **test 2 (n=96, held out, unused paragraphs)** | baseline | 93% / – | 0.87 / – |
+| | **v3 (shipped)** | **86% / –** | **0.81 / –** |
+| | v3 + the one edit evolve adopted | 91% / – | 0.83 / – |
+
+Test 2 has the Claude judge only: Gemini's quota ran out before it started.
 
 v1–v2 (written rules only) barely moved detection; adding published example
 paragraphs (v3) gave a consistent but small gain, and neither more rule
@@ -100,7 +107,22 @@ skill lowers detection modestly (most for Gemini, and in abstracts: 92% →
 passes: side by side, judges still pick the published paragraph about nine
 times in ten. Their main tell is that the rewrite is smoother than the
 authors' prose (fewer rough edges, inconsistencies and slips), which the
-skill deliberately does not imitate by adding errors.
+skill deliberately does not imitate by adding errors. On test 2 the skill
+again lowered detection (mean detectability 0.90 → 0.84 per paragraph,
+paired bootstrap P(better) 0.99), so the gain is small but real.
+
+**Automated improvement (`stl evolve`).** Ten rounds tested 31 one-idea
+edits, each scored against the current skill on 96 dev paragraphs no earlier
+round had used, adopting only at P(better) ≥ 0.95. Rounds 1–6 proposed edits
+from the judges' tells and the stylometric drift; rounds 7–10 used TextGrad
+(two critic models explain why they caught each paragraph and suggest guide
+changes; an optimizer turns those into edits). One edit was adopted (round 1,
+Nature Genetics sentence length and commas, +0.031 on dev). On test 2 it made
+Nature Genetics worse (worse on 9 paragraphs, better on 1) and was reverted:
+with about 30 tests at that bar, one false adoption is expected by chance.
+The same unchanged skill scored between 0.84 and 0.91 from round to round,
+so the effect of a single rule edit is below what 96 paragraphs can resolve.
+Gemini's quota ran out during round 10, so part of that round is Claude only.
 
 ## The skill
 
