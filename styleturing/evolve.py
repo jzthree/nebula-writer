@@ -502,10 +502,13 @@ class Evolver:
         patience: stop early once this many rounds in a row adopted nothing (counting only rounds of this call)."""
         done = [h["round"] for h in self.history if "incumbent_detectability" in h]
         first = max(done, default=0) + 1
-        if first > 1:
+        if seed_run is not None:
+            # Evidence named explicitly (e.g. a run of a skill adopted outside the loop) wins over the last round's.
+            last_run, condition = seed_run, seed_condition
+        elif first > 1:
             last_run, condition = self.runs_dir / f"evolve-r{first - 1}", "incumbent"
         else:
-            last_run, condition = seed_run, seed_condition
+            last_run, condition = None, seed_condition
         stalled = 0
         for round_no in range(first, first + rounds):
             for attempt in range(self.retries + 1):
