@@ -958,10 +958,11 @@ function TurnView(props: {
       ) : null}
       {turn.status === "running" ? (
         <>
-          <p className="wp-turn-text quiet" role="status">{turn.progress ?? "Working…"} <ElapsedSince at={turn.at} /></p>
+          {/* Live lines stay one line each (full text on hover): a reply whose height changed with every step made the transcript's scroll bar jump. */}
+          <p className="wp-turn-text quiet wp-turn-progress" role="status" title={turn.progress ?? undefined}><span>{turn.progress ?? "Working…"}</span> <ElapsedSince at={turn.at} /></p>
           {turn.activity.length ? (
             <ol className="wp-activity live" aria-label="Tool calls so far">
-              {turn.activity.slice(-4).map((entry, index) => <li key={`${entry.at}-${index}`} className={entry.kind}>{entry.summary}</li>)}
+              {turn.activity.slice(-4).map((entry, index) => <li key={`${entry.at}-${index}`} className={entry.kind} title={entry.summary}><span>{entry.summary}</span></li>)}
             </ol>
           ) : null}
           {turn.drafts?.length ? <DraftCards drafts={turn.drafts} /> : null}

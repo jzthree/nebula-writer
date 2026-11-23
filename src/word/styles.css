@@ -508,6 +508,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-turn-head time { margin-left: auto; font-weight: 500; }
 .wp-turn-text { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .wp-turn-text.quiet { color: var(--muted); font-style: italic; }
+.wp-turn-progress { display: flex; gap: 4px; white-space: nowrap; }
+.wp-turn-progress > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wp-turn-progress .wp-elapsed { flex: none; font-variant-numeric: tabular-nums; }
 .wp-turn-text.error { color: var(--red); }
 
 .wp-sent { font-size: 11px; color: var(--muted); }
@@ -600,6 +603,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .wp-activity li.tool::before { content: "⚙"; color: var(--accent-text); }
 .wp-activity li.thinking::before { content: "…"; }
 .wp-activity li time { font-variant-numeric: tabular-nums; color: var(--muted); opacity: 0.8; }
+.wp-activity.live li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wp-activity.live { padding: 4px 8px; border-radius: 7px; background: var(--surface-soft); }
 .wp-activity-log { font-size: 11px; color: var(--muted); }
 .wp-activity-log summary { cursor: pointer; list-style: none; font-weight: 600; color: var(--accent-text); }
