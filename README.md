@@ -168,6 +168,26 @@ paragraph, so some of the authors' phrasing reaches the draft that way. The
 loop now retests positive near-misses together (`--retest-threshold 0.7`)
 and stops after rounds in a row without a win (`--patience`).
 
+**Where it stops.** From v6, rounds 14–16 tested nine more structural
+changes and three combined retests; none won (all within ±0.01, and pushing
+"keep what the content gives" from wording into sentence frames was clearly
+worse, -0.018). One larger idea was then tested outside the loop: tailored
+examples (`scripts/find_examples.py`, which the harness runs on each
+paragraph's notes as an agent would; it shows the four most similar
+published paragraphs of the journal and section from a bank of CC BY
+training-split paragraphs). It was worse than v6 on 192 fresh dev paragraphs
+(-0.009, P(better) 0.09; better for Nature, worse for the other three).
+
+What still gives v6 away, by the Opus judge's stated reasons (240 sampled):
+about half are specific word or construction choices where these authors
+picked one of several acceptable forms (tense, voice, a connective, a list
+form), a quarter are the rewrite's greater polish and regularity, a fifth
+are the authors' own quirks and rough edges, and almost none are content.
+The first kind varies from paper to paper, so rules that push one way
+produce the opposite fault elsewhere (the loop saw this repeatedly); the
+last two are what the skill deliberately does not imitate. v6 is the
+plateau for changes to the skill under this protocol.
+
 ## The skill
 
 `skills/journal-style/` is a Claude Code / Codex skill: `SKILL.md` holds the
