@@ -92,12 +92,27 @@ Paired: % of comparisons where the judge picked the published paragraph.
 | | v3 | 90% / 88% | 0.85 / 0.84 |
 | | v5 (12 examples per section) | 92% / 92% | 0.89 / 0.85 |
 | **test (n=96, held out)** | baseline | 95% / 98% | 0.91 / 0.88 |
-| | **v3 (shipped)** | **94% / 91%** | **0.89 / 0.80** |
+| | v3 | 94% / 91% | 0.89 / 0.80 |
 | **test 2 (n=96, held out, unused paragraphs)** | baseline | 93% / – | 0.87 / – |
-| | **v3 (shipped)** | **86% / –** | **0.81 / –** |
+| | v3 | 86% / – | 0.81 / – |
 | | v3 + the one edit evolve adopted | 91% / – | 0.83 / – |
 
 Test 2 has the Claude judge only: Gemini's quota ran out before it started.
+
+**Test 3 (n=192, held out, unused paragraphs; generator Opus 5.5; judges Opus 5.5 and Codex).**
+Detectability is graded by the judge's confidence (0.5 = cannot tell; lower is better).
+
+| Condition | Detectability | Paired, Opus / Codex | Single AUC, Opus / Codex |
+|---|---|---|---|
+| baseline | 0.768 | 95% / 99% | 0.88 / 0.97 |
+| v3 | 0.734 | 92% / 98% | 0.85 / 0.96 |
+| **v6 (shipped)** | **0.701** | **82% / 98%** | **0.81 / 0.90** |
+
+v6 beats v3 by 0.033 (paired bootstrap P(better) 1.0), as much as v3 beats
+no skill, and each judge confirms it alone (Opus +0.028, Codex +0.038); all
+four journals improve. Codex still picks the published paragraph side by
+side almost every time, but with less confidence, and alone it now rates
+the rewrite published-like far more often.
 
 v1–v2 (written rules only) barely moved detection; adding published example
 paragraphs (v3) gave a consistent but small gain, and neither more rule
@@ -123,6 +138,35 @@ with about 30 tests at that bar, one false adoption is expected by chance.
 The same unchanged skill scored between 0.84 and 0.91 from round to round,
 so the effect of a single rule edit is below what 96 paragraphs can resolve.
 Gemini's quota ran out during round 10, so part of that round is Claude only.
+
+Two changes then made the loop work. **Scoring**: a right/wrong pick carries
+little information when judges are right nine times in ten, so from round 11
+each judgment is graded by the judge's stated confidence, and a candidate is
+compared with the incumbent only on judge-and-mode cells both have. (The old
+item average mixed judges whenever one failed for one condition; paired by
+judge, the round-1 "win" was not significant, which is why it failed on the
+held-out papers.) **Size of change** (`--scale structural`): candidates
+became whole-workflow or whole-file changes. Rounds 11–13 tested nine; none
+won alone, but three leaned positive (P 0.73–0.80) and touched different
+files. Combined, they beat v3 on 192 fresh dev paragraphs (+0.018, P 0.999)
+and on test 3 above. That combination is v6:
+
+- SKILL.md: treat the given content as the authors' material, draft by
+  assembling it rather than paraphrasing, then audit every departure (a
+  synonym, an expanded abbreviation, reformatted notation, an added framing
+  clause, a dropped or added hedge, reordered or regrouped points) and undo
+  it unless a house rule requires it.
+- Nature Genetics: the measured rates read as ceilings, not quotas.
+- Science: the file rebuilt around how Science sentences are constructed in
+  each section.
+
+Part of v6's gain comes from keeping the content's own wording: 24% of a v6
+draft's four-word sequences come from the notes, against 20% for v3. On a
+real manuscript the notes are the author's own draft, so this is what an
+editor should do; in this benchmark the notes were made from the published
+paragraph, so some of the authors' phrasing reaches the draft that way. The
+loop now retests positive near-misses together (`--retest-threshold 0.7`)
+and stops after rounds in a row without a win (`--patience`).
 
 ## The skill
 
