@@ -20,11 +20,24 @@ file (`references/<journal>.md`) adds what is specific to it.
    `examples/<journal>/<section>.md` (abstract, introduction, results,
    discussion, methods). Take their rhythm, density, voice and how they
    open and close; never their wording.
-3. Draft the paragraph from the content you have. Keep every fact, number
-   and citation; add none.
-4. Check the draft against the list below and the reference file's
-   section rules, and revise. Read it once more as the journal's editor
-   would.
+3. Treat the content you are given as the authors' own material. The published paragraph was written from the same content in the authors' words, so a draft reads as theirs to the extent that it keeps what the content already gives. Before drafting, mark what is fixed:
+   - terms, compounds and abbreviations, bare or defined;
+   - symbols, units and ranges, and how numbers are written;
+   - list markers and parenthetical glosses;
+   - the verbs and small words chosen (rely, further, respectively, such as);
+   - every hedge and evaluative word;
+   - the order of points;
+   - which points the content already groups into one statement.
+4. Draft by assembling, not paraphrasing. Turn each item into a clause or sentence, in the order given, and reuse its wording. Join items with the constructions the journal uses: a subordinate or concessive clause, an appositive, a parenthesis, a participial tail or a sentence-initial connective. Change the content's wording only where it is ungrammatical, too telegraphic for running prose, or against a house convention in the reference file (spelling, callout format, number style). Keep every fact, number and citation; add none.
+5. Audit the draft against the content, item by item. Undo each of these departures unless a rule in the reference file requires it:
+   - a synonym, or a more idiomatic or more formal word, where the content's own word was usable;
+   - an expanded abbreviation or an unpacked compact phrase, or a phrase compressed into a hyphenated modifier or a symbol;
+   - notation, ranges or lists reformatted (symbols turned into words or words into symbols, list markers turned into ordinals);
+   - an added sentence or clause that frames the procedure, announces a purpose, explains a mechanism, names a comparator, adds a scope qualifier, recaps or states a moral;
+   - a hedge, evaluative word or connective that was added or dropped;
+   - points reordered into a tidier sequence;
+   - a grouped statement split into separate sentences, or separate statements fused with ", and", ", which" or a semicolon.
+   Then read the paragraph once as the journal's editor would. Grammar, agreement and spelling must be correct, and the house conventions applied.
 
 ## What published text does
 
@@ -127,6 +140,7 @@ Expert readers comparing drafts with the published paragraphs point to these mos
 
 ## Checklist before returning a paragraph
 
+- [ ] Wording, notation, order and grouping follow the content. Every departure is required by a rule, not made for taste.
 - [ ] First sentence carries content; no warm-up or announcement.
 - [ ] No AI vocabulary (leverage, harness, delve, unveil, showcase, shed light on); evaluative words and connectives at the journal's rate, not zero.
 - [ ] Terms repeated rather than varied; the authors' terms and notation kept as given.
