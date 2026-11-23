@@ -35,17 +35,17 @@ class Condition:
             path, name = name, Path(name).name
         return Condition(name, Path(path))
 
-    def system(self, journal_key: str, section: str | None = None) -> str:
+    def system(self, journal_key: str, section: str | None = None, query: str | None = None) -> str:
         if self.skill_dir is None:
             return prompts.BASELINE_SYSTEM
-        return prompts.skill_system(self.skill_dir, journal_key, section)
+        return prompts.skill_system(self.skill_dir, journal_key, section, query)
 
     def fingerprint(self) -> str:
         """Which exact skill text was tested, so a report says what it measured."""
         if self.skill_dir is None:
             return "baseline"
         digest = hashlib.sha256()
-        for path in sorted(self.skill_dir.rglob("*.md")):
+        for path in sorted(q for pattern in ("*.md", "*.py", "*.jsonl") for q in self.skill_dir.rglob(pattern)):
             digest.update(path.read_bytes())
         return digest.hexdigest()[:12]
 
@@ -159,7 +159,8 @@ class Runner:
 
         def generate(job):
             condition, p, b = job
-            text = self.client.complete(cfg.generator, condition.system(p.journal, p.section), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b))
+            notes = (b.get("function", "") + "\n" + "\n".join(map(str, b.get("points", [])))).strip()
+            text = self.client.complete(cfg.generator, condition.system(p.journal, p.section, notes), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b))
             return {"id": p.id, "condition": condition.name, "text": text.strip()}
 
         generations = [g for g in self._parallel("generations", gen_jobs, generate) if g and g["text"]]

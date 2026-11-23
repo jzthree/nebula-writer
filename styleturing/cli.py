@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
     e.add_argument("--journals", default=",".join(JOURNALS))
     e.add_argument("--per-section", type=int, default=12)
+    e.add_argument("--bank", action="store_true", help="also write examples/<journal>/bank.jsonl (every CC BY exemplar paragraph) for scripts/find_examples.py")
 
     rep = sub.add_parser("report", help="rewrite a run's report")
     rep.add_argument("run_dir", type=Path)
@@ -106,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
 
         for path in build_exemplars(args.data, args.skill, args.journals.split(","), args.per_section):
             print(path)
+        if args.bank:
+            from .exemplars import build_bank
+
+            for path in build_bank(args.data, args.skill, args.journals.split(",")):
+                print(path)
     elif args.command == "report":
         print(write_report(args.run_dir, args.data))
     elif args.command == "improve":

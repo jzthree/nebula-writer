@@ -63,3 +63,20 @@ def build(data_dir: Path, skill_dir: Path, journals: list[str], per_section: int
             path.write_text("\n".join(lines))
             written.append(path)
     return written
+
+
+def build_bank(data_dir: Path, skill_dir: Path, journals: list[str]) -> list[Path]:
+    """Every paragraph of the CC BY exemplar papers (train split only, never a dev or test paper), for
+    scripts/find_examples.py: examples/<journal>/bank.jsonl."""
+    written: list[Path] = []
+    for journal in journals:
+        license_of = licenses(data_dir, journal)
+        pool = [p for p in load(data_dir, [journal]) if p.split == "train" and is_exemplar_paper(p.pmcid) and license_of.get(p.pmcid) == "cc by"]
+        name = JOURNALS[journal].name
+        out = skill_dir / "examples" / journal / "bank.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"section": p.section, "paper": p.pmcid, "text": p.text, "source": f"\"{p.title}\", {name} ({p.year}), {p.pmcid}, CC BY 4.0."}
+                for p in sorted(pool, key=lambda p: p.id)]
+        out.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        written.append(out)
+    return written

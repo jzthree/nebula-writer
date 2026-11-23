@@ -416,3 +416,30 @@ def test_evolve_stops_after_patience_rounds_without_a_win(tmp_path: Path, monkey
     assert [h["round"] for h in history if "incumbent_detectability" in h] == [1, 2]
     assert any("stopping: 2 rounds in a row" in line for line in logs)
     assert systems and all("You propose substantial changes" in s for s in systems)
+
+
+def test_skill_with_find_examples_script_shows_the_closest_published_paragraphs(tmp_path: Path):
+    import shutil
+
+    from styleturing import prompts
+
+    skill = tmp_path / "skill"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "references").mkdir()
+    (skill / "SKILL.md").write_text("Write plainly.\n")
+    shutil.copy(Path("data/skill-versions/v7r/scripts/find_examples.py"), skill / "scripts" / "find_examples.py")
+    rows = [
+        {"section": "results", "paper": "P1", "text": "Chromatin accessibility changed at enhancers bound by the factor.", "source": "s1"},
+        {"section": "results", "paper": "P1", "text": "Enhancer accessibility again tracked factor binding.", "source": "s1b"},
+        {"section": "results", "paper": "P2", "text": "Mice gained weight on the diet.", "source": "s2"},
+        {"section": "methods", "paper": "P3", "text": "Chromatin accessibility was measured by ATAC-seq at enhancers.", "source": "s3"},
+    ]
+    (skill / "examples" / "nature").mkdir(parents=True)
+    (skill / "examples" / "nature" / "bank.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    system = prompts.skill_system(skill, "nature", "results", "accessibility at enhancers bound by a factor")
+    found = system.split("find_examples.py --journal nature --section results", 1)[1]
+    # Closest first, one paragraph per paper, only the section asked for.
+    assert found.index("Chromatin accessibility changed") < found.index("Mice gained weight")
+    assert "Enhancer accessibility again" not in found and "ATAC-seq" not in found
+    # Without notes, or for a skill without the script, the prompt is unchanged.
+    assert prompts.skill_system(skill, "nature", "results") == "Write plainly.\n"

@@ -49,9 +49,25 @@ BASELINE_SYSTEM = "You are a scientific writer."
 SECTION_FILE = {"abstract": "abstract", "intro": "introduction", "results": "results", "discussion": "discussion", "methods": "methods"}
 
 
-def skill_system(skill_dir: Path, journal_key: str, section: str | None = None) -> str:
+def retrieved_examples(skill_dir: Path, journal_key: str, section: str, query: str) -> str | None:
+    """What the skill's own scripts/find_examples.py prints for these notes, run the way an agent following
+    the skill would run it; None when the skill has no such script."""
+    script = skill_dir / "scripts" / "find_examples.py"
+    if not script.exists():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"find_examples_{abs(hash(str(script.resolve())))}", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rows = module.nearest(module.load_bank(skill_dir, journal_key), section, query)
+    return module.render(rows) if rows else None
+
+
+def skill_system(skill_dir: Path, journal_key: str, section: str | None = None, query: str | None = None) -> str:
     """The skill as an agent would load it: SKILL.md, the journal's reference
-    file, and the published examples for the section being written."""
+    file, and the published examples for the section being written (plus, when
+    the skill ships scripts/find_examples.py, what it finds for the notes)."""
     skill = (skill_dir / "SKILL.md").read_text()
     if skill.startswith("---"):
         skill = skill.split("---", 2)[2].lstrip()
@@ -63,6 +79,9 @@ def skill_system(skill_dir: Path, journal_key: str, section: str | None = None) 
         examples = skill_dir / "examples" / journal_key / f"{SECTION_FILE[section]}.md"
         if examples.exists():
             parts.append(examples.read_text())
+        found = retrieved_examples(skill_dir, journal_key, section, query) if query else None
+        if found:
+            parts.append(f"Output of scripts/find_examples.py --journal {journal_key} --section {section} for these notes:\n\n{found}")
     return "\n\n---\n\n".join(parts)
 
 
