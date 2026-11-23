@@ -20,6 +20,7 @@ import random
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -136,9 +137,24 @@ def format_gradients(gradients: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+SMALL_EDITS = "You propose small, independent edits. Each candidate tests ONE idea, so the benchmark can tell which ideas help. A candidate may edit SKILL.md (the general method and workflow, used for every journal) or one or more journal reference files, but should change as little as needed to test its idea."
+STRUCTURAL_EDITS = ("You propose substantial changes. Single-rule edits have been tried for many rounds and each moved the result by about one point, "
+                    "below what the benchmark resolves, so each candidate should be one coherent idea big enough to move it by several points: for example a "
+                    "different workflow in SKILL.md (such as drafting, then revising the draft against the published examples and the readers' most frequent "
+                    "reasons), reorganizing or rewriting a journal file around what matters most, cutting rules that may over-constrain the writer, or changing "
+                    "how the writer is told to use the examples. A candidate may rewrite whole sections or whole files (SKILL.md or references/<journal>.md); "
+                    "candidates in one round should differ in kind.")
+
+
+def system_for(base: str, scale: str) -> str:
+    """The proposer's instructions for small single-idea edits or for structural changes."""
+    assert SMALL_EDITS in base
+    return base if scale == "small" else base.replace(SMALL_EDITS, STRUCTURAL_EDITS)
+
+
 OPTIMIZER_SYSTEM = PROPOSER_SYSTEM.replace(
-    "You propose small, independent edits.",
-    "You receive per-paragraph feedback from journal editors: for paragraphs where a skill draft was told apart from the published one, how the draft's writing departed from the journal's style and how they would change the guide (textual gradients). Aggregate them: an idea suggested for many paragraphs, by both critics, or across journals is stronger evidence than a one-off; weigh conflicting suggestions. You propose small, independent edits.",
+    SMALL_EDITS,
+    "You receive per-paragraph feedback from journal editors: for paragraphs where a skill draft was told apart from the published one, how the draft's writing departed from the journal's style and how they would change the guide (textual gradients). Aggregate them: an idea suggested for many paragraphs, by both critics, or across journals is stronger evidence than a one-off; weigh conflicting suggestions. " + SMALL_EDITS,
 )
 
 @dataclass
@@ -218,34 +234,51 @@ def evidence(run_dir: Path, condition: str, limit_tells: int = 120) -> str:
     )
 
 
-def item_scores(run_dir: Path, condition: str) -> dict[str, float]:
-    """Per item: how detectable the condition's paragraph was, averaged over judges and both modes
-    (paired: 1 if the judge picked the published one; single: 1 if the published one was rated higher, 0.5 on ties).
-    Lower is better; 0.5 is chance."""
-    per: dict[str, list[float]] = {}
+def cell_scores(run_dir: Path, condition: str) -> dict[tuple[str, str, str], float]:
+    """How detectable the condition's paragraph was, per (item, judge, mode), graded by what the judge said
+    (paired: its confidence in the published paragraph, i.e. confidence if it picked it, else 1 - confidence;
+    single: 0.5 + (p(published) - p(rewrite)) / 2). Lower is better; 0.5 is chance. Graded scores carry more
+    information than right/wrong when judges are right nine times in ten."""
+    cells: dict[tuple[str, str, str], float] = {}
     for j in read_jsonl(run_dir / "judgments.jsonl"):
         if j["condition"] == condition:
-            per.setdefault(j["id"], []).append(1.0 if j["correct"] else 0.0)
+            confidence = j.get("confidence")
+            confidence = 0.5 if confidence is None else min(1.0, max(0.5, float(confidence)))
+            cells[(j["id"], j["judge"], "paired")] = confidence if j["correct"] else 1.0 - confidence
     singles = read_jsonl(run_dir / "singles.jsonl")
     real = {(s["judge"], s["id"]): s["probability"] for s in singles if s["kind"] == "published"}
     for s in singles:
         if s["kind"] == "generated" and s["condition"] == condition and (s["judge"], s["id"]) in real:
-            r, g = real[(s["judge"], s["id"])], s["probability"]
-            per.setdefault(s["id"], []).append(1.0 if r > g else 0.5 if r == g else 0.0)
-    return {i: mean(v) for i, v in per.items() if v}
+            cells[(s["id"], s["judge"], "single")] = 0.5 + (real[(s["judge"], s["id"])] - s["probability"]) / 2
+    return cells
+
+
+def item_scores(run_dir: Path, condition: str) -> dict[str, float]:
+    """Per item: the mean of its graded cells (see cell_scores)."""
+    per: dict[str, list[float]] = {}
+    for (item, _judge, _mode), value in cell_scores(run_dir, condition).items():
+        per.setdefault(item, []).append(value)
+    return {i: mean(v) for i, v in per.items()}
 
 
 def compare_conditions(run_dir: Path, incumbent: str, candidate: str, resamples: int = 4000) -> dict:
-    """Paired bootstrap over items: probability that the candidate is less detectable than the incumbent."""
-    a, b = item_scores(run_dir, incumbent), item_scores(run_dir, candidate)
-    ids = sorted(set(a) & set(b))
-    diffs = [a[i] - b[i] for i in ids]
-    if not diffs:
+    """Paired bootstrap over items: probability that the candidate is less detectable than the incumbent.
+    Only (item, judge, mode) cells both conditions have are compared, so a judge that failed for one
+    condition and not the other (judges score on different scales) cannot tip the comparison."""
+    a, b = cell_scores(run_dir, incumbent), cell_scores(run_dir, candidate)
+    per: dict[str, list[tuple[float, float]]] = {}
+    for key in set(a) & set(b):
+        per.setdefault(key[0], []).append((a[key], b[key]))
+    if not per:
         return {"n": 0, "incumbent": None, "candidate": None, "gain": 0.0, "p_better": 0.0}
+    ids = sorted(per)
+    inc = [mean(x for x, _ in per[i]) for i in ids]
+    cand = [mean(y for _, y in per[i]) for i in ids]
+    diffs = [x - y for x, y in zip(inc, cand)]
     rng = random.Random(1)
     n = len(diffs)
     wins = sum(1 for _ in range(resamples) if sum(rng.choice(diffs) for _ in range(n)) > 0)
-    return {"n": n, "incumbent": mean(a[i] for i in ids), "candidate": mean(b[i] for i in ids), "gain": mean(diffs), "p_better": wins / resamples}
+    return {"n": n, "incumbent": mean(inc), "candidate": mean(cand), "gain": mean(diffs), "p_better": wins / resamples}
 
 
 def used_ids(runs_dir: Path) -> set[str]:
@@ -260,13 +293,17 @@ def used_ids(runs_dir: Path) -> set[str]:
 class Evolver:
     def __init__(self, skill_dir: Path, data_dir: Path, runs_dir: Path, journals: list[str], per_journal: int, candidates: int,
                  proposer: Model, generator: Model, briefer: Model, judges: list[Model], workers: int, threshold: float, log=print,
-                 method: str = "textgrad", critics: list[Model] | None = None, gradients: int = 48, retest_threshold: float = 0.85):
+                 method: str = "textgrad", critics: list[Model] | None = None, gradients: int = 48, retest_threshold: float = 0.85,
+                 scale: str = "small", retry_wait: float = 1800.0, retries: int = 0):
         self.skill_dir, self.data_dir, self.runs_dir = skill_dir, data_dir, runs_dir
         self.journals, self.per_journal, self.candidates = journals, per_journal, candidates
         self.proposer, self.generator, self.briefer, self.judges = proposer, generator, briefer, judges
         self.workers, self.threshold, self.log = workers, threshold, log
         # textgrad: per-paragraph critiques (textual gradients) aggregated into edits; propose: one proposer reads the tells.
         self.method, self.critics, self.gradients, self.retest_threshold = method, critics or judges, gradients, retest_threshold
+        # small: one-rule edits; structural: workflow and whole-section changes. retries: rounds whose model calls all
+        # failed (a usage limit) are retried after retry_wait seconds, this many times in a row, before giving up.
+        self.scale, self.retry_wait, self.retries = scale, retry_wait, retries
         self.home = runs_dir / "evolve"
         self.home.mkdir(parents=True, exist_ok=True)
         self.history_path = self.home / "history.json"
@@ -288,14 +325,14 @@ class Evolver:
             + f"\n\nIdeas tried in earlier rounds and their outcomes:\n{tried}\n\n"
             + "Published profile from the training split (means per paragraph; *_pk = per 1,000 words):\n" + "\n".join(profiles) + "\n\n"
         )
-        system = PROPOSER_SYSTEM
+        system = system_for(PROPOSER_SYSTEM, self.scale)
         if self.method == "textgrad" and last_run:
             gradients = textual_gradients(last_run, condition, self.skill_dir, self.critics, self.data_dir, self.gradients, self.workers, self.log)
             (self.home / f"r{round_no}-gradients.json").write_text(json.dumps(gradients, indent=2))
             drift = evidence(last_run, condition).split("Measured drift", 1)[-1].split("Pairs the readers", 1)[0]
             prompt += (f"Editors' feedback on {len(gradients)} paragraphs where the skill's draft was told apart from the published one:\n\n"
                        + format_gradients(gradients) + "\n\nMeasured drift" + drift)
-            system = OPTIMIZER_SYSTEM
+            system = system_for(OPTIMIZER_SYSTEM, self.scale)
         else:
             prompt += evidence(last_run, condition) if last_run else "(no evidence yet)"
         prompt += f"\n\nPropose {self.candidates} candidates, each testing a different idea."
@@ -446,7 +483,7 @@ class Evolver:
         subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=False)
 
     def _write_log(self) -> None:
-        lines = ["# Evolve log", "", "Detectability per item: mean over judges and both modes of whether the published paragraph won (1) or lost (0). Lower is better; 0.5 is chance.", ""]
+        lines = ["# Evolve log", "", "Detectability per item: mean over judges and both modes of how surely the judge picked the published paragraph (rounds 1–10: whether it picked it, 1 or 0; from round 11: graded by the judge's confidence, and compared only on judge-and-mode cells both conditions have). Lower is better; 0.5 is chance.", ""]
         for h in self.history:
             if "incumbent_detectability" in h:
                 lines.append(f"**Round {h['round']}**: incumbent detectability {h['incumbent_detectability']:.3f} ({h['run']})")
@@ -457,15 +494,32 @@ class Evolver:
                 lines.append(f"- round {h['round']}: {h['idea']} → {h['outcome']}")
         (self.home / "log.md").write_text("\n".join(lines) + "\n")
 
-    def run(self, rounds: int, start_seed: int, seed_run: Path | None = None, seed_condition: str = "incumbent") -> None:
-        """seed_run/seed_condition: the evidence for round 1 (an earlier dev run and the incumbent's name in it)."""
+    def adopted_in(self, round_no: int) -> bool:
+        return any(h.get("round") == round_no and "ACCEPTED" in str(h.get("outcome", "")) for h in self.history)
+
+    def run(self, rounds: int, start_seed: int, seed_run: Path | None = None, seed_condition: str = "incumbent", patience: int | None = None) -> None:
+        """seed_run/seed_condition: the evidence for round 1 (an earlier dev run and the incumbent's name in it).
+        patience: stop early once this many rounds in a row adopted nothing (counting only rounds of this call)."""
         done = [h["round"] for h in self.history if "incumbent_detectability" in h]
         first = max(done, default=0) + 1
         if first > 1:
             last_run, condition = self.runs_dir / f"evolve-r{first - 1}", "incumbent"
         else:
             last_run, condition = seed_run, seed_condition
+        stalled = 0
         for round_no in range(first, first + rounds):
-            run_dir = self.round(round_no, last_run, start_seed + round_no, condition)
+            for attempt in range(self.retries + 1):
+                try:
+                    run_dir = self.round(round_no, last_run, start_seed + round_no, condition)
+                    break
+                except RuntimeError as error:
+                    if "no items were scored" not in str(error) or attempt == self.retries:
+                        raise
+                    self.log(f"  {error}; retrying in {self.retry_wait / 60:.0f} min ({attempt + 1}/{self.retries})")
+                    time.sleep(self.retry_wait)
             if run_dir != last_run:
                 last_run, condition = run_dir, "incumbent"
+            stalled = 0 if self.adopted_in(round_no) else stalled + 1
+            if patience and stalled >= patience:
+                self.log(f"== stopping: {stalled} rounds in a row adopted nothing")
+                break

@@ -344,3 +344,75 @@ def test_evolve_round_with_failing_calls_records_nothing_and_resumes(tmp_path: P
     history = json.loads((runs / "evolve" / "history.json").read_text())
     assert [h["round"] for h in history if "incumbent_detectability" in h] == [1]
     assert {r["id"] for r in map(json.loads, (runs / "evolve-r1" / "items.jsonl").read_text().splitlines())} == planned
+
+
+def test_comparison_is_graded_and_paired_by_judge(tmp_path: Path):
+    from styleturing.evolve import compare_conditions
+
+    run = tmp_path / "run"
+    run.mkdir()
+    judgments, singles = [], []
+    for i in range(20):
+        item = f"x:{i}"
+        # Claude: both conditions caught, the candidate with less confidence.
+        judgments.append({"id": item, "condition": "inc", "judge": "claude", "correct": True, "confidence": 0.9})
+        judgments.append({"id": item, "condition": "cand", "judge": "claude", "correct": True, "confidence": 0.7})
+        # A second judge answered only for the incumbent, and it is always unsure: must not count.
+        judgments.append({"id": item, "condition": "inc", "judge": "other", "correct": False, "confidence": 0.9})
+        singles.append({"id": item, "judge": "claude", "kind": "published", "condition": None, "probability": 0.8})
+        singles.append({"id": item, "judge": "claude", "kind": "generated", "condition": "inc", "probability": 0.2})
+        singles.append({"id": item, "judge": "claude", "kind": "generated", "condition": "cand", "probability": 0.6})
+    (run / "judgments.jsonl").write_text("\n".join(map(json.dumps, judgments)) + "\n")
+    (run / "singles.jsonl").write_text("\n".join(map(json.dumps, singles)) + "\n")
+    stats = compare_conditions(run, "inc", "cand")
+    # paired 0.9 vs 0.7; single 0.5 + 0.6/2 = 0.8 vs 0.5 + 0.2/2 = 0.6
+    assert stats["n"] == 20 and stats["p_better"] == 1.0
+    assert abs(stats["incumbent"] - 0.85) < 1e-9 and abs(stats["candidate"] - 0.65) < 1e-9
+
+
+def test_structural_scale_changes_only_the_edit_size_instruction():
+    from styleturing.evolve import OPTIMIZER_SYSTEM, PROPOSER_SYSTEM, SMALL_EDITS, STRUCTURAL_EDITS, system_for
+
+    for base in (PROPOSER_SYSTEM, OPTIMIZER_SYSTEM):
+        assert system_for(base, "small") == base
+        structural = system_for(base, "structural")
+        assert STRUCTURAL_EDITS in structural and SMALL_EDITS not in structural
+        assert structural.replace(STRUCTURAL_EDITS, SMALL_EDITS) == base
+
+
+def test_evolve_stops_after_patience_rounds_without_a_win(tmp_path: Path, monkeypatch):
+    from styleturing.evolve import Evolver
+
+    repo = tmp_path / "repo"
+    data, runs = repo / "data", repo / "runs"
+    (data / "corpus").mkdir(parents=True)
+    rows = [_paragraph("nature", f"P{i}", s, "dev" if i % 3 else "train", k) for i in range(60) for k, s in enumerate(["intro", "results"])]
+    (data / "corpus" / "nature.jsonl").write_text("\n".join(json.dumps(p.__dict__) for p in rows) + "\n")
+    skill = repo / "skills" / "journal-style"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    systems: list[str] = []
+
+    def fake_call(self, model, system, prompt):
+        if "improve a writing skill" in system:
+            systems.append(system)
+            return json.dumps({"candidates": [{"idea": f"idea {len(systems)}", "edits": [{"file": "references/nature.md", "old": "", "new": f"Rule {len(systems)}."}]}]})
+        if "content briefs" in system:
+            return '{"function": "f", "points": ["p [1]"]}'
+        if "Paragraph:\n<<<" in prompt:
+            return '{"published_probability": 0.7, "tells": []}'
+        if "Paragraph A:" in prompt:
+            first_is_real = prompt.index("Generated") > prompt.index("Paragraph B:")
+            return '{"published": "%s", "confidence": 0.9, "tells": []}' % ("A" if first_is_real else "B")
+        return f"Generated paragraph {abs(hash(prompt)) % 997}."
+
+    monkeypatch.setattr(llm.Client, "_call", fake_call)
+    logs: list[str] = []
+    Evolver(skill, data, runs, ["nature"], per_journal=6, candidates=1, proposer=Model("claude"), generator=Model("claude"),
+            briefer=Model("claude"), judges=[Model("claude")], workers=2, threshold=0.95, log=logs.append,
+            method="propose", scale="structural").run(rounds=5, start_seed=0, patience=2)
+    history = json.loads((runs / "evolve" / "history.json").read_text())
+    assert [h["round"] for h in history if "incumbent_detectability" in h] == [1, 2]
+    assert any("stopping: 2 rounds in a row" in line for line in logs)
+    assert systems and all("You propose substantial changes" in s for s in systems)
