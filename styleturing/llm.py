@@ -50,6 +50,8 @@ class Client:
         self.timeout = timeout
         self.retries = retries
         self.agy_timeout = 240.0
+        # codex exec calls usually take 15 s (90% under a minute), but a few stall for 20+ minutes: cap and retry them.
+        self.codex_timeout = 300.0
         # A neutral working directory: no CLAUDE.md, AGENTS.md or project files to pick up.
         self.workdir = Path(tempfile.mkdtemp(prefix="style-turing-cli-"))
 
@@ -129,7 +131,7 @@ class Client:
                 args += ["--model", model.model]
             if model.effort:
                 args += ["-c", f"model_reasoning_effort={model.effort}"]
-            done = subprocess.run(args + ["-"], input=f"{system}\n\nDo not use any tools or read any files; answer from this message alone.\n\n{prompt}", capture_output=True, text=True, cwd=self.workdir, timeout=self.timeout)
+            done = subprocess.run(args + ["-"], input=f"{system}\n\nDo not use any tools or read any files; answer from this message alone.\n\n{prompt}", capture_output=True, text=True, cwd=self.workdir, timeout=self.timeout or self.codex_timeout)
             if done.returncode != 0 or not out.exists():
                 raise LLMError(f"codex exit {done.returncode}: {(done.stderr or done.stdout)[-500:]}")
             return out.read_text()
