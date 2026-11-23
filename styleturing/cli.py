@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .corpus import JOURNALS, SECTIONS, build
-from .experiment import Condition, RunConfig, Runner
+from .experiment import Condition, RunConfig, Runner, read_jsonl
 from .improve import RevisionError, profile_table, revise
 from .llm import Model
 from .report import write_report
@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--seed", type=int, default=7)
     r.add_argument("--workers", type=int, default=6)
     r.add_argument("--runs", type=Path, default=Path("runs"))
+    r.add_argument("--exclude-run", type=Path, action="append", default=None, help="leave out the paragraphs an earlier run used (repeatable)")
 
     e = sub.add_parser("exemplars", help="write the skill's bank of published example paragraphs (CC BY, training split)")
     e.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             generator=Model.parse(args.generator), briefer=Model.parse(args.briefer),
             judges=[Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])],
             references=args.references, mode=args.mode, seed=args.seed, workers=args.workers, out_dir=args.runs, data_dir=args.data,
+            extra={"exclude": sorted({row["id"] for run in (args.exclude_run or []) for row in read_jsonl(run / "items.jsonl")})},
         )
         print(Runner(config).run())
     elif args.command == "exemplars":
