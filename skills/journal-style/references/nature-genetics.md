@@ -21,12 +21,8 @@ Measured on recent open-access Nature Genetics research articles. Numbers are pe
 - **Semicolons.** Use them inside parentheses and in Methods parameter lists. In running prose, the only common clause join is "; however,", used about once in three paragraphs. Do not join two independent statements with a semicolon. Do not chain three results with "; … ; and …".
 - **Colons.** Use about one per 700 words. Do not introduce a list, a set of categories or a result with a colon. The exception is a Methods sentence that introduces an equation, which ends with a colon.
 - **Dashes.** An em-dash aside appears about once every two or three paragraphs (~0.7 per 1,000 words). Use one where an aside interrupts a sentence. Drafts had none.
-- **Sentence length.** Average ~24 words (Results ~28), with ~6 sentences per paragraph.
-  - Keep a wide spread (SD ~9 words). Recent drafts ran too short, too even and slightly too many: about 21 words, seven sentences and an SD of ~6.5.
-  - Let at least one sentence per paragraph run past 35 words, for example a finding with its statistics and a parenthesis, or a list of items. Allow one sentence under 12 words.
-  - Do not split a sentence that the content gives as one into two neatly chained sentences.
-  - Do give separate studies their own sentences.
-- **Commas.** Use about one and a half per sentence, and close to two in Results. Drafts used too few. Introductory phrases, appositives and parenthetical lists carry them. Avoid absolute endings of the form ", with X showing … and Y …"; write a second clause or a second sentence instead.
+- **Sentence length.** Average ~25 words, with ~6 sentences per paragraph. Drafts ran 3 words longer and one sentence shorter because they merged material. Give each distinct study, finding or pipeline step its own sentence. A long sentence should carry one finding plus its statistics, not two findings fused with ", and".
+- **Commas.** Use fewer than two per sentence. Avoid comma-bounded modifiers hanging after a noun phrase. Avoid absolute endings of the form ", with X showing … and Y …"; write a second clause or a second sentence instead.
 - **No symmetry.** Do not build matched pairs such as "from A to B for X and from C to D for Y" or "by N for X and by M for Y". State the second comparison in a different form, or in its own sentence.
 
 ## Voice, connectives and vocabulary
