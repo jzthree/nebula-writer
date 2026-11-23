@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--method", default="textgrad", choices=["textgrad", "propose"], help="textgrad: critics explain each caught paragraph and suggest guide changes, aggregated into edits")
     ev.add_argument("--scale", default="small", choices=["small", "structural"], help="small: one-rule edits; structural: workflow and whole-section changes")
     ev.add_argument("--patience", type=int, default=None, help="stop once this many rounds in a row adopted nothing")
+    ev.add_argument("--retest-threshold", type=float, default=0.85, help="earlier candidates with a positive gain at this bootstrap probability or more are retested together")
     ev.add_argument("--retries", type=int, default=0, help="when every model call of a round fails (a usage limit), retry the round this many times")
     ev.add_argument("--retry-wait", type=float, default=30, help="minutes to wait before such a retry")
     ev.add_argument("--critic", action="append", default=None, help="critic model for textual gradients (repeatable; default: the judges)")
@@ -126,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             Model.parse(args.proposer), Model.parse(args.generator), Model.parse(args.briefer),
             [Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])], args.workers, args.threshold,
             method=args.method, critics=[Model.parse(s) for s in args.critic] if args.critic else None, gradients=args.gradients,
-            scale=args.scale, retry_wait=args.retry_wait * 60, retries=args.retries,
+            scale=args.scale, retry_wait=args.retry_wait * 60, retries=args.retries, retest_threshold=args.retest_threshold,
         ).run(args.rounds, args.seed, args.evidence, args.evidence_condition, patience=args.patience)
     return 0
 
