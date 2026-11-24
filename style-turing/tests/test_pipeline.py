@@ -427,7 +427,7 @@ def test_skill_with_find_examples_script_shows_the_closest_published_paragraphs(
     (skill / "scripts").mkdir(parents=True)
     (skill / "references").mkdir()
     (skill / "SKILL.md").write_text("Write plainly.\n")
-    shutil.copy(Path("data/skill-versions/v7r/scripts/find_examples.py"), skill / "scripts" / "find_examples.py")
+    shutil.copy(Path(__file__).parents[1] / "skill-scripts" / "find_examples.py", skill / "scripts" / "find_examples.py")
     rows = [
         {"section": "results", "paper": "P1", "text": "Chromatin accessibility changed at enhancers bound by the factor.", "source": "s1"},
         {"section": "results", "paper": "P1", "text": "Enhancer accessibility again tracked factor binding.", "source": "s1b"},
