@@ -99,21 +99,26 @@ def textual_gradients(run_dir: Path, condition: str, skill_dir: Path, critics: l
             if queue and len(chosen) < limit:
                 chosen.append(queue.pop(0))
     client = Client(data_dir / "cache")
+    # A critique reads the guide and both paragraphs and answers at length: slower models need more than a judgment's time.
+    client.agy_timeout = client.codex_timeout = 600.0
 
     def backward(job):
         index, item_id = job
         item = items[item_id]
-        critic = critics[index % len(critics)]
         files = _skill_files(skill_dir)
         reference = f"references/{item['journal']}.md"
         guide = "\n\n".join(f"=== {name} ===\n{files[name]}" for name in ("SKILL.md", reference) if name in files)
         system = CRITIC_SYSTEM.format(journal=JOURNALS[item["journal"]].name)
         prompt = critic_prompt(guide, item["section"], item["text"], generations[(item_id, condition)], tells.get(item_id, [])[:8])
-        try:
-            answer = client.complete_json(critic, system, prompt)
-        except LLMError as error:
-            log(f"  gradient for {item_id} failed: {str(error)[:160]}")
-            return None
+        # Critics take paragraphs in turn; when one fails (a usage limit, a timeout) the next one takes the paragraph.
+        answer, critic = None, None
+        for offset in range(len(critics)):
+            critic = critics[(index + offset) % len(critics)]
+            try:
+                answer = client.complete_json(critic, system, prompt)
+                break
+            except LLMError as error:
+                log(f"  gradient for {item_id} by {critic.label} failed: {str(error)[:120]}")
         if not isinstance(answer, dict):
             return None
         return {"id": item_id, "journal": item["journal"], "section": item["section"], "critic": critic.label,
