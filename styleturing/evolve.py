@@ -343,9 +343,10 @@ class Evolver:
             system = system_for(OPTIMIZER_SYSTEM, self.scale)
         else:
             prompt += evidence(last_run, condition) if last_run else "(no evidence yet)"
-        client = Client(self.data_dir / "cache")
-        # Proposing reads the whole skill and all the feedback, and models think long: allow more than a judgment.
-        client.agy_timeout = client.codex_timeout = 900.0
+        # Proposing reads the whole skill and all the feedback and rewrites whole sections: Gemini Carbon (high) needs
+        # more than 15 minutes. One retry only, so a stuck proposer costs at most two of these.
+        client = Client(self.data_dir / "cache", retries=1)
+        client.agy_timeout = client.codex_timeout = 2400.0
         dev_texts = [row["text"] for path in self.runs_dir.glob("*/items.jsonl") for row in read_jsonl(path)]
         shares = [self.candidates // len(self.proposers) + (1 if i < self.candidates % len(self.proposers) else 0) for i in range(len(self.proposers))]
         proposals: list[tuple[dict, Model]] = []
