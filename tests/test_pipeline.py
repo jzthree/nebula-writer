@@ -443,3 +443,38 @@ def test_skill_with_find_examples_script_shows_the_closest_published_paragraphs(
     assert "Enhancer accessibility again" not in found and "ATAC-seq" not in found
     # Without notes, or for a skill without the script, the prompt is unchanged.
     assert prompts.skill_system(skill, "nature", "results") == "Write plainly.\n"
+
+
+def test_several_proposers_share_the_candidates_and_an_unavailable_one_is_skipped(tmp_path: Path, monkeypatch):
+    from styleturing.evolve import Evolver
+
+    repo = tmp_path / "repo"
+    data, runs = repo / "data", repo / "runs"
+    (data / "corpus").mkdir(parents=True)
+    rows = [_paragraph("nature", f"P{i}", s, "dev" if i % 3 else "train", k) for i in range(30) for k, s in enumerate(["intro", "results"])]
+    (data / "corpus" / "nature.jsonl").write_text("\n".join(json.dumps(p.__dict__) for p in rows) + "\n")
+    skill = repo / "skills" / "journal-style"
+    (skill / "references").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: t\ndescription: t\n---\nWrite plainly.\n")
+    (skill / "references" / "nature.md").write_text("Nature rules.\n")
+    asked: list[tuple[str, str]] = []
+
+    def fake_call(self, model, system, prompt):
+        if "improve a writing skill" in system:
+            asked.append((model.label, prompt.split("Propose ", 1)[1].split(" ", 1)[0]))
+            if model.backend == "codex":
+                raise llm.LLMError("codex: usage limit")
+            n = int(asked[-1][1])
+            return json.dumps({"candidates": [{"idea": f"{model.label} idea {i}", "edits": [{"file": "references/nature.md", "old": "", "new": f"{model.label} rule {i}."}]} for i in range(n)]})
+        return "unused"
+
+    monkeypatch.setattr(llm.Client, "_call", fake_call)
+    monkeypatch.setattr(llm.time, "sleep", lambda _: None)
+    logs: list[str] = []
+    evolver = Evolver(skill, data, runs, ["nature"], per_journal=4, candidates=5, proposer=[Model("agy", "gemini-4-carbon-high"), Model("codex"), Model("claude")],
+                      generator=Model("claude"), briefer=Model("claude"), judges=[Model("claude")], workers=2, threshold=0.95, log=logs.append, method="propose")
+    candidates = evolver.propose(1, None)
+    assert sorted(set(asked)) == sorted([("agy:gemini-4-carbon-high", "2"), ("codex", "2"), ("claude", "1")])
+    assert [c.proposer for c in candidates] == ["agy:gemini-4-carbon-high", "agy:gemini-4-carbon-high", "claude"]
+    assert [c.name for c in candidates] == ["c1", "c2", "c3"]
+    assert any("proposer codex unavailable" in line for line in logs)

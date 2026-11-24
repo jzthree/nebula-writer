@@ -28,7 +28,7 @@ from statistics import mean
 from .corpus import JOURNALS
 from .experiment import Condition, RunConfig, Runner, read_jsonl
 from .improve import copied_wording, profile
-from .llm import Client, Model
+from .llm import Client, LLMError, Model
 from .stylometry import compare, features
 
 PROPOSER_SYSTEM = """You improve a writing skill that helps scientists write manuscript paragraphs in the house style of specific journals (Nature, Science, Nature Genetics, Nature Methods). The skill is measured on a benchmark: a writer model uses the skill to write a paragraph from notes listing a published paragraph's content, and expert readers compare it with the published paragraph, side by side and alone. The goal is paragraphs whose style matches the journal's published prose as closely as possible.
@@ -162,6 +162,7 @@ class Candidate:
     name: str
     idea: str
     path: Path
+    proposer: str = ""
 
 
 def _skill_files(skill_dir: Path) -> dict[str, str]:
@@ -292,12 +293,14 @@ def used_ids(runs_dir: Path) -> set[str]:
 
 class Evolver:
     def __init__(self, skill_dir: Path, data_dir: Path, runs_dir: Path, journals: list[str], per_journal: int, candidates: int,
-                 proposer: Model, generator: Model, briefer: Model, judges: list[Model], workers: int, threshold: float, log=print,
+                 proposer: Model | list[Model], generator: Model, briefer: Model, judges: list[Model], workers: int, threshold: float, log=print,
                  method: str = "textgrad", critics: list[Model] | None = None, gradients: int = 48, retest_threshold: float = 0.85,
                  scale: str = "small", retry_wait: float = 1800.0, retries: int = 0):
         self.skill_dir, self.data_dir, self.runs_dir = skill_dir, data_dir, runs_dir
         self.journals, self.per_journal, self.candidates = journals, per_journal, candidates
-        self.proposer, self.generator, self.briefer, self.judges = proposer, generator, briefer, judges
+        # Several proposers (different models) each propose their share of the candidates: more varied ideas.
+        self.proposers = proposer if isinstance(proposer, list) else [proposer]
+        self.generator, self.briefer, self.judges = generator, briefer, judges
         self.workers, self.threshold, self.log = workers, threshold, log
         # textgrad: per-paragraph critiques (textual gradients) aggregated into edits; propose: one proposer reads the tells.
         self.method, self.critics, self.gradients, self.retest_threshold = method, critics or judges, gradients, retest_threshold
@@ -335,13 +338,26 @@ class Evolver:
             system = system_for(OPTIMIZER_SYSTEM, self.scale)
         else:
             prompt += evidence(last_run, condition) if last_run else "(no evidence yet)"
-        prompt += f"\n\nPropose {self.candidates} candidates, each testing a different idea."
         client = Client(self.data_dir / "cache")
+        # Proposing reads the whole skill and all the feedback, and models think long: allow more than a judgment.
+        client.agy_timeout = client.codex_timeout = 900.0
         dev_texts = [row["text"] for path in self.runs_dir.glob("*/items.jsonl") for row in read_jsonl(path)]
-        answer = client.complete_json(self.proposer, system, prompt + f"\n\n(Round {round_no}.)")
+        shares = [self.candidates // len(self.proposers) + (1 if i < self.candidates % len(self.proposers) else 0) for i in range(len(self.proposers))]
+        proposals: list[tuple[dict, Model]] = []
+        for proposer, share in zip(self.proposers, shares):
+            if not share:
+                continue
+            ask = prompt + f"\n\nPropose {share} candidates, each testing a different idea."
+            try:
+                answer = client.complete_json(proposer, system, ask + f"\n\n(Round {round_no}.)")
+            except LLMError as error:
+                self.log(f"  proposer {proposer.label} unavailable: {str(error)[:160]}")
+                continue
+            proposals += [(proposal, proposer) for proposal in (answer or {}).get("candidates", [])[:share]]
         out: list[Candidate] = []
-        for index, proposal in enumerate((answer or {}).get("candidates", [])[: self.candidates], 1):
+        for index, (proposal, proposer) in enumerate(proposals, 1):
             idea = str(proposal.get("idea", "")).strip() or "(no description)"
+            by = f" [{proposer.label}]" if len(self.proposers) > 1 else ""
             target = self.data_dir / "evolve" / f"r{round_no}" / f"c{index}"
             error = apply_edits(self.skill_dir, target, proposal.get("edits") or [])
             if error is None:
@@ -350,13 +366,13 @@ class Evolver:
                 if copied:
                     error = f"copies evaluation wording: {copied}"
             if error:
-                self.log(f"  candidate {index} dropped: {error}")
-                self.history.append({"round": round_no, "idea": idea, "outcome": f"not tested ({error[:120]})"})
+                self.log(f"  candidate {index}{by} dropped: {error}")
+                self.history.append({"round": round_no, "idea": idea, "proposer": proposer.label, "outcome": f"not tested ({error[:120]})"})
                 continue
-            (target / "IDEA.txt").write_text(idea + "\n\n" + json.dumps(proposal.get("edits"), indent=2))
+            (target / "IDEA.txt").write_text(idea + "\n\n" + json.dumps(proposal.get("edits"), indent=2) + f"\n\nProposed by {proposer.label}\n")
             (target / "EDITS.json").write_text(json.dumps(proposal.get("edits") or []))
-            out.append(Candidate(f"c{index}", idea, target))
-            self.log(f"  candidate {index}: {idea}")
+            out.append(Candidate(f"c{index}", idea, target, proposer.label))
+            self.log(f"  candidate {index}{by}: {idea}")
         self._save()
         return out
 
@@ -460,7 +476,7 @@ class Evolver:
             outcome = f"gain {s['gain']:+.3f}, P(better) {s['p_better']:.2f}: " + ("ACCEPTED" if best and c is best[0] else "rejected")
             saved = c.path / "EDITS.json"
             edits = json.loads(saved.read_text()) if saved.exists() else None
-            self.history.append({"round": round_no, "idea": c.idea, "outcome": outcome, "stats": s, "edits": edits, "retest": c.name == "retest"})
+            self.history.append({"round": round_no, "idea": c.idea, "proposer": c.proposer, "outcome": outcome, "stats": s, "edits": edits, "retest": c.name == "retest"})
         incumbent_score = mean(incumbent_items.values())
         self.history.append({"round": round_no, "incumbent_detectability": incumbent_score, "run": str(run_dir)})
         self._save()
@@ -491,7 +507,8 @@ class Evolver:
             elif "retested_idea" in h:
                 lines.append(f"- round {h['round']}: retest of \"{h['retested_idea']}\" → {h['outcome']}")
             else:
-                lines.append(f"- round {h['round']}: {h['idea']} → {h['outcome']}")
+                by = f" [{h['proposer']}]" if h.get("proposer") else ""
+                lines.append(f"- round {h['round']}{by}: {h['idea']} → {h['outcome']}")
         (self.home / "log.md").write_text("\n".join(lines) + "\n")
 
     def adopted_in(self, round_no: int) -> bool:

@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--per-journal", type=int, default=24)
     ev.add_argument("--candidates", type=int, default=3)
     ev.add_argument("--threshold", type=float, default=0.95, help="bootstrap probability that a candidate beats the incumbent, needed to adopt it")
-    ev.add_argument("--proposer", default="claude@high")
+    ev.add_argument("--proposer", action="append", default=None, help="model that proposes candidates (repeatable: the candidates are shared among them; default claude@high)")
     ev.add_argument("--generator", default="claude")
     ev.add_argument("--briefer", default="claude")
     ev.add_argument("--judge", action="append", default=None)
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
         Evolver(
             args.skill, args.data, args.runs, args.journals.split(","), args.per_journal, args.candidates,
-            Model.parse(args.proposer), Model.parse(args.generator), Model.parse(args.briefer),
+            [Model.parse(s) for s in (args.proposer or ["claude@high"])], Model.parse(args.generator), Model.parse(args.briefer),
             [Model.parse(s) for s in (args.judge or ["claude", "agy:gemini-4-neon-high"])], args.workers, args.threshold,
             method=args.method, critics=[Model.parse(s) for s in args.critic] if args.critic else None, gradients=args.gradients,
             scale=args.scale, retry_wait=args.retry_wait * 60, retries=args.retries, retest_threshold=args.retest_threshold,
