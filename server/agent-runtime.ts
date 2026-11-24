@@ -558,12 +558,31 @@ function gatewayTimeoutMs(localTimeoutMs: number): number {
   return localTimeoutMs > 0 ? localTimeoutMs + 30_000 : GATEWAY_MAX_TIMEOUT_MS;
 }
 
+/**
+ * Added to a reply when Claude's safety classifier stopped part of it. Claude
+ * Code then tells the model not to write that content again, so the agent's own
+ * reply ("ask again and I'll retry") cannot say what happened or what to do.
+ */
+export const SAFETY_STOP_NOTE = "Note from Writer: Claude's safety filter stopped part of this reply, so what the agent was writing at that point was not staged, and Claude Code tells the agent not to write it again. The filter is broad on biology and can stop ordinary manuscript text. To go on, rephrase the request or send it with another provider.";
+
 export class ClaudeStreamParser {
   private text = "";
   private cost: number | null = null;
   private sessionId: string | null = null;
   private ok = false;
   private sawResult = false;
+  private safetyStopped = false;
+
+  /** The reply, with Writer's note when the safety filter stopped part of it. */
+  private reply(): string {
+    return this.safetyStopped ? [this.text, SAFETY_STOP_NOTE].filter(Boolean).join("\n\n") : this.text;
+  }
+
+  private noteSafetyStop(): AgentEvent[] {
+    if (this.safetyStopped) return [];
+    this.safetyStopped = true;
+    return [{ kind: "status", stage: "safety-stop", detail: "Claude's safety filter stopped part of the reply; nothing from that part was staged" }];
+  }
 
   consume(line: string): AgentEvent[] {
     const trimmed = line.trim();
@@ -591,6 +610,11 @@ export class ClaudeStreamParser {
       return this.consumeAssistant(event);
     }
 
+    if (type === "stream_event") {
+      const inner = event.event as { type?: unknown; delta?: { stop_reason?: unknown } } | undefined;
+      return inner?.type === "message_delta" && inner.delta?.stop_reason === "refusal" ? this.noteSafetyStop() : [];
+    }
+
     if (type === "result") {
       this.sawResult = true;
       this.ok = event.subtype === "success" && event.is_error !== true;
@@ -603,14 +627,14 @@ export class ClaudeStreamParser {
       if (typeof event.session_id === "string") {
         this.sessionId = event.session_id;
       }
-      return [{ kind: "result", ok: this.ok, text: this.text, cost: this.cost, sessionId: this.sessionId }];
+      return [{ kind: "result", ok: this.ok, text: this.reply(), cost: this.cost, sessionId: this.sessionId }];
     }
 
     return [];
   }
 
   private consumeAssistant(event: Record<string, unknown>): AgentEvent[] {
-    const message = event.message as { content?: unknown } | undefined;
+    const message = event.message as { content?: unknown; stop_reason?: unknown } | undefined;
     const content = Array.isArray(message?.content) ? message?.content : [];
     const events: AgentEvent[] = [];
     for (const block of content as Array<Record<string, unknown>>) {
@@ -623,11 +647,14 @@ export class ClaudeStreamParser {
         events.push({ kind: "tool", tool: stripMcpPrefix(block.name), summary: summarizeToolInput(block.name, block.input) });
       }
     }
+    if (message?.stop_reason === "refusal") {
+      events.push(...this.noteSafetyStop());
+    }
     return events;
   }
 
   outcome(): ParserOutcome {
-    return { ok: this.ok, text: this.text, cost: this.cost, sessionId: this.sessionId, sawResult: this.sawResult };
+    return { ok: this.ok, text: this.reply(), cost: this.cost, sessionId: this.sessionId, sawResult: this.sawResult };
   }
 }
 

@@ -15,7 +15,7 @@ import {
   searchAgentRunDocument,
   stageAgentRunSuggestions
 } from "../server/agent-run";
-import { buildAgentClaudeArgs, buildAgentCodexArgs, ClaudeStreamParser, CodexStreamParser, type AgentEvent } from "../server/agent-runtime";
+import { buildAgentClaudeArgs, buildAgentCodexArgs, ClaudeStreamParser, CodexStreamParser, SAFETY_STOP_NOTE, type AgentEvent } from "../server/agent-runtime";
 import { buildAgentTaskPrompt } from "../server/ai";
 import { validateSuggestionCandidate } from "../server/suggestion-validation";
 import type { AiRequest } from "../src/shared";
@@ -312,6 +312,33 @@ describe("agent CLI arguments", () => {
 });
 
 describe("stream parsers", () => {
+  it("says so when Claude's safety filter stopped part of the reply, instead of leaving the agent's 'ask again' as the answer", () => {
+    // The shape of a real run: the stopped message ends a staging call mid-input, the tool reports unparseable
+    // JSON, Claude Code tells the model not to write it again, and the model's reply invites the user to ask again.
+    const parser = new ClaudeStreamParser();
+    const events: AgentEvent[] = [];
+    for (const line of [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "sess-9" }),
+      JSON.stringify({ type: "assistant", message: { stop_reason: "refusal", content: [{ type: "tool_use", name: "mcp__writer__writer_stage_suggestions", input: { __unparsedToolInput: { raw: "{\"suggestions\": [{\"title\": \"State the", len: 1104 } } }] } }),
+      JSON.stringify({ type: "assistant", message: { stop_reason: "end_turn", content: [{ type: "text", text: "I couldn't stage an edit for this sentence. If you ask again, I'll make another attempt." }] } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "I couldn't stage an edit for this sentence. If you ask again, I'll make another attempt.", session_id: "sess-9" })
+    ]) {
+      events.push(...parser.consume(line));
+    }
+    expect(events.filter((event) => event.kind === "status" && event.stage === "safety-stop")).toHaveLength(1);
+    const result = events.find((event) => event.kind === "result");
+    expect(result && result.kind === "result" ? result.text : "").toMatch(/I couldn't stage an edit[\s\S]*Claude's safety filter stopped part of this reply/);
+    expect(parser.outcome().text.endsWith(SAFETY_STOP_NOTE)).toBe(true);
+  });
+
+  it("adds nothing when no reply was stopped", () => {
+    const parser = new ClaudeStreamParser();
+    parser.consume(JSON.stringify({ type: "assistant", message: { stop_reason: "end_turn", content: [{ type: "text", text: "Staged one edit." }] } }));
+    parser.consume(JSON.stringify({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" } } }));
+    parser.consume(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Staged one edit.", session_id: "s" }));
+    expect(parser.outcome().text).toBe("Staged one edit.");
+  });
+
   it("parses Claude stream-json init, tools, text, and result", () => {
     const parser = new ClaudeStreamParser();
     const events: AgentEvent[] = [];
