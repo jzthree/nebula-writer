@@ -172,7 +172,7 @@ and stops after rounds in a row without a win (`--patience`).
 changes and three combined retests; none won (all within ±0.01, and pushing
 "keep what the content gives" from wording into sentence frames was clearly
 worse, -0.018). One larger idea was then tested outside the loop: tailored
-examples (`scripts/find_examples.py`, which the harness runs on each
+examples (`scripts/find_examples.py`, kept here as `skill-scripts/find_examples.py`; the harness runs it on each
 paragraph's notes as an agent would; it shows the four most similar
 published paragraphs of the journal and section from a bank of CC BY
 training-split paragraphs). It was worse than v6 on 192 fresh dev paragraphs
