@@ -28,3 +28,7 @@ process.env.WRITER_CODEX_TRANSPORT ??= "exec";
 
 // Conversations persist to SQLite; tests use an in-memory store.
 process.env.WRITER_CONVERSATIONS_DB ??= ":memory:";
+
+// Staging vets each changed sentence with a model CLI; the suite's fake CLIs
+// do not answer vetting prompts. Vetting tests inject their own vetter.
+process.env.WRITER_SENTENCE_VETTING ??= "off";

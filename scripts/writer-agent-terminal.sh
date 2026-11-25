@@ -137,7 +137,8 @@ case "$PROVIDER" in
       -c "projects.\"$WORKSPACE\".trust_level=\"trusted\"" \
       -c "mcp_servers.writer.command=\"$NODE_BIN\"" \
       -c "mcp_servers.writer.args=[\"$REPO/node_modules/.bin/tsx\", \"$REPO/server/agent-mcp.ts\"]" \
-      -c "mcp_servers.writer.env.WRITER_AGENT_RUN_URL=\"$RUN_URL\"" ;;
+      -c "mcp_servers.writer.env.WRITER_AGENT_RUN_URL=\"$RUN_URL\"" \
+      -c "mcp_servers.writer.tool_timeout_sec=3600" ;;
   *)
     echo "Unknown provider '$PROVIDER' (use claude or codex)." >&2; exit 1 ;;
 esac

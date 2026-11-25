@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxComments, extractDocxImages } from "./docx";
-import { getAiProgress, getAiRuns, proposeChanges, smokeTestProvider } from "./ai";
+import { getAiProgress, getAiRuns, proposeChanges, smokeTestProvider, vettingCliRunner } from "./ai";
 import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
-import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, type AgentRunContext } from "./agent-run";
+import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, stageAgentRunSuggestionsVetted, type AgentRunContext } from "./agent-run";
+import { cliSentenceVetter, vettingEnabled } from "./sentence-vetting";
 import { matchCommentsToSelection } from "../src/commentMatching";
 import { readAgentRunContext } from "./agent-context";
 import { hostContextSelection, parseWordHostContext } from "./word-context";
@@ -686,7 +687,15 @@ export function createWriterApp() {
         response.status(400).json({ error: "Stage at most 40 suggestions per call." });
         return;
       }
-      const result = stageAgentRunSuggestions(run, body.suggestions as Parameters<typeof stageAgentRunSuggestions>[1]);
+      const candidates = body.suggestions as Parameters<typeof stageAgentRunSuggestions>[1];
+      // Every changed sentence is vetted before it reaches the review queue.
+      // A Writer-started run carries its vetter (its provider and model); a
+      // terminal agent staging into the live run is vetted by its own CLI.
+      const liveRunner = isLive && vettingEnabled() ? vettingCliRunner(isLocalAiProvider(body.agent) ? String(body.agent) : run.provider) : null;
+      const vetting = run.vetting ?? (liveRunner ? { vetter: cliSentenceVetter(liveRunner, null) } : null);
+      const result = vetting
+        ? await stageAgentRunSuggestionsVetted(run, candidates, vetting)
+        : stageAgentRunSuggestions(run, candidates);
       // Live (terminal) staging goes straight into the active review queue and
       // syncs to every collaborator, exactly like a chat AI response did.
       // Both terminal providers share the live run, so authorship comes from

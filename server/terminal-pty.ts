@@ -97,6 +97,8 @@ function launcherEnv(): { [key: string]: string } {
     // the pane instead of the CLI. This is the documented bypass; the inline
     // terminal wants the bare claude/codex REPL, nothing wrapping it.
     HOP_DISABLE_AUTO_LAUNCH: "1",
+    // Staging vets every changed sentence before it answers (minutes for a large batch).
+    MCP_TOOL_TIMEOUT: process.env.MCP_TOOL_TIMEOUT ?? "3600000",
     WRITER_SIDECAR_PORT: String(process.env.WRITER_SIDECAR_PORT || 8787)
   };
   const env: { [key: string]: string } = {};

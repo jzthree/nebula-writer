@@ -204,6 +204,10 @@ export function buildAgentCodexArgs(prompt: string, runUrl: string, workspaceDir
     `mcp_servers.writer.args=${tomlStringArray(launch.args)}`,
     "-c",
     `mcp_servers.writer.env.WRITER_AGENT_RUN_URL=${tomlString(runUrl)}`,
+    // Staging vets each changed sentence before it answers (minutes for a
+    // large batch); Codex's default tool timeout is one minute.
+    "-c",
+    "mcp_servers.writer.tool_timeout_sec=3600",
     ...modelCliArgs("codex", modelOptions),
     prompt
   ];

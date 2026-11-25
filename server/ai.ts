@@ -19,6 +19,7 @@ import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunConte
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome, ensureWriterCodexMirrorHome, resolveWriterCliHome } from "./cli-home";
 import { modelCliArgs } from "./model-catalog";
+import { cliSentenceVetter, describeObjections, unresolvedNote, vetEdits, vettingEnabled, type SentenceVetter, type VettingCliRunner } from "./sentence-vetting";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
 import { containsAnchoredText, documentImageLabel, isImageCandidate, isTableCandidate, normalizeConfidence, normalizeWhitespace, replacementRequiresAuthorConfirmation, validateImageCandidate, validateTableCandidate } from "./suggestion-validation";
@@ -40,7 +41,10 @@ const CLI_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   GIT_PAGER: "cat",
   NO_COLOR: "1",
   PAGER: "cat",
-  TERM: "dumb"
+  TERM: "dumb",
+  // writer_stage_suggestions vets every changed sentence before it answers,
+  // which can take minutes for a large batch: give MCP tool calls an hour.
+  MCP_TOOL_TIMEOUT: process.env.MCP_TOOL_TIMEOUT ?? "3600000"
 };
 
 export interface DocumentCoverageChunk {
@@ -490,6 +494,16 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
   const run = createAgentRun(request);
   // Staging arrives through the MCP server's HTTP route, outside this run: keep it attached.
   run.onStaged = bindToRun((staged: AiSuggestion[]) => setAiProgressDrafts(staged));
+  const vetRunner = vettingEnabled() ? vettingCliRunner(provider) : null;
+  if (vetRunner) {
+    run.vetting = {
+      vetter: cliSentenceVetter(vetRunner, request.modelOptions ?? null),
+      signal: options.signal,
+      onProgress: bindToRun((done: number, total: number) => {
+        setAiProgress(provider, `Vetting changed sentences one by one (${done} of ${total})`, undefined, request.requestedBy ?? null);
+      })
+    };
+  }
   try {
     throwIfAborted(provider, options.signal);
     setAiProgress(provider, `The ${providerLabel(provider)} agent is starting`, undefined, request.requestedBy ?? null);
@@ -841,6 +855,9 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     "- Every change your reply mentions must actually have been staged: if you write that you cut ten passages, ten suggestions exist.",
     "- Propose edits with writer_stage_suggestions, in small batches as you go. Each item's `original` must be copied VERBATIM from the " + (request.mode === "selection" ? "selection" : "document") + " — the tool validates every item and tells you which were rejected and why; fix those and retry.",
     "- Change only what the instruction asks for: carry every other token of original — markers, numbers, labels, links, formulas — into replacement unchanged.",
+    ...(vettingEnabled()
+      ? ["- Every sentence an edit adds or rewrites is vetted on its own before it is staged (accuracy against the source, logic, language, fit). An edit with a flagged sentence comes back rejected with each objection and a suggested correction: weigh them, combine the corrections into the edit, and stage it again with the same original. Write each sentence so it survives a careful second reading."]
+      : []),
     "- Use commentOnly: true for advisory notes that need the author's judgment rather than a text change.",
     "- For broad review requests, spread edits across the document instead of only editing the opening.",
     run.maxSuggestions !== null
@@ -877,7 +894,7 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
   try {
     throwIfAborted(provider, options.signal);
     if (shouldUseCoveragePasses(request)) {
-      return await runCoveragePasses(provider, request, options);
+      return await vetOneShotReply(provider, request, await runCoveragePasses(provider, request, options), { ...options, toolAccess: resolveToolAccess(request) }, null);
     }
     setAiProgress(provider, `Starting ${providerLabel(provider)}`, undefined, request.requestedBy ?? null);
     const passReporter = createOneShotProgressReporter(provider, request);
@@ -930,7 +947,8 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     }
     setAiProgress(provider, "Checking the suggestions against the document", undefined, request.requestedBy ?? null);
     const parsed = parseCliResponseDetailed(provider, result, request);
-    const response = await completeReply(provider, request, parsed.response, parsed.unplaced, { ...options, ...watch, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
+    const completed = await completeReply(provider, request, parsed.response, parsed.unplaced, { ...options, ...watch, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
+    const response = await vetOneShotReply(provider, request, completed, { ...options, ...watch, toolAccess, imagePaths }, provider === "codex" ? threadId ?? resumeId : null);
     // Remember what the thread now holds — only when it is known to hold it:
     // the full text (or a diff on top of it) went in, and Codex reported no
     // compaction (only the app-server reports one).
@@ -1580,6 +1598,46 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
   }
 }
 
+/**
+ * One sentence check (sentence-vetting.ts) on a model CLI: no tools, no
+ * document access beyond what the prompt carries, a plain JSON answer.
+ * Antigravity has no one-shot mode, so its runs are vetted by whichever of
+ * Claude Code or Codex is installed.
+ */
+export function vettingCliRunner(provider: string): VettingCliRunner | null {
+  const candidates: CliProviderName[] = provider === "codex" ? ["codex", "claude"] : provider === "claude" ? ["claude", "codex"] : ["claude", "codex"];
+  const chosen = candidates.find((candidate) => resolveCliCommand(candidate).available);
+  if (!chosen) {
+    return null;
+  }
+  const sameProvider = chosen === provider;
+  return async (prompt, system, modelOptions, signal) => {
+    const resolved = resolveCliCommand(chosen);
+    if (!resolved.available || !resolved.command) {
+      throw new Error(resolved.detail);
+    }
+    // The run's own model and effort when the vetter is the run's provider; the CLI's default otherwise.
+    const modelArgs = sameProvider ? modelCliArgs(chosen, modelOptions) : [];
+    if (chosen === "claude") {
+      const output = await runCliCommand(chosen, resolved.command, ["-p", ...modelArgs, "--tools", "", "--system-prompt", system, "--output-format", "json"], prompt, { signal });
+      try {
+        const parsed = JSON.parse(output.trim().split("\n").filter(Boolean).pop() ?? "{}") as { result?: unknown };
+        return typeof parsed.result === "string" ? parsed.result : output;
+      } catch {
+        return output;
+      }
+    }
+    const dir = mkdtempSync(join(tmpdir(), "nebula-writer-vet-"));
+    const lastMessage = join(dir, "last-message.txt");
+    try {
+      const output = await runCliCommand(chosen, resolved.command, ["exec", "-c", 'service_tier="fast"', ...modelArgs, "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", lastMessage, "-"], `${system}\n\n${prompt}`, { signal });
+      return existsSync(lastMessage) ? readFileSync(lastMessage, "utf8") : output;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+}
+
 class CliInvocationError extends Error {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -2189,6 +2247,117 @@ export function describedChangeCount(message: string): number | null {
  * The follow-up asks for the missing items and for exact re-quotes of the
  * unplaced ones, then merges what comes back. Bounded to a single follow-up.
  */
+/**
+ * Sentence vetting for a one-shot reply (sentence-vetting.ts): each changed
+ * sentence is checked on its own; suggestions with objections go back to the
+ * model in one follow-up turn, which combines the corrections; the revised
+ * ones are checked again, and objections still open after that are shown on
+ * the card.
+ */
+async function vetOneShotReply(
+  provider: CliProviderName,
+  request: AiRequest,
+  response: AiResponse,
+  runOptions: AiRunOptions,
+  threadId: string | null,
+  vetter: SentenceVetter | null = defaultVetter(provider, request)
+): Promise<AiResponse> {
+  if (!vetter || runOptions.signal?.aborted) {
+    return response;
+  }
+  const isVettable = (suggestion: AiSuggestion) => (suggestion.kind ?? "text") === "text" && !suggestion.commentOnly;
+  const label = providerLabel(provider);
+  const vet = (suggestions: AiSuggestion[]) => vetEdits(suggestions, {
+    instruction: request.instruction,
+    documentText: request.documentText,
+    vetter,
+    signal: runOptions.signal,
+    onProgress: (done, total) => {
+      if (total) {
+        setAiProgress(provider, `Vetting changed sentences one by one (${done} of ${total})`, undefined, request.requestedBy ?? null);
+      }
+    }
+  });
+  const candidates = response.suggestions.filter(isVettable);
+  if (!candidates.length) {
+    return response;
+  }
+  const first = await vet(candidates);
+  const checked = first.reduce((sum, result) => sum + result.checked, 0);
+  const failures = first.flatMap((result) => result.failures);
+  // A check that could not run holds nothing back, but the author is told it did not happen.
+  const unchecked = failures.length
+    ? `; ${failures.length} check${failures.length === 1 ? "" : "s"} could not run (${failures[0].slice(0, 160)}), so ${failures.length === 1 ? "that sentence is" : "those sentences are"} unvetted`
+    : "";
+  const flagged = candidates.flatMap((suggestion, index) => (first[index].objections.length ? [{ suggestion, objections: first[index].objections }] : []));
+  if (!flagged.length) {
+    return checked ? { ...response, message: `${response.message}\n\n(Vetting: ${checked} changed sentence${checked === 1 ? "" : "s"} checked one by one${unchecked || "; all sound"}.)` } : response;
+  }
+  setAiProgress(provider, `Vetting flagged ${flagged.length} suggestion${flagged.length === 1 ? "" : "s"} — ${label} is revising ${flagged.length === 1 ? "it" : "them"}`, undefined, request.requestedBy ?? null);
+  const instruction = [
+    `A careful sentence-by-sentence check flagged ${flagged.length === 1 ? "this suggestion" : `these ${flagged.length} suggestions`}. For each, combine the corrections into the suggestion (keep what was not flagged) and return it again with exactly the same original, one suggestion each:`,
+    ...flagged.map(({ suggestion, objections }) => `- "${suggestion.title}" (original ${JSON.stringify(suggestion.original.length > 160 ? `${suggestion.original.slice(0, 157)}…` : suggestion.original)}): ${describeObjections(objections)}`),
+    "Plus a one-line message. Return nothing else."
+  ].join("\n");
+  const followUp: AiRequest = {
+    ...request,
+    agentSessionId: threadId,
+    conversation: [
+      ...(request.conversation ?? []),
+      { role: "user", content: request.instruction },
+      { role: "assistant", content: response.message }
+    ],
+    instruction
+  };
+  const revisedByOriginal = new Map<string, AiSuggestion>();
+  let followUpError: string | null = null;
+  try {
+    const sameThread = provider === "codex" && threadId ? fullDocumentInPrompt(request) : null;
+    const promptOptions: CliPromptOptions = provider === "codex" && threadId
+      ? { reportedDecisions: conversationDecisionStates(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
+      : {};
+    const raw = await runCli(provider, buildCliPrompt(followUp, promptOptions), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
+    for (const suggestion of parseCliResponseDetailed(provider, raw, followUp).response.suggestions) {
+      revisedByOriginal.set(normalizeWhitespace(suggestion.original), suggestion);
+    }
+  } catch (error) {
+    if (runOptions.signal?.aborted) {
+      return response;
+    }
+    followUpError = formatCliDiagnostic(error instanceof Error ? error.message : String(error));
+  }
+  // Each flagged suggestion keeps its id and ref (the reply places it by ref); only its text and reasoning change.
+  const revised = flagged.map(({ suggestion }) => {
+    const fresh = revisedByOriginal.get(normalizeWhitespace(suggestion.original));
+    return fresh ? { ...suggestion, title: fresh.title || suggestion.title, replacement: fresh.replacement, rationale: fresh.rationale || suggestion.rationale, ...(fresh.emphasis ? { emphasis: fresh.emphasis } : {}) } : null;
+  });
+  const second = await vet(revised.filter((suggestion): suggestion is AiSuggestion => suggestion !== null));
+  let cursor = 0;
+  const finalById = new Map<string, AiSuggestion>();
+  let resolved = 0;
+  flagged.forEach(({ suggestion, objections }, index) => {
+    const fresh = revised[index];
+    const open = fresh ? second[cursor++].objections : objections;
+    const base = fresh ?? suggestion;
+    if (!open.length) {
+      resolved += 1;
+    }
+    finalById.set(suggestion.id, open.length ? { ...base, rationale: `${base.rationale}${base.rationale ? "\n\n" : ""}${unresolvedNote(open)}` } : base);
+  });
+  const suggestions = response.suggestions.map((suggestion) => finalById.get(suggestion.id) ?? suggestion);
+  const open = flagged.length - resolved;
+  const note = `Vetting: ${checked} changed sentence${checked === 1 ? "" : "s"} checked one by one; ${flagged.length} suggestion${flagged.length === 1 ? " was" : "s were"} flagged and sent back${resolved ? `, ${resolved} revised and passed` : ""}${open ? `, ${open} still ${open === 1 ? "has" : "have"} open concerns, shown on the card` : ""}${unchecked}${followUpError ? ` (the revision turn failed: ${followUpError})` : ""}.`;
+  return { ...response, suggestions, message: `${response.message}\n\n(${note})` };
+}
+
+function defaultVetter(provider: CliProviderName, request: AiRequest): SentenceVetter | null {
+  if (!vettingEnabled()) {
+    return null;
+  }
+  const runner = vettingCliRunner(provider);
+  return runner ? cliSentenceVetter(runner, request.modelOptions ?? null) : null;
+}
+
 async function completeReply(
   provider: CliProviderName,
   request: AiRequest,

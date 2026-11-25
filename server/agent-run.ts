@@ -4,6 +4,7 @@ import { parseEmphasis, renderEmphasis, type EmphasisSpan } from "../src/emphasi
 import type { AiActivityEntry, AiAttachment, AiDocumentImage, AiRequest, AiSuggestion, WordHostContext, DocumentComment, DocumentCommentsStatus } from "../src/shared";
 import { isImageCandidate, isTableCandidate, validateImageCandidate, validateSuggestionCandidate, validateTableCandidate, type SuggestionCandidate } from "./suggestion-validation";
 import type { DocumentTable } from "../src/tables";
+import { describeObjections, MAX_VETTING_ROUNDS, unresolvedNote, vetEdits, type SentenceVetter } from "./sentence-vetting";
 
 /**
  * Per-run context for agentic AI requests. The spawned agent's MCP tools read
@@ -42,6 +43,10 @@ export interface AgentRunContext {
   /** Called after each staging call that added suggestions, while the turn still runs. */
   onStaged?: ((staged: AiSuggestion[]) => void) | null;
   rejectedCount: number;
+  /** Vetting rounds each passage (by its original text) has been through in this run. */
+  vettingRounds?: Map<string, number>;
+  /** Sentence vetting for this run's staging calls; absent when vetting is off. */
+  vetting?: StageVetting | null;
   createdAt: number;
 }
 
@@ -192,20 +197,16 @@ export function searchAgentRunDocument(run: AgentRunContext, query: string, maxR
   return { matches, totalMatches };
 }
 
-export function stageAgentRunSuggestions(run: AgentRunContext, candidates: SuggestionCandidate[]): {
-  results: StageResultItem[];
-  stagedCount: number;
-  remainingBudget: number | null;
-} {
-  const results: StageResultItem[] = [];
+type CandidateCheck =
+  | { index: number; ok: false; reason: string }
+  | { index: number; ok: true; suggestion: AiSuggestion; note?: string };
+
+function checkCandidates(run: AgentRunContext, candidates: SuggestionCandidate[]): CandidateCheck[] {
+  const checks: CandidateCheck[] = [];
+  let accepted = run.staged.length;
   for (let index = 0; index < candidates.length; index += 1) {
-    if (run.maxSuggestions !== null && run.staged.length >= run.maxSuggestions) {
-      results.push({
-        index,
-        staged: false,
-        reason: `The request caps suggestions at ${run.maxSuggestions} and that budget is used; stop staging and write your summary.`
-      });
-      run.rejectedCount += 1;
+    if (run.maxSuggestions !== null && accepted >= run.maxSuggestions) {
+      checks.push({ index, ok: false, reason: `The request caps suggestions at ${run.maxSuggestions} and that budget is used; stop staging and write your summary.` });
       continue;
     }
     const verdict = isImageCandidate(candidates[index])
@@ -214,21 +215,37 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
       ? validateTableCandidate(candidates[index], run)
       : validateSuggestionCandidate(candidates[index], run);
     if (!verdict.ok) {
-      results.push({ index, staged: false, reason: verdict.reason });
-      run.rejectedCount += 1;
+      checks.push({ index, ok: false, reason: verdict.reason });
       continue;
     }
-    const duplicate = run.staged.some((existing) =>
+    const duplicate = [...run.staged, ...checks.flatMap((check) => (check.ok ? [check.suggestion] : []))].some((existing) =>
       existing.original === verdict.suggestion.original && existing.replacement === verdict.suggestion.replacement);
     if (duplicate) {
-      results.push({ index, staged: false, reason: "An identical suggestion is already staged in this run." });
+      checks.push({ index, ok: false, reason: "An identical suggestion is already staged in this run." });
+      continue;
+    }
+    checks.push({ index, ok: true, suggestion: verdict.suggestion, ...(verdict.note ? { note: verdict.note } : {}) });
+    accepted += 1;
+  }
+  return checks;
+}
+
+function commitChecks(run: AgentRunContext, checks: CandidateCheck[]): {
+  results: StageResultItem[];
+  stagedCount: number;
+  remainingBudget: number | null;
+} {
+  const results: StageResultItem[] = [];
+  for (const check of checks) {
+    if (!check.ok) {
+      results.push({ index: check.index, staged: false, reason: check.reason });
       run.rejectedCount += 1;
       continue;
     }
     const ref = `S${run.staged.length + 1}`;
-    const staged = { ...verdict.suggestion, ref };
+    const staged = { ...check.suggestion, ref };
     run.staged.push(staged);
-    results.push({ index, staged: true, id: staged.id, ref, ...(verdict.note ? { note: verdict.note } : {}) });
+    results.push({ index: check.index, staged: true, id: staged.id, ref, ...(check.note ? { note: check.note } : {}) });
   }
   if (results.some((result) => result.staged)) {
     run.onStaged?.([...run.staged]);
@@ -238,6 +255,91 @@ export function stageAgentRunSuggestions(run: AgentRunContext, candidates: Sugge
     stagedCount: run.staged.length,
     remainingBudget: run.maxSuggestions === null ? null : Math.max(0, run.maxSuggestions - run.staged.length)
   };
+}
+
+export function stageAgentRunSuggestions(run: AgentRunContext, candidates: SuggestionCandidate[]): {
+  results: StageResultItem[];
+  stagedCount: number;
+  remainingBudget: number | null;
+} {
+  return commitChecks(run, checkCandidates(run, candidates));
+}
+
+export interface StageVetting {
+  vetter: SentenceVetter;
+  signal?: AbortSignal;
+  onProgress?: (done: number, total: number) => void;
+}
+
+/**
+ * Staging with sentence vetting: every sentence a text edit adds or rewrites
+ * is checked on its own (sentence-vetting.ts). An edit with objections is sent
+ * back with them, for the agent to combine into a corrected edit and stage
+ * again; on its last vetting round it is staged with the open objections in
+ * its rationale instead.
+ */
+export async function stageAgentRunSuggestionsVetted(run: AgentRunContext, candidates: SuggestionCandidate[], vetting: StageVetting): Promise<{
+  results: StageResultItem[];
+  stagedCount: number;
+  remainingBudget: number | null;
+  vetting?: { sentencesChecked: number; flagged: number; failed?: number };
+}> {
+  const checks = checkCandidates(run, candidates);
+  const vettable = checks.flatMap((check, position) =>
+    check.ok && (check.suggestion.kind ?? "text") === "text" && !check.suggestion.commentOnly ? [{ position, suggestion: check.suggestion }] : []);
+  if (!vettable.length) {
+    return commitChecks(run, checks);
+  }
+  const vetted = await vetEdits(vettable.map(({ suggestion }) => suggestion), {
+    instruction: run.instruction,
+    documentText: run.documentText,
+    vetter: vetting.vetter,
+    signal: vetting.signal,
+    onProgress: (done, total) => {
+      if (done === 0 && total > 0) {
+        recordAgentActivity(run, { kind: "status", summary: `Vetting ${total} changed sentence${total === 1 ? "" : "s"}, one by one` });
+      }
+      vetting.onProgress?.(done, total);
+    }
+  });
+  const rounds = (run.vettingRounds ??= new Map());
+  let sentencesChecked = 0;
+  let flagged = 0;
+  let failed = 0;
+  vettable.forEach(({ position, suggestion }, index) => {
+    const result = vetted[index];
+    sentencesChecked += result.checked;
+    failed += result.failures.length;
+    if (!result.objections.length) {
+      return;
+    }
+    flagged += result.objections.length;
+    const key = suggestion.original.replace(/\s+/g, " ").trim();
+    const round = (rounds.get(key) ?? 0) + 1;
+    rounds.set(key, round);
+    const check = checks[position] as Extract<CandidateCheck, { ok: true }>;
+    if (round < MAX_VETTING_ROUNDS) {
+      checks[position] = {
+        index: check.index,
+        ok: false,
+        reason: `Vetting flagged ${result.objections.length} of ${result.checked} changed sentence${result.checked === 1 ? "" : "s"}: ${describeObjections(result.objections)} Combine these corrections into the edit (keep what was not flagged) and stage it again with the same original.`
+      };
+      return;
+    }
+    const note = unresolvedNote(result.objections);
+    checks[position] = {
+      ...check,
+      suggestion: { ...check.suggestion, rationale: `${check.suggestion.rationale}${check.suggestion.rationale ? "\n\n" : ""}${note}` },
+      note: `${check.note ? `${check.note} ` : ""}Staged after ${round} vetting rounds with objections still open; they are shown to the author on the card.`
+    };
+  });
+  if (sentencesChecked) {
+    recordAgentActivity(run, {
+      kind: "status",
+      summary: `Vetting: ${sentencesChecked} sentence${sentencesChecked === 1 ? "" : "s"} checked, ${flagged ? `${flagged} flagged and sent back for revision` : failed ? "none flagged" : "all sound"}${failed ? `; ${failed} check${failed === 1 ? "" : "s"} could not run, so ${failed === 1 ? "that sentence is" : "those sentences are"} unvetted` : ""}`
+    });
+  }
+  return { ...commitChecks(run, checks), vetting: { sentencesChecked, flagged, ...(failed ? { failed } : {}) } };
 }
 
 export function readAgentRunAttachment(run: AgentRunContext, name: string, offsetInput?: unknown, limitInput?: unknown): {

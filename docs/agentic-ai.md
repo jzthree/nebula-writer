@@ -201,3 +201,35 @@ placement); emphasis rides alongside as spans (`src/emphasis.ts`,
   runs are split by emphasis with `w:b`/`w:i`/`w:u`/`w:highlight` toggled on
   the run properties inherited from the patched run.
 
+
+## Sentence vetting (2026-11-24)
+
+Agent prose often reads well at a glance and breaks down on a careful second
+reading. So every sentence an edit adds or rewrites is checked on its own
+before the edit reaches the review queue (`server/sentence-vetting.ts`): one
+model call per sentence, with fresh context. The call sees the instruction, the
+original passage with the document text around it, the replacement and the
+editor's reason. It answers `yes`, or `no` with the problem and a corrected
+sentence. It checks accuracy against the source (no new facts, no lost
+qualifiers), logic (connectives, comparisons, scope, referents), language and
+fit.
+
+- **Agentic runs and terminal agents:** `writer_stage_suggestions` vets before
+  it answers. A flagged edit comes back rejected with each objection and a
+  suggested correction, and the agent combines them into the edit and stages it
+  again. On its second vetting round the edit is staged anyway, with the open
+  objections added to its rationale, so the author decides.
+- **One-shot runs (Codex by default):** after the reply, flagged suggestions go
+  to one follow-up turn in the same thread to be combined, then the revised
+  suggestions are checked again.
+- **Which model vets:** the run's own provider and model. For Antigravity runs,
+  Claude Code or Codex, whichever is installed.
+- **What the user sees:** progress shows "Vetting changed sentences one by one
+  (n of m)", and the activity or reply notes how many sentences were checked
+  and flagged. A check that cannot run holds nothing back, and is reported as
+  unvetted.
+- **Time limits:** staging can take minutes, so the MCP server uses plain HTTP
+  with no timeout. Claude gets `MCP_TOOL_TIMEOUT`, and Codex
+  `mcp_servers.writer.tool_timeout_sec`, of one hour each.
+- **Off switch:** `WRITER_SENTENCE_VETTING=off` (the test suite sets it; the
+  vetting tests turn it on with fake CLIs).

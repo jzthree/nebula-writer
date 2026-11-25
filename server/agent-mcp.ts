@@ -12,6 +12,7 @@
  * Self-contained JSON-RPC 2.0 over stdio; no dependencies beyond Node.
  */
 
+import * as http from "node:http";
 import * as readline from "node:readline";
 
 const RUN_URL = process.env.WRITER_AGENT_RUN_URL?.replace(/\/$/, "") ?? "";
@@ -67,7 +68,7 @@ const TOOLS: Array<{ definition: ToolDefinition; handler: ToolHandler }> = [
   {
     definition: {
       name: "writer_stage_suggestions",
-      description: "Stage revision suggestions into the user's review queue. Quote emphasis markers in original exactly as the document shows them; markers in replacement set bold/italic/underline/highlight (omit them to remove the emphasis). Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document; for selection-scoped requests prefer the selection, but a passage elsewhere is accepted when the instruction requires it — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
+      description: "Stage revision suggestions into the user's review queue. Quote emphasis markers in original exactly as the document shows them; markers in replacement set bold/italic/underline/highlight (omit them to remove the emphasis). Each item needs { title, original, replacement, rationale, confidence? (0-1), commentOnly? }. `original` must be an EXACT substring of the document; for selection-scoped requests prefer the selection, but a passage elsewhere is accepted when the instruction requires it — the response tells you per item whether it was staged or rejected and why, so fix rejected items and retry. Every sentence an edit adds or rewrites is vetted on its own before it is staged: an edit with a flagged sentence comes back rejected with each objection and a suggested correction — combine them into the edit and stage it again with the same original. Stage in small batches as you work rather than one giant batch at the end. Each staged item comes back with a `ref` (S1, S2, …): in your final reply, a line `## Heading` opens a section and a line `[S3]` places that suggestion under it, so the user sees each card where it belongs and can apply a whole section at once.",
       inputSchema: {
         type: "object",
         properties: {
@@ -308,18 +309,39 @@ async function forward(method: "GET" | "POST", path: string, body?: unknown): Pr
     return { text: "WRITER_AGENT_RUN_URL is not set; this MCP server must be launched by the Writer sidecar.", isError: true };
   }
   try {
-    const response = await fetch(`${RUN_URL}${path}`, {
-      method,
-      ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {})
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      return { text: `Error (${response.status}): ${text}`, isError: true };
+    const response = await request(method, `${RUN_URL}${path}`, body);
+    if (response.status < 200 || response.status >= 300) {
+      return { text: `Error (${response.status}): ${response.text}`, isError: true };
     }
-    return { text };
+    return { text: response.text };
   } catch (error) {
     return { text: `The Writer sidecar is unreachable: ${error instanceof Error ? error.message : String(error)}`, isError: true };
   }
+}
+
+/**
+ * Plain node:http, not fetch: staging vets every changed sentence before it
+ * answers, which can take minutes, and fetch gives up on a response whose
+ * headers take longer than five minutes. The sidecar is local; no timeout here.
+ */
+function request(method: "GET" | "POST", url: string, body?: unknown): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const payload = body !== undefined ? JSON.stringify(body) : null;
+    const outgoing = http.request(url, {
+      method,
+      headers: payload !== null ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}
+    }, (incoming) => {
+      const chunks: Buffer[] = [];
+      incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+      incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
+      incoming.on("error", reject);
+    });
+    outgoing.on("error", reject);
+    if (payload !== null) {
+      outgoing.write(payload);
+    }
+    outgoing.end();
+  });
 }
 
 const toolsByName = new Map(TOOLS.map((tool) => [tool.definition.name, tool]));
