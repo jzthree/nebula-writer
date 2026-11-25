@@ -95,6 +95,8 @@ interface PaneSettings {
   shareWithAgents: boolean;
   mirrorChat: boolean;
   toolAccess: AiToolAccess;
+  /** Opt-in: draft each answer this many times in parallel and let a final pass choose or combine (1 = off). */
+  parallelDrafts: number;
   provider: LocalAiProviderName;
   scope: RequestScope;
   models: Partial<Record<LocalAiProviderName, ModelPreference>>;
@@ -112,6 +114,7 @@ const DEFAULT_SETTINGS: PaneSettings = {
   shareWithAgents: true,
   mirrorChat: true,
   toolAccess: DEFAULT_AI_TOOL_ACCESS,
+  parallelDrafts: 1,
   provider: "claude",
   scope: "auto",
   models: {}
@@ -235,6 +238,7 @@ function loadSettings(): PaneSettings {
       shareWithAgents: typeof parsed.shareWithAgents === "boolean" ? parsed.shareWithAgents : DEFAULT_SETTINGS.shareWithAgents,
       mirrorChat: typeof parsed.mirrorChat === "boolean" ? parsed.mirrorChat : DEFAULT_SETTINGS.mirrorChat,
       toolAccess: isAiToolAccess(parsed.toolAccess) ? parsed.toolAccess : DEFAULT_SETTINGS.toolAccess,
+      parallelDrafts: typeof parsed.parallelDrafts === "number" && Number.isInteger(parsed.parallelDrafts) && parsed.parallelDrafts >= 1 && parsed.parallelDrafts <= 4 ? parsed.parallelDrafts : 1,
       provider: isLocalAiProvider(parsed.provider) ? parsed.provider : DEFAULT_SETTINGS.provider,
       scope: isScope(parsed.scope) ? parsed.scope : "auto",
       models
@@ -1246,6 +1250,7 @@ export function App() {
         documentName: snap.documentName,
         requestedBy: settingsRef.current.requesterName.trim() || (capabilities.hostName ?? "Word"),
         toolAccess: settingsRef.current.toolAccess,
+        ...(settingsRef.current.parallelDrafts > 1 ? { parallelDrafts: settingsRef.current.parallelDrafts } : {}),
         ...(documentImages.length ? { documentImages } : {}),
         ...(snap.tables?.length ? { documentTables: snap.tables } : {}),
         hostContext,
@@ -2238,7 +2243,7 @@ export function App() {
       scopeOptions={scopeOptions}
       hostName={capabilities.hostName ?? "Word"}
       tracksChanges={capabilities.trackChanges}
-      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, highlightChanges: settings.highlightChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat, toolAccess: settings.toolAccess }}
+      settings={{ requesterName: settings.requesterName, trackChanges: settings.trackChanges, highlightChanges: settings.highlightChanges, shareWithAgents: settings.shareWithAgents, mirrorChat: settings.mirrorChat, toolAccess: settings.toolAccess, parallelDrafts: settings.parallelDrafts }}
       sidecarDetail={sidecarDetail}
       sidecarStatus={sidecarStatus}
       suggestionById={suggestionById}

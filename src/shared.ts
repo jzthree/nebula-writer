@@ -134,6 +134,13 @@ export interface AiRequest {
   documentHtml?: string;
   documentText: string;
   maxSuggestions?: number | null;
+  /**
+   * Opt-in: draft this many alternative answers in parallel (2-4), each on its
+   * own, then a final pass chooses or combines the best edits.
+   */
+  parallelDrafts?: number | null;
+  /** The author's own words when `instruction` carries a generated prompt (the parallel drafts' final pass). */
+  userInstruction?: string | null;
   selection?: SelectionContext | null;
   stageSuggestions?: boolean;
   /** Collaborator (or agent) who asked, shown to everyone while the AI runs. */

@@ -131,6 +131,8 @@ interface RunSlot {
 const runSlots = new Set<RunSlot>();
 // The run a progress update belongs to, carried through the run's async calls.
 const runContext = new AsyncLocalStorage<RunSlot>();
+/** Set while one of several parallel drafts runs (parallelDraftsProvider). */
+const draftContext = new AsyncLocalStorage<{ index: number; total: number }>();
 
 /** One run's progress (by runId), or, without a runId, the most recently updated run's. */
 export function getAiProgress(runId?: string | null): AiProgressSnapshot | null {
@@ -173,11 +175,13 @@ export function bindToRun<A extends unknown[], R>(callback: (...args: A) => R): 
   return AsyncResource.bind(callback);
 }
 
-function setAiProgress(provider: string, stage: string, pass?: { index: number; total: number }, requestedBy?: string | null, tool = false): void {
+function setAiProgress(provider: string, rawStage: string, pass?: { index: number; total: number }, requestedBy?: string | null, tool = false): void {
   const slot = runContext.getStore();
   if (!slot) {
     return;
   }
+  const draft = draftContext.getStore();
+  const stage = draft ? `Draft ${draft.index} of ${draft.total}: ${rawStage}` : rawStage;
   const now = new Date().toISOString();
   const current = slot.progress;
   slot.progress = {
@@ -199,7 +203,8 @@ function setAiProgress(provider: string, stage: string, pass?: { index: number; 
 /** Show suggestions finished mid-turn to every client, alongside the stage. */
 function setAiProgressDrafts(drafts: AiSuggestion[]): void {
   const slot = runContext.getStore();
-  if (!slot?.progress) {
+  // A parallel draft's edits are candidates for the final pass, not cards yet.
+  if (!slot?.progress || draftContext.getStore()) {
     return;
   }
   slot.progress = { ...slot.progress, drafts, updatedAt: new Date().toISOString() };
@@ -314,9 +319,86 @@ export async function proposeChanges(request: AiRequest, options: AiRunOptions =
       if (options.signal?.aborted) {
         throw new Error("The request was canceled before it started.");
       }
-      return cliProvider(provider, request, options);
+      return (request.parallelDrafts ?? 0) >= 2 ? parallelDraftsProvider(provider, request, options) : cliProvider(provider, request, options);
     }
   ));
+}
+
+export const MAX_PARALLEL_DRAFTS = 4;
+const DRAFT_TEXT_LIMIT = 1_500;
+
+/**
+ * Opt-in parallel drafts: the request runs N times at once, each draft on its
+ * own (fresh session, no vetting, no live cards), then one final pass sees
+ * every draft's edits and returns the final set, keeping the best edit for a
+ * passage or combining several. The final pass is an ordinary one-shot reply,
+ * so its suggestions are checked against the document and vetted sentence by
+ * sentence like any other.
+ */
+async function parallelDraftsProvider(provider: CliProviderName, request: AiRequest, options: AiRunOptions): Promise<AiResponse> {
+  const total = Math.max(2, Math.min(MAX_PARALLEL_DRAFTS, Math.round(request.parallelDrafts ?? 2)));
+  const requestedBy = request.requestedBy ?? null;
+  setAiProgress(provider, `Drafting ${total} alternatives in parallel`, undefined, requestedBy);
+  const draftRequest: AiRequest = { ...request, parallelDrafts: null, agentSessionId: null };
+  const drafts = await Promise.all(Array.from({ length: total }, (_, index) =>
+    draftContext.run({ index: index + 1, total }, async (): Promise<AiResponse> => {
+      try {
+        // No runId: steering targets one turn, and these are N; Stop still reaches all through the signal.
+        return await cliProvider(provider, draftRequest, { ...options, runId: null });
+      } catch (error) {
+        return { provider, message: `Draft ${index + 1} failed: ${error instanceof Error ? error.message : String(error)}`, suggestions: [] };
+      }
+    })
+  ));
+  throwIfAborted(provider, options.signal);
+  const withEdits = drafts.filter((draft) => draft.suggestions.some((suggestion) => (suggestion.kind ?? "text") === "text"));
+  if (!withEdits.length) {
+    // Nothing to choose among: an answer to a question, or no edits at all.
+    return { ...drafts[0], agentSessionId: request.agentSessionId ?? null, message: `${drafts[0].message}\n\n(${total} drafts ran in parallel; none proposed an edit.)` };
+  }
+  const finalProvider: CliProviderName = provider === "antigravity"
+    ? (["claude", "codex"] as CliProviderName[]).find((candidate) => resolveCliCommand(candidate).available) ?? provider
+    : provider;
+  setAiProgress(provider, `Choosing among ${total} drafts`, undefined, requestedBy);
+  const finalRequest: AiRequest = {
+    ...request,
+    provider: finalProvider,
+    parallelDrafts: null,
+    userInstruction: request.instruction,
+    instruction: parallelDraftsInstruction(request.instruction, drafts),
+    agentSessionId: finalProvider === "codex" ? request.agentSessionId ?? null : null
+  };
+  const final = await oneShotCliProvider(finalProvider, finalRequest, options);
+  const candidates = drafts.reduce((sum, draft) => sum + draft.suggestions.length, 0);
+  return {
+    ...final,
+    provider,
+    // A Claude or Antigravity session from earlier turns stays the conversation's session.
+    agentSessionId: finalProvider === "codex" ? final.agentSessionId ?? request.agentSessionId ?? null : request.agentSessionId ?? null,
+    message: `${final.message}\n\n(${total} drafts ran in parallel and proposed ${candidates} edit${candidates === 1 ? "" : "s"}; a final pass chose or combined them.)`
+  };
+}
+
+export function parallelDraftsInstruction(userInstruction: string, drafts: AiResponse[]): string {
+  const clip = (text: string) => (text.length > DRAFT_TEXT_LIMIT ? `${text.slice(0, DRAFT_TEXT_LIMIT - 1)}…` : text);
+  const letter = (index: number) => String.fromCharCode(65 + index);
+  return [
+    `The author asked: ${JSON.stringify(userInstruction)}`,
+    "",
+    `${drafts.length} independent drafts each answered this request without seeing one another. Decide the final suggestions:`,
+    "- For each passage, keep the best draft's edit, or combine the strongest parts of several drafts into one edit.",
+    "- Drop edits that are wrong, unsupported by the document, redundant, or not asked for. Add nothing no draft proposed, except what a combination needs to read correctly.",
+    "- Copy each original verbatim from the document. Where drafts edit overlapping passages, return one edit for that passage.",
+    "- In the message, answer the author as the drafts did, and say in one sentence which drafts you drew on and why.",
+    "",
+    ...drafts.flatMap((draft, index) => [
+      `Draft ${letter(index)}. Its message: ${JSON.stringify(clip(draft.message))}`,
+      ...(draft.suggestions.length
+        ? draft.suggestions.map((suggestion, item) => `  ${letter(index)}${item + 1}. ${suggestion.commentOnly ? "[comment] " : ""}${suggestion.title}\n     original: ${JSON.stringify(clip(suggestion.original))}\n     replacement: ${JSON.stringify(clip(suggestion.replacement))}\n     rationale: ${JSON.stringify(clip(suggestion.rationale))}`)
+        : ["  (no edits)"]),
+      ""
+    ])
+  ].join("\n");
 }
 
 export async function smokeTestProvider(provider: CliProviderName): Promise<ProviderSmokeResponse> {
@@ -494,7 +576,8 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
   const run = createAgentRun(request);
   // Staging arrives through the MCP server's HTTP route, outside this run: keep it attached.
   run.onStaged = bindToRun((staged: AiSuggestion[]) => setAiProgressDrafts(staged));
-  const vetRunner = vettingEnabled() ? vettingCliRunner(provider) : null;
+  // Parallel drafts are vetted once, after the final pass has chosen among them.
+  const vetRunner = vettingEnabled() && !draftContext.getStore() ? vettingCliRunner(provider) : null;
   if (vetRunner) {
     run.vetting = {
       vetter: cliSentenceVetter(vetRunner, request.modelOptions ?? null),
@@ -1363,7 +1446,8 @@ function selectionOffsetInDocument(request: AiRequest): number | null {
 }
 
 function shouldUseCoveragePasses(request: AiRequest): boolean {
-  return request.mode === "global" && request.documentText.length > AI_CONTEXT_CHAR_LIMIT;
+  // The parallel drafts' final pass chooses among edits already made; it does not sweep the document again.
+  return request.mode === "global" && request.documentText.length > AI_CONTEXT_CHAR_LIMIT && !request.userInstruction;
 }
 
 async function runCoveragePasses(provider: CliProviderName, request: AiRequest, options: AiRunOptions): Promise<AiResponse> {
@@ -2269,7 +2353,7 @@ async function vetOneShotReply(
   const isVettable = (suggestion: AiSuggestion) => (suggestion.kind ?? "text") === "text" && !suggestion.commentOnly;
   const label = providerLabel(provider);
   const vet = (suggestions: AiSuggestion[]) => vetEdits(suggestions, {
-    instruction: request.instruction,
+    instruction: request.userInstruction ?? request.instruction,
     documentText: request.documentText,
     vetter,
     signal: runOptions.signal,
@@ -2352,7 +2436,7 @@ async function vetOneShotReply(
 }
 
 function defaultVetter(provider: CliProviderName, request: AiRequest): SentenceVetter | null {
-  if (!vettingEnabled()) {
+  if (!vettingEnabled() || draftContext.getStore()) {
     return null;
   }
   const runner = vettingCliRunner(provider);

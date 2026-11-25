@@ -219,7 +219,7 @@ export interface WordPaneProps {
   scope: RequestScope;
   scopeLabel: string;
   scopeOptions: ScopeOption[];
-  settings: { requesterName: string; trackChanges: "always" | "word"; highlightChanges: boolean; shareWithAgents: boolean; mirrorChat: boolean; toolAccess: AiToolAccess };
+  settings: { requesterName: string; trackChanges: "always" | "word"; highlightChanges: boolean; shareWithAgents: boolean; mirrorChat: boolean; toolAccess: AiToolAccess; parallelDrafts?: number };
   /** "Word" or "Google Docs" — for labels. */
   hostName: "Word" | "Google Docs";
   /** Whether the host records edits as tracked changes (Word) — else the highlight option is offered. */
@@ -1145,6 +1145,16 @@ function SettingsPanel(props: {
           {AI_TOOL_ACCESS_LEVELS.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}
         </select>
         <small className="wp-field-detail">{AI_TOOL_ACCESS_LEVELS.find((level) => level.id === props.settings.toolAccess)?.detail}</small>
+      </label>
+      <label className="wp-field">
+        <span>Alternative drafts</span>
+        <select value={String(props.settings.parallelDrafts ?? 1)} onChange={(event) => props.onSettingsChange({ parallelDrafts: Number(event.currentTarget.value) })} aria-label="Alternative drafts">
+          <option value="1">Off: one answer</option>
+          <option value="2">2 drafts in parallel</option>
+          <option value="3">3 drafts in parallel</option>
+          <option value="4">4 drafts in parallel</option>
+        </select>
+        <small className="wp-field-detail">Each request is answered several times at once, independently, and a final pass keeps the best edit for each passage or combines them. Slower, and uses about one more request's worth of AI per draft.</small>
       </label>
       <label className="wp-toggle">
         <input type="checkbox" checked={props.settings.shareWithAgents} onChange={(event) => props.onSettingsChange({ shareWithAgents: event.currentTarget.checked })} />

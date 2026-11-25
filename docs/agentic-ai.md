@@ -233,3 +233,14 @@ fit.
   `mcp_servers.writer.tool_timeout_sec`, of one hour each.
 - **Off switch:** `WRITER_SENTENCE_VETTING=off` (the test suite sets it; the
   vetting tests turn it on with fake CLIs).
+
+## Parallel drafts (opt-in, 2026-11-24)
+
+Settings → Alternative drafts (Off, 2, 3 or 4) sends `parallelDrafts` with the
+request. The request then runs that many times at once, each draft on its own:
+a fresh session, no live draft cards and no vetting. A final one-shot pass then
+sees every draft's message and edits, keeps the best edit for each passage or
+combines several, and drops wrong or unneeded ones. Its reply goes through the
+usual checks and sentence vetting. The final pass uses the run's provider
+(Claude Code or Codex for Antigravity runs) and continues a Codex conversation
+thread. It costs about one extra request per draft.

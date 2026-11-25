@@ -627,6 +627,20 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.queryByLabelText("Draft suggestion: Own draft")).not.toBeInTheDocument());
   });
 
+  it("sends the opt-in number of parallel drafts, and none when it is off", async () => {
+    await renderPane();
+    fireEvent.click(screen.getByLabelText("Settings & diagnostics"));
+    expect((screen.getByLabelText("Alternative drafts") as HTMLSelectElement).value).toBe("1");
+    send("Review the document.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0]).not.toHaveProperty("parallelDrafts");
+
+    fireEvent.change(screen.getByLabelText("Alternative drafts"), { target: { value: "3" } });
+    send("Review it again.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    expect(captured.requests[1].parallelDrafts).toBe(3);
+  });
+
   it("offers the speed tiers the Codex model has, sends the chosen one, and drops a tier the next model lacks", async () => {
     await renderPane();
     fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "codex" } });

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxComments, extractDocxImages } from "./docx";
-import { getAiProgress, getAiRuns, proposeChanges, smokeTestProvider, vettingCliRunner } from "./ai";
+import { getAiProgress, getAiRuns, MAX_PARALLEL_DRAFTS, proposeChanges, smokeTestProvider, vettingCliRunner } from "./ai";
 import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, stageAgentRunSuggestionsVetted, type AgentRunContext } from "./agent-run";
@@ -4239,6 +4239,12 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
     return { error: "documentEmphasis must be a list of { start, end, bold?, italic?, underline?, highlight? } spans." };
   }
 
+  const parallelDraftsValue = (body as { parallelDrafts?: unknown }).parallelDrafts;
+  if (parallelDraftsValue !== undefined && parallelDraftsValue !== null
+    && !(Number.isInteger(parallelDraftsValue) && (parallelDraftsValue as number) >= 1 && (parallelDraftsValue as number) <= MAX_PARALLEL_DRAFTS)) {
+    return { error: `parallelDrafts must be a whole number from 1 to ${MAX_PARALLEL_DRAFTS} when provided.` };
+  }
+
   return {
     request: {
       provider: value.provider,
@@ -4247,6 +4253,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       documentHtml: value.documentHtml ?? "",
       documentText: value.documentText,
       maxSuggestions: maxSuggestions.value,
+      parallelDrafts: typeof parallelDraftsValue === "number" && parallelDraftsValue >= 2 ? parallelDraftsValue : null,
       selection: value.mode === "selection" ? value.selection : value.selection ?? null,
       stageSuggestions: value.stageSuggestions,
       attachments: attachments.value,
