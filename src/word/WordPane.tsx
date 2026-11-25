@@ -132,8 +132,11 @@ export interface ModelControls {
   loading: boolean;
   model: string | null;
   reasoning: string | null;
+  /** Codex speed tier; null = Writer's default (Fast). */
+  speed?: string | null;
   onModelChange: (model: string | null) => void;
   onReasoningChange: (reasoning: string | null) => void;
+  onSpeedChange?: (speed: string | null) => void;
   onRefresh: () => void;
 }
 
@@ -619,6 +622,10 @@ function ModelPicker(props: { controls: ModelControls; disabled: boolean }) {
   const defaultReasoningLabel = defaultReasoning ? levelLabel(defaultReasoning, catalog?.reasoning?.levels ?? []) : "Default";
   const defaultSource = catalog?.defaults.source ? `CLI default (${shortPath(catalog.defaults.source)})` : "CLI default";
   const selectValue = customDraft !== null ? CUSTOM_MODEL : currentModel ?? "";
+  // Speed tiers of the model that will run: the chosen one, or the CLI's default.
+  const effectiveChoice = selectedChoice ?? (catalog?.defaults.model ? catalog.models.find((model) => model.id === catalog.defaults.model) ?? null : null);
+  const speedTiers = effectiveChoice?.speedTiers ?? [];
+  const fastTier = speedTiers.find((tier) => tier.id === "fast");
 
   return (
     <div className="wp-model-picker" aria-label="Model and reasoning">
@@ -702,6 +709,24 @@ function ModelPicker(props: { controls: ModelControls; disabled: boolean }) {
           {controls.reasoning && !levels.some((level) => level.id === controls.reasoning) ? <option value={controls.reasoning}>{controls.reasoning} (custom)</option> : null}
         </select>
       </label>
+      {speedTiers.length && controls.onSpeedChange ? (
+        <label className="wp-select wp-select-speed">
+          <span className="sr-only">Speed</span>
+          <select
+            value={controls.speed ?? ""}
+            onChange={(event) => controls.onSpeedChange?.(event.currentTarget.value || null)}
+            disabled={props.disabled || controls.loading}
+            aria-label="Speed"
+            title="Passed as Codex service_tier. Faster tiers use more of your plan's usage."
+          >
+            <option value="" title={fastTier?.description ?? undefined}>{fastTier?.label ?? "Fast"}</option>
+            <option value="default" title="Standard speed and usage">Standard</option>
+            {speedTiers.filter((tier) => tier.id !== "fast").map((tier) => (
+              <option key={tier.id} value={tier.id} title={tier.description ?? undefined}>{tier.label}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
     </div>
   );
 }

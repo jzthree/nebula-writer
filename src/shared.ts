@@ -213,6 +213,15 @@ export interface AiConversationTurn {
 export interface AiModelOptions {
   model?: string | null;
   reasoning?: string | null;
+  /** Codex speed tier (its `service_tier`): "default" (standard), "fast", "ultrafast", as the model's catalog offers. Unset: Fast. */
+  speed?: string | null;
+}
+
+/** One speed tier a model offers (Codex: Fast at 2x speed with more usage, Ultrafast). */
+export interface AiSpeedChoice {
+  id: string;
+  label: string;
+  description?: string | null;
 }
 
 export interface AiModelChoice {
@@ -224,6 +233,8 @@ export interface AiModelChoice {
   /** Reasoning levels this model supports when the catalog says so; null = provider-wide list applies. */
   reasoningLevels?: string[] | null;
   defaultReasoning?: string | null;
+  /** Speed tiers beyond standard that this model offers (Codex service tiers); null/absent = none. */
+  speedTiers?: AiSpeedChoice[] | null;
   hidden?: boolean;
 }
 

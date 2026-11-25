@@ -22,7 +22,7 @@ import { existsSync, readFileSync, statSync, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AiModelChoice, AiModelOptions, AiProviderCatalog, AiReasoningChoice, LocalAiProviderName } from "../src/shared";
+import type { AiModelChoice, AiModelOptions, AiProviderCatalog, AiReasoningChoice, AiSpeedChoice, LocalAiProviderName } from "../src/shared";
 import { resolveWriterCliHome } from "./cli-home";
 import { cliVersion } from "./cli-version";
 import { resolveCliCommand, type CliProviderName } from "./cli-runtime";
@@ -50,16 +50,20 @@ export function validateModelOptions(value: unknown): { modelOptions: AiModelOpt
   const raw = value as Record<string, unknown>;
   const model = optionalId(raw.model, MODEL_ID_PATTERN);
   const reasoning = optionalId(raw.reasoning, REASONING_ID_PATTERN);
+  const speed = optionalId(raw.speed, REASONING_ID_PATTERN);
   if (model === false) {
     return { error: "modelOptions.model must be a model id such as 'opus', 'claude-opus-5', or 'gpt-5.5' (letters, digits, . _ : - [ ])." };
   }
   if (reasoning === false) {
     return { error: "modelOptions.reasoning must be a reasoning level such as low, medium, high, xhigh, or max." };
   }
-  if (!model && !reasoning) {
+  if (speed === false) {
+    return { error: "modelOptions.speed must be a speed tier such as default, fast, or ultrafast." };
+  }
+  if (!model && !reasoning && !speed) {
     return { modelOptions: null };
   }
-  return { modelOptions: { model: model || null, reasoning: reasoning || null } };
+  return { modelOptions: { model: model || null, reasoning: reasoning || null, ...(speed ? { speed } : {}) } };
 }
 
 function optionalId(value: unknown, pattern: RegExp): string | null | false {
@@ -74,6 +78,19 @@ function optionalId(value: unknown, pattern: RegExp): string | null | false {
     return null;
   }
   return pattern.test(trimmed) ? trimmed : false;
+}
+
+/**
+ * Codex's speed tier for a run, as a `-c` override: the chosen one, or Fast
+ * (Writer's default since it ran Codex at all: interactive work wants speed).
+ */
+export function codexServiceTierArg(modelOptions: AiModelOptions | null | undefined): string {
+  return `service_tier="${codexServiceTier(modelOptions)}"`;
+}
+
+export function codexServiceTier(modelOptions: AiModelOptions | null | undefined): string {
+  const speed = modelOptions?.speed;
+  return speed && REASONING_ID_PATTERN.test(speed) ? speed : "fast";
 }
 
 /** CLI arguments that select the model and reasoning level for a run. */
@@ -106,10 +123,10 @@ export function modelCliArgs(provider: CliProviderName, modelOptions: AiModelOpt
 }
 
 export function describeModelOptions(modelOptions: AiModelOptions | null | undefined): string {
-  if (!modelOptions || (!modelOptions.model && !modelOptions.reasoning)) {
+  if (!modelOptions || (!modelOptions.model && !modelOptions.reasoning && !modelOptions.speed)) {
     return "";
   }
-  return [modelOptions.model, modelOptions.reasoning ? reasoningLabel(modelOptions.reasoning).toLowerCase() : null].filter(Boolean).join(" · ");
+  return [modelOptions.model, modelOptions.reasoning ? reasoningLabel(modelOptions.reasoning).toLowerCase() : null, modelOptions.speed ? `${modelOptions.speed === "default" ? "standard" : modelOptions.speed} speed` : null].filter(Boolean).join(" · ");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -280,8 +297,33 @@ interface CodexCatalogModel {
   description?: unknown;
   default_reasoning_level?: unknown;
   supported_reasoning_levels?: unknown;
+  additional_speed_tiers?: unknown;
+  service_tiers?: unknown;
   visibility?: unknown;
   priority?: unknown;
+}
+
+/**
+ * A model's speed tiers: `additional_speed_tiers` names them as config values
+ * (fast, ultrafast); `service_tiers` labels and describes them (its id for
+ * fast is the API's "priority", so they are matched by id or by name).
+ */
+function parseCodexSpeedTiers(raw: CodexCatalogModel): AiSpeedChoice[] | null {
+  const ids = Array.isArray(raw.additional_speed_tiers) ? raw.additional_speed_tiers.filter((id): id is string => typeof id === "string" && REASONING_ID_PATTERN.test(id)) : [];
+  if (!ids.length) {
+    return null;
+  }
+  const described = Array.isArray(raw.service_tiers)
+    ? raw.service_tiers.filter((tier): tier is { id?: unknown; name?: unknown; description?: unknown } => Boolean(tier) && typeof tier === "object")
+    : [];
+  return ids.map((id) => {
+    const tier = described.find((entry) => entry.id === id || (typeof entry.name === "string" && entry.name.toLowerCase() === id));
+    return {
+      id,
+      label: typeof tier?.name === "string" && tier.name.trim() ? tier.name.trim() : id.charAt(0).toUpperCase() + id.slice(1),
+      description: typeof tier?.description === "string" ? tier.description : null
+    };
+  });
 }
 
 /** Parse `codex debug models` / models_cache.json into choices. */
@@ -319,6 +361,7 @@ export function parseCodexModelCatalog(payload: unknown): { models: AiModelChoic
       source: "catalog",
       reasoningLevels: reasoningLevels.length ? reasoningLevels : null,
       defaultReasoning: typeof raw.default_reasoning_level === "string" ? raw.default_reasoning_level : null,
+      speedTiers: parseCodexSpeedTiers(raw),
       hidden: raw.visibility === "hide" || raw.visibility === "hidden"
     });
   }

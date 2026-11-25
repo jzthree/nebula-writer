@@ -18,7 +18,7 @@ import { LOCAL_AI_PROVIDERS, LOCAL_AI_PROVIDER_INFO, providerCliName } from "../
 import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunContext } from "./agent-run";
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome, ensureWriterCodexMirrorHome, resolveWriterCliHome } from "./cli-home";
-import { modelCliArgs } from "./model-catalog";
+import { codexServiceTier, codexServiceTierArg, modelCliArgs } from "./model-catalog";
 import { cliSentenceVetter, describeObjections, unresolvedNote, vetEdits, vettingEnabled, type SentenceVetter, type VettingCliRunner } from "./sentence-vetting";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
@@ -1548,6 +1548,7 @@ async function runCli(provider: CliProviderName, prompt: string, options: AiRunO
         sandbox: (options.toolAccess ?? "document") === "full" ? "workspace-write" : "read-only",
         model: modelOptions?.model ?? null,
         effort: modelOptions?.reasoning ?? null,
+        serviceTier: codexServiceTier(modelOptions),
         outputSchema: AI_RESPONSE_SCHEMA,
         imagePaths: options.imagePaths ?? [],
         timeoutMs: cliTimeoutMs(),
@@ -1630,7 +1631,7 @@ export function vettingCliRunner(provider: string): VettingCliRunner | null {
     const dir = mkdtempSync(join(tmpdir(), "nebula-writer-vet-"));
     const lastMessage = join(dir, "last-message.txt");
     try {
-      const output = await runCliCommand(chosen, resolved.command, ["exec", "-c", 'service_tier="fast"', ...modelArgs, "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", lastMessage, "-"], `${system}\n\n${prompt}`, { signal });
+      const output = await runCliCommand(chosen, resolved.command, ["exec", "-c", codexServiceTierArg(sameProvider ? modelOptions : null), ...modelArgs, "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", lastMessage, "-"], `${system}\n\n${prompt}`, { signal });
       return existsSync(lastMessage) ? readFileSync(lastMessage, "utf8") : output;
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -2028,7 +2029,7 @@ export function buildCliArgs(
       // while it works; the final agent_message carries the structured reply.
       "--json",
       "-c",
-      'service_tier="fast"',
+      codexServiceTierArg(modelOptions),
       "-c",
       'model_reasoning_summary="auto"',
       ...modelCliArgs(provider, modelOptions),

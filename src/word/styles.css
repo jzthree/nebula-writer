@@ -442,6 +442,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* Provider · model · reasoning on one row; a custom model id drops to a full-width line below. */
 .wp-engine-row { display: grid; grid-template-columns: auto minmax(0, 1.35fr) minmax(0, 1fr); gap: 6px; align-items: center; }
 .wp-model-picker { display: contents; }
+/* Codex models with speed tiers add a fourth column: provider · model · reasoning · speed. */
+.wp-engine-row:has(.wp-select-speed) { grid-template-columns: auto minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.9fr); }
 .wp-engine-row .wp-select select { padding-right: 22px; text-overflow: ellipsis; }
 .wp-custom-model {
   grid-column: 1 / -1;

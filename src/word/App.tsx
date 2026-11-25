@@ -83,6 +83,8 @@ import { fetchConversationFromSidecar, resetConversationOnSidecar, writeConversa
 interface ModelPreference {
   model: string | null;
   reasoning: string | null;
+  /** Codex speed tier (default, fast, ultrafast); null = Writer's default (Fast). */
+  speed?: string | null;
 }
 
 interface PaneSettings {
@@ -221,7 +223,8 @@ function loadSettings(): PaneSettings {
       if (entry && typeof entry === "object") {
         models[provider] = {
           model: typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : null,
-          reasoning: typeof entry.reasoning === "string" && entry.reasoning.trim() ? entry.reasoning.trim() : null
+          reasoning: typeof entry.reasoning === "string" && entry.reasoning.trim() ? entry.reasoning.trim() : null,
+          speed: typeof entry.speed === "string" && entry.speed.trim() ? entry.speed.trim() : null
         };
       }
     }
@@ -1001,10 +1004,10 @@ export function App() {
 
   const currentModelOptions = useCallback((): AiModelOptions | null => {
     const preference = settingsRef.current.models[settingsRef.current.provider];
-    if (!preference || (!preference.model && !preference.reasoning)) {
+    if (!preference || (!preference.model && !preference.reasoning && !preference.speed)) {
       return null;
     }
-    return { model: preference.model, reasoning: preference.reasoning };
+    return { model: preference.model, reasoning: preference.reasoning, ...(preference.speed ? { speed: preference.speed } : {}) };
   }, []);
 
   const engineLabel = useCallback((provider: LocalAiProviderName, modelOptions: AiModelOptions | null): string => {
@@ -1020,7 +1023,12 @@ export function App() {
       : catalog?.defaults.reasoning
         ? `${levelLabel(catalog.defaults.reasoning)} (default)`
         : null;
-    return [providerLabel(provider), modelText, reasoningText].filter(Boolean).join(" · ");
+    const effectiveModel = modelOptions?.model ?? catalog?.defaults.model ?? null;
+    const tiers = catalog?.models.find((model) => model.id === effectiveModel)?.speedTiers ?? null;
+    const speedText = modelOptions?.speed
+      ? modelOptions.speed === "default" ? "Standard speed" : tiers?.find((tier) => tier.id === modelOptions.speed)?.label ?? modelOptions.speed
+      : null;
+    return [providerLabel(provider), modelText, reasoningText, speedText].filter(Boolean).join(" · ");
   }, []);
 
   /** The runs going on now; `steerTarget` when set and still running, else the latest started. */
@@ -2162,8 +2170,16 @@ export function App() {
         loading: catalogLoading,
         model: modelPreference.model,
         reasoning: modelPreference.reasoning,
-        onModelChange: (model) => setModelPreference({ model }),
+        speed: modelPreference.speed ?? null,
+        onModelChange: (model) => {
+          // A speed tier the newly chosen model does not offer falls back to the default.
+          const effective = model ?? activeCatalog?.defaults.model ?? null;
+          const offered = activeCatalog?.models.find((entry) => entry.id === effective)?.speedTiers ?? [];
+          const speed = modelPreference.speed;
+          setModelPreference({ model, ...(speed && speed !== "default" && !offered.some((tier) => tier.id === speed) ? { speed: null } : {}) });
+        },
         onReasoningChange: (reasoning) => setModelPreference({ reasoning }),
+        onSpeedChange: (speed) => setModelPreference({ speed }),
         onRefresh: () => void loadCatalog(true)
       }}
       notice={notice}

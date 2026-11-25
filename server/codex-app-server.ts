@@ -25,6 +25,8 @@ export interface CodexAppServerRun {
   sandbox: "read-only" | "workspace-write";
   model?: string | null;
   effort?: string | null;
+  /** Speed tier (default, fast, ultrafast); unset = fast. */
+  serviceTier?: string | null;
   outputSchema?: unknown;
   imagePaths?: string[];
   timeoutMs?: number;
@@ -613,7 +615,7 @@ export async function runCodexAppServer(run: CodexAppServerRun): Promise<CodexAp
 
     void (async () => {
       try {
-        const threadParams = { cwd: run.cwd, sandbox: run.sandbox, approvalPolicy: "never", serviceTier: "fast" };
+        const threadParams = { cwd: run.cwd, sandbox: run.sandbox, approvalPolicy: "never", serviceTier: run.serviceTier || "fast" };
         if (run.resumeThreadId && server.loadedThreads.has(run.resumeThreadId)) {
           // Still loaded from an earlier turn in this process: nothing to reopen.
           threadId = run.resumeThreadId;

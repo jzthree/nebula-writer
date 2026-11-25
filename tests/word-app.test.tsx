@@ -83,8 +83,9 @@ vi.mock("../src/word/writerClient", () => ({
           version: "codex-cli 0.145.0",
           path: "/opt/homebrew/bin/codex",
           models: [
-            { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", source: "catalog", reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultReasoning: "low" },
-            { id: "gpt-5.5", label: "GPT-5.5", source: "catalog", reasoningLevels: ["low", "medium", "high", "xhigh"], defaultReasoning: "medium" },
+            { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", source: "catalog", reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultReasoning: "low",
+              speedTiers: [{ id: "fast", label: "Fast", description: "2x speed, increased usage" }, { id: "ultrafast", label: "Ultrafast", description: "The fastest available responses." }] },
+            { id: "gpt-5.5", label: "GPT-5.5", source: "catalog", reasoningLevels: ["low", "medium", "high", "xhigh"], defaultReasoning: "medium", speedTiers: [{ id: "fast", label: "Fast" }] },
             { id: "gpt-reserve", label: "GPT-Reserve", source: "catalog", hidden: true, reasoningLevels: ["medium"] }
           ],
           reasoning: { control: "model_reasoning_effort", levels: [{ id: "low", label: "Low" }, { id: "medium", label: "Medium" }, { id: "high", label: "High" }, { id: "xhigh", label: "Extra high" }, { id: "max", label: "Max" }, { id: "ultra", label: "Ultra" }] },
@@ -624,6 +625,28 @@ describe("Word task pane", () => {
     const thinking = { ...ownStage, stage: "Thinking" };
     act(() => sessionFetch.onProgress?.(thinking, [thinking]));
     await waitFor(() => expect(screen.queryByLabelText("Draft suggestion: Own draft")).not.toBeInTheDocument());
+  });
+
+  it("offers the speed tiers the Codex model has, sends the chosen one, and drops a tier the next model lacks", async () => {
+    await renderPane();
+    fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "codex" } });
+    // The CLI default (GPT-5.6-Sol) offers Ultrafast; Fast is Writer's default.
+    await waitFor(() => expect(screen.getByRole("option", { name: "Ultrafast" })).toBeInTheDocument());
+    expect((screen.getByLabelText("Speed") as HTMLSelectElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText("Speed"), { target: { value: "ultrafast" } });
+
+    send("Review the document.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0].modelOptions).toEqual({ model: null, reasoning: null, speed: "ultrafast" });
+    await waitFor(() => expect(screen.getByText(/Sent Whole document/).textContent).toContain("Ultrafast"));
+
+    // GPT-5.5 has no Ultrafast: the choice falls back to the default.
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.5" } });
+    await waitFor(() => expect(screen.queryByRole("option", { name: "Ultrafast" })).not.toBeInTheDocument());
+    expect((screen.getByLabelText("Speed") as HTMLSelectElement).value).toBe("");
+    // Claude's catalog has no speed tiers, so there is no Speed menu.
+    fireEvent.change(screen.getByLabelText("AI provider"), { target: { value: "claude" } });
+    await waitFor(() => expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument());
   });
 
   it("passes the chosen model and reasoning level to the request", async () => {

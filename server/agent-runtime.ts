@@ -1,6 +1,6 @@
 import type { AiModelOptions } from "../src/shared";
 import { registerSteerable, steerMessageText, type SteerResult } from "./steering";
-import { modelCliArgs } from "./model-catalog";
+import { codexServiceTierArg, modelCliArgs } from "./model-catalog";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -197,7 +197,7 @@ export function buildAgentCodexArgs(prompt: string, runUrl: string, workspaceDir
     "--skip-git-repo-check",
     ...(sessionId ? [] : ["-s", toolAccess === "full" ? "workspace-write" : "read-only", "-C", workspaceDir]),
     "-c",
-    'service_tier="fast"',
+    codexServiceTierArg(modelOptions),
     "-c",
     `mcp_servers.writer.command=${tomlString(launch.command)}`,
     "-c",
