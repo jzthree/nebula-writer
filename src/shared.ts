@@ -127,6 +127,19 @@ export const AI_ATTACHMENT_LIMIT = 8;
 export const AI_ATTACHMENT_TEXT_CHAR_LIMIT = 40_000;
 export const AI_ATTACHMENTS_TOTAL_CHAR_LIMIT = 80_000;
 
+/** Writing styles from the journal-style skill (server/writing-style.ts). */
+export const WRITING_STYLES = [
+  { id: "off", label: "Off" },
+  { id: "general", label: "General academic" },
+  { id: "nature", label: "Nature" },
+  { id: "science", label: "Science" },
+  { id: "nature-genetics", label: "Nature Genetics" },
+  { id: "nature-methods", label: "Nature Methods" },
+  { id: "nih", label: "NIH grant" }
+] as const;
+export type WritingStyleId = (typeof WRITING_STYLES)[number]["id"];
+export const DEFAULT_WRITING_STYLE: WritingStyleId = "general";
+
 export interface AiRequest {
   provider: AiProviderName;
   instruction: string;
@@ -139,6 +152,8 @@ export interface AiRequest {
    * own, then a final pass chooses or combines the best edits.
    */
   parallelDrafts?: number | null;
+  /** Writing style skill to follow (default "general"; "off" for none). */
+  writingStyle?: WritingStyleId | null;
   /** The author's own words when `instruction` carries a generated prompt (the parallel drafts' final pass). */
   userInstruction?: string | null;
   selection?: SelectionContext | null;

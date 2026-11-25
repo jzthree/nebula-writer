@@ -19,6 +19,7 @@ import { createAgentRun, deleteAgentRun, recordAgentActivity, type AgentRunConte
 import { describeWordHostContext } from "./word-context";
 import { ensureWriterCliHome, ensureWriterCodexMirrorHome, resolveWriterCliHome } from "./cli-home";
 import { codexServiceTier, codexServiceTierArg, modelCliArgs } from "./model-catalog";
+import { writingStyleLines } from "./writing-style";
 import { cliSentenceVetter, describeObjections, unresolvedNote, vetEdits, vettingEnabled, type SentenceVetter, type VettingCliRunner } from "./sentence-vetting";
 import { ClaudeStreamParser, CodexStreamParser, runAgentTurn, type AgentEvent } from "./agent-runtime";
 import { broadcastAiProgress } from "./realtime";
@@ -406,6 +407,7 @@ export async function smokeTestProvider(provider: CliProviderName): Promise<Prov
   const response = await cliProvider(provider, {
     provider,
     instruction: "Smoke test this local provider by making the selected sentence shorter. Return one exact-source suggestion.",
+    writingStyle: "off",
     mode: "selection",
     documentHtml: `<p>${SMOKE_TEST_TEXT}</p>`,
     documentText: SMOKE_TEST_TEXT,
@@ -965,6 +967,8 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     ...(resolveToolAccess(request) === "full"
       ? ["Your reply ends the run: commands still running in the background are stopped when you reply, and nothing you do after it reaches the user. Wait for any command whose result you need before replying."]
       : []),
+    ...writingStyleLines(request),
+    "",
     "When finished, write a short reply that organizes what you staged. Format: a line starting with `## ` opens a section (e.g. `## Significance`, `## Aim 2 approach`); one or two plain sentences of context; then each suggestion's ref from writer_stage_suggestions on its own line, like `[S3]`, in the order the user should review them. The user's pane shows each suggestion card exactly where you place it and offers Apply-all per section, so reference every staged suggestion once and do not repeat the suggestion text. If nothing was safe to stage, say why in 1-2 sentences.",
     "",
     "User request:",
@@ -1193,6 +1197,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "    }",
     "  ]",
     "}",
+    ...writingStyleLines(request),
     "",
     `Instruction: ${request.instruction}`,
     `Scope: ${request.mode}`,

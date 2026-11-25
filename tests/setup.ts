@@ -32,3 +32,7 @@ process.env.WRITER_CONVERSATIONS_DB ??= ":memory:";
 // Staging vets each changed sentence with a model CLI; the suite's fake CLIs
 // do not answer vetting prompts. Vetting tests inject their own vetter.
 process.env.WRITER_SENTENCE_VETTING ??= "off";
+
+// Prompts must not depend on whether this machine has the style skill
+// installed; the writing-style tests point at their own fixture.
+process.env.WRITER_STYLE_SKILL_DIR ??= "off";

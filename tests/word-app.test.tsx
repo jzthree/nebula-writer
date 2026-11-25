@@ -627,6 +627,15 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.queryByLabelText("Draft suggestion: Own draft")).not.toBeInTheDocument());
   });
 
+  it("sends the writing style, General academic unless another is chosen", async () => {
+    await renderPane();
+    expect((screen.getByLabelText("Writing style") as HTMLSelectElement).value).toBe("general");
+    fireEvent.change(screen.getByLabelText("Writing style"), { target: { value: "nih" } });
+    send("Review the document.");
+    await waitFor(() => expect(captured.requests.length).toBe(1));
+    expect(captured.requests[0].writingStyle).toBe("nih");
+  });
+
   it("sends the opt-in number of parallel drafts, and none when it is off", async () => {
     await renderPane();
     fireEvent.click(screen.getByLabelText("Settings & diagnostics"));

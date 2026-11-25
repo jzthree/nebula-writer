@@ -41,7 +41,7 @@ import {
   User,
   X, ListPlus, Plus } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName } from "../shared";
+import { AI_TOOL_ACCESS_LEVELS, formatElapsedSince, type AiActivityEntry, type AiAttachment, type AiModelChoice, type AiProviderCatalog, type AiReasoningChoice, type AiSuggestion, type AiToolAccess, type LocalAiProviderName, WRITING_STYLES, type WritingStyleId } from "../shared";
 import { wordDiffSegments } from "../wordDiff";
 import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
 import { revertSuggestionOf } from "../revertSuggestion";
@@ -213,6 +213,9 @@ export interface WordPaneProps {
   onSync: () => void;
   pendingCount: number;
   presets: PresetOption[];
+  /** The journal-style skill the AI follows; the menu is shown when both are given. */
+  writingStyle?: WritingStyleId;
+  onWritingStyleChange?: (style: WritingStyleId) => void;
   provider: LocalAiProviderName;
   providerOptions: Array<{ label: string; value: LocalAiProviderName; available: boolean }>;
   requestState: RequestState;
@@ -431,6 +434,14 @@ function WordPaneBody(props: WordPaneProps) {
               }}
             />
           </label>
+          {props.writingStyle && props.onWritingStyleChange ? (
+            <label className="wp-select wp-select-style" title="Writing style the AI follows: the journal-style skill (rules measured on published text and funded grants), with examples for the section you are in">
+              <span className="sr-only">Writing style</span>
+              <select value={props.writingStyle} onChange={(event) => props.onWritingStyleChange?.(event.currentTarget.value as WritingStyleId)} disabled={running} aria-label="Writing style">
+                {WRITING_STYLES.map((style) => <option key={style.id} value={style.id}>{style.id === "off" ? "Style: off" : style.label}</option>)}
+              </select>
+            </label>
+          ) : null}
           <label className="wp-select">
             <span className="sr-only">Preset</span>
             <select value="" onChange={(event) => {

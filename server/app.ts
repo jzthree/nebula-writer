@@ -13,13 +13,14 @@ import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTA
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, stageAgentRunSuggestionsVetted, type AgentRunContext } from "./agent-run";
 import { cliSentenceVetter, vettingEnabled } from "./sentence-vetting";
+import { isWritingStyle } from "./writing-style";
 import { matchCommentsToSelection } from "../src/commentMatching";
 import { readAgentRunContext } from "./agent-context";
 import { hostContextSelection, parseWordHostContext } from "./word-context";
 import { getProviderCatalogs, validateModelOptions } from "./model-catalog";
 import { cliChildEnv } from "./ai";
 import type { AiRunAccepted, AiRunRecord, AiRunStatus, WordLiveSuggestionResponse, AiConversationDecision, AiConversationTurn, AiParallelWork, WordHostContext, WordHostContextUpdate, WordHostContextUpdateResponse } from "../src/shared";
-import { isSuggestionAnchor } from "../src/shared";
+import { isSuggestionAnchor, WRITING_STYLES } from "../src/shared";
 import { isEmphasisSpanList, isSuggestionEmphasis, type EmphasisSpan } from "../src/emphasis";
 import { isRunId, markRunInFlight, steerRun } from "./steering";
 import { DOCUMENT_COMMENT_LIMIT, describeDocumentComments, isDocumentCommentList, isDocumentCommentsStatus, locateCommentAnchor, type DocumentComment, type DocumentCommentsStatus } from "../src/shared";
@@ -4239,6 +4240,10 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
     return { error: "documentEmphasis must be a list of { start, end, bold?, italic?, underline?, highlight? } spans." };
   }
 
+  const writingStyleValue = (body as { writingStyle?: unknown }).writingStyle;
+  if (writingStyleValue !== undefined && writingStyleValue !== null && !isWritingStyle(writingStyleValue)) {
+    return { error: `writingStyle must be one of ${WRITING_STYLES.map((style) => style.id).join(", ")}.` };
+  }
   const parallelDraftsValue = (body as { parallelDrafts?: unknown }).parallelDrafts;
   if (parallelDraftsValue !== undefined && parallelDraftsValue !== null
     && !(Number.isInteger(parallelDraftsValue) && (parallelDraftsValue as number) >= 1 && (parallelDraftsValue as number) <= MAX_PARALLEL_DRAFTS)) {
@@ -4254,6 +4259,7 @@ function parseAiRequest(body: unknown): { request: AiRequest } | { error: string
       documentText: value.documentText,
       maxSuggestions: maxSuggestions.value,
       parallelDrafts: typeof parallelDraftsValue === "number" && parallelDraftsValue >= 2 ? parallelDraftsValue : null,
+      writingStyle: writingStyleValue ?? null,
       selection: value.mode === "selection" ? value.selection : value.selection ?? null,
       stageSuggestions: value.stageSuggestions,
       attachments: attachments.value,

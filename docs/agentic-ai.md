@@ -244,3 +244,17 @@ combines several, and drops wrong or unneeded ones. Its reply goes through the
 usual checks and sentence vetting. The final pass uses the run's provider
 (Claude Code or Codex for Antigravity runs) and continues a Codex conversation
 thread. It costs about one extra request per draft.
+
+## Writing style (2026-11-24)
+
+Agents tend to compress academic prose into terse statements. The composer's
+Style menu (General academic by default; Nature, Science, Nature Genetics,
+Nature Methods, NIH grant; or Off) adds the journal-style skill to every
+request, one-shot and agentic. The skill is SKILL.md plus, for a venue, its
+reference file and the published examples for the section being edited. The
+section comes from the heading above the selection or the caret. Writer finds
+the skill at runtime: `WRITER_STYLE_SKILL_DIR`, then this repository's
+`style-turing/skills/journal-style`, then an installed copy in
+`~/.claude/skills` or `~/.codex/skills`. Without one, only the register
+instruction applies: full, connected sentences, and no shortening that was
+not asked for.
