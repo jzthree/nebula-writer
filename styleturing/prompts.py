@@ -23,7 +23,25 @@ SECTION_NAMES = {
     "results": "Results",
     "discussion": "Discussion",
     "methods": "Methods",
+    "summary": "Project Summary/Abstract",
+    "narrative": "Project Narrative (public health relevance)",
 }
+
+MECHANISMS = {
+    "R01": "research project grant (R01)", "R21": "exploratory/developmental research grant (R21)", "R03": "small research grant (R03)",
+    "R35": "outstanding investigator award (R35)", "K99": "Pathway to Independence award (K99/R00)", "K08": "mentored clinical scientist career development award (K08)",
+    "K23": "mentored patient-oriented research career development award (K23)", "K01": "mentored research scientist career development award (K01)",
+    "F31": "predoctoral fellowship (F31)", "F32": "postdoctoral fellowship (F32)",
+}
+
+
+def is_grant(journal_key: str) -> bool:
+    return JOURNALS[journal_key].kind == "grant"
+
+
+def application(project: str) -> str:
+    """'an NIH research project grant (R01) application', from the core project number (it starts with the activity code)."""
+    return f"an NIH {MECHANISMS.get(project[:3], 'grant')} application"
 
 BRIEF_SYSTEM = """You prepare content briefs for a writing-style experiment. A writer will recreate a published paragraph from your brief alone, and a judge will compare the two, so the brief must carry ALL of the content and NONE of the wording.
 
@@ -46,7 +64,8 @@ def brief_prompt(paragraph_text: str) -> str:
 BASELINE_SYSTEM = "You are a scientific writer."
 
 
-SECTION_FILE = {"abstract": "abstract", "intro": "introduction", "results": "results", "discussion": "discussion", "methods": "methods"}
+SECTION_FILE = {"abstract": "abstract", "intro": "introduction", "results": "results", "discussion": "discussion", "methods": "methods",
+                "summary": "project-summary", "narrative": "project-narrative"}
 
 
 def retrieved_examples(skill_dir: Path, journal_key: str, section: str, query: str) -> str | None:
@@ -85,9 +104,20 @@ def skill_system(skill_dir: Path, journal_key: str, section: str | None = None, 
     return "\n\n---\n\n".join(parts)
 
 
-def generate_prompt(journal_key: str, title: str, section: str, words: int, brief: dict) -> str:
+def generate_prompt(journal_key: str, title: str, section: str, words: int, brief: dict, project: str = "") -> str:
     journal = JOURNALS[journal_key].name
     points = "\n".join(f"- {point}" for point in brief.get("points", []))
+    if is_grant(journal_key):
+        return (
+            f'Grant application: "{title}", {application(project)}.\n'
+            f"Section: {SECTION_NAMES[section]}.\n\n"
+            "Write the paragraph described below for this section of the application, as it would appear in a funded NIH application. "
+            f"Length: about {words} words. Keep every citation marker in the form [n] exactly as given, attached to the claim it supports, "
+            "and keep figure references as given. Do not add facts, numbers or citations that are not in the notes. "
+            "Output the paragraph only, as plain text: no heading, no notes, no Markdown.\n\n"
+            f"What the paragraph does: {brief.get('function', '')}\n"
+            f"Content notes:\n{points}"
+        )
     return (
         f'Paper: "{title}", to be published in {journal}.\n'
         f"Section: {SECTION_NAMES[section]}.\n\n"
@@ -113,14 +143,35 @@ def plain(text: str) -> str:
 
 def judge_system(journal_key: str) -> str:
     journal = JOURNALS[journal_key].name
+    if is_grant(journal_key):
+        return (
+            "You are an experienced NIH reviewer: you have read thousands of funded NIH applications and know how their text reads. "
+            "You judge which of two paragraphs the applicants wrote and which was written by an AI model. Answer with JSON only."
+        )
     return (
         f"You are an expert reader of {journal}: you have read thousands of its papers and know how its published text reads. "
         "You judge which of two paragraphs was published and which was written by an AI model. Answer with JSON only."
     )
 
 
-def judge_prompt(journal_key: str, title: str, section: str, first: str, second: str, references: list[str]) -> str:
+def judge_prompt(journal_key: str, title: str, section: str, first: str, second: str, references: list[str], project: str = "") -> str:
     journal = JOURNALS[journal_key].name
+    if is_grant(journal_key):
+        calibration = ""
+        if references:
+            shown = "\n\n".join(f"<<<\n{text}\n>>>" for text in references)
+            calibration = f"For calibration, here are paragraphs from the {SECTION_NAMES[section]} of other funded NIH applications:\n\n{shown}\n\n"
+        return (
+            f"{calibration}"
+            f'Below are two paragraphs written for the {SECTION_NAMES[section]} of {application(project)} titled "{title}". '
+            "Both convey the same content. One is the paragraph as the applicants wrote it in the funded application. The other was written by an AI model "
+            "from notes listing that paragraph's content (facts, numbers, citations), without seeing its wording. "
+            "Both are shown as plain text with the same normalization: citation markers as [n], straight quotes, no italics.\n\n"
+            f"Paragraph A:\n<<<\n{first}\n>>>\n\nParagraph B:\n<<<\n{second}\n>>>\n\n"
+            "Which one did the applicants write? Judge how each is written. Differences in content are an artifact of the notes, not evidence.\n"
+            'Answer with JSON: {"published": "A" or "B" (the one the applicants wrote), "confidence": a number from 0.5 (a guess) to 1.0 (certain), '
+            '"tells": ["short, specific features of the paragraph you think the AI wrote that gave it away"]}'
+        )
     calibration = ""
     if references:
         shown = "\n\n".join(f"<<<\n{text}\n>>>" for text in references)
@@ -138,9 +189,23 @@ def judge_prompt(journal_key: str, title: str, section: str, first: str, second:
     )
 
 
-def single_judge_prompt(journal_key: str, title: str, section: str, text: str, references: list[str]) -> str:
+def single_judge_prompt(journal_key: str, title: str, section: str, text: str, references: list[str], project: str = "") -> str:
     """One paragraph alone: how likely is it the published one? (The unpaired test.)"""
     journal = JOURNALS[journal_key].name
+    if is_grant(journal_key):
+        calibration = ""
+        if references:
+            shown = "\n\n".join(f"<<<\n{t}\n>>>" for t in references)
+            calibration = f"For calibration, here are paragraphs from the {SECTION_NAMES[section]} of other funded NIH applications:\n\n{shown}\n\n"
+        return (
+            f"{calibration}"
+            f'Below is a paragraph written for the {SECTION_NAMES[section]} of {application(project)} titled "{title}". '
+            "It is either the paragraph as the applicants wrote it in the funded application, or a paragraph an AI model wrote from notes listing that paragraph's content. "
+            "Half of the paragraphs you are shown are each kind. It is shown as plain text: citation markers as [n], straight quotes, no italics.\n\n"
+            f"Paragraph:\n<<<\n{text}\n>>>\n\n"
+            "How likely is it that the applicants wrote this paragraph? Judge how it is written.\n"
+            'Answer with JSON: {"published_probability": a number from 0 to 1, "tells": ["short, specific features behind your judgment"]}'
+        )
     calibration = ""
     if references:
         shown = "\n\n".join(f"<<<\n{t}\n>>>" for t in references)

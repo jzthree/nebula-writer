@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .corpus import JOURNALS, SECTIONS, build
+from .corpus import JOURNALS, PAPER_JOURNALS, SECTIONS, build
 from .experiment import Condition, RunConfig, Runner, read_jsonl
 from .improve import RevisionError, profile_table, revise
 from .llm import Model
@@ -19,19 +19,19 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     c = sub.add_parser("corpus", help="download open-access papers and extract paragraphs")
-    c.add_argument("--journals", default=",".join(JOURNALS))
+    c.add_argument("--journals", default=",".join(PAPER_JOURNALS))
     c.add_argument("--papers", type=int, default=40, help="papers per journal")
     c.add_argument("--years", default="2018-2025")
 
     p = sub.add_parser("profile", help="measured style of the published paragraphs (training split)")
-    p.add_argument("--journals", default=",".join(JOURNALS))
+    p.add_argument("--journals", default=",".join(PAPER_JOURNALS))
 
     r = sub.add_parser("run", help="run the test")
     r.add_argument("--name", required=True)
-    r.add_argument("--journals", default=",".join(JOURNALS))
+    r.add_argument("--journals", default=",".join(PAPER_JOURNALS))
     r.add_argument("--split", default="dev", choices=["train", "dev", "test"])
     r.add_argument("--per-journal", type=int, default=12)
-    r.add_argument("--sections", default=",".join(SECTIONS))
+    r.add_argument("--sections", default=",".join(SECTIONS), help="sections to sample; a venue with none of these (nih: summary, narrative) uses all of its own")
     r.add_argument("--condition", action="append", default=None, help="'baseline' or 'name=path/to/skill' (repeatable)")
     r.add_argument("--generator", default="claude")
     r.add_argument("--briefer", default="claude")
@@ -43,10 +43,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--runs", type=Path, default=Path("runs"))
     r.add_argument("--exclude-run", type=Path, action="append", default=None, help="leave out the paragraphs an earlier run used (repeatable)")
 
+    g = sub.add_parser("grants", help="fetch funded NIH Project Summaries and Narratives from RePORTER into data/corpus/nih.jsonl (local only)")
+    g.add_argument("--per-code", type=int, default=300, help="new awards per activity code")
+    g.add_argument("--years", default="2019-2024")
+
     e = sub.add_parser("exemplars", help="write the skill's bank of published example paragraphs (CC BY, training split)")
     e.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
-    e.add_argument("--journals", default=",".join(JOURNALS))
+    e.add_argument("--journals", default=",".join(PAPER_JOURNALS))
     e.add_argument("--per-section", type=int, default=12)
+    e.add_argument("--pool", type=int, default=0, help="first fetch up to this many more CC BY training papers per journal into data/exemplar-pool")
     e.add_argument("--bank", action="store_true", help="also write examples/<journal>/bank.jsonl (every CC BY exemplar paragraph) for scripts/find_examples.py")
 
     rep = sub.add_parser("report", help="rewrite a run's report")
@@ -62,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     ev = sub.add_parser("evolve", help="improve the skill round by round: propose small edits, keep one only if it beats the incumbent on fresh dev items")
     ev.add_argument("--rounds", type=int, default=6)
     ev.add_argument("--skill", type=Path, default=Path("skills/journal-style"))
-    ev.add_argument("--journals", default=",".join(JOURNALS))
+    ev.add_argument("--journals", default=",".join(PAPER_JOURNALS))
     ev.add_argument("--per-journal", type=int, default=24)
     ev.add_argument("--candidates", type=int, default=3)
     ev.add_argument("--threshold", type=float, default=0.95, help="bootstrap probability that a candidate beats the incumbent, needed to adopt it")
@@ -102,9 +107,17 @@ def main(argv: list[str] | None = None) -> int:
             extra={"exclude": sorted({row["id"] for run in (args.exclude_run or []) for row in read_jsonl(run / "items.jsonl")})},
         )
         print(Runner(config).run())
+    elif args.command == "grants":
+        from .grants import build as build_grants
+
+        print(build_grants(args.data, args.per_code, tuple(int(y) for y in args.years.split("-"))))
     elif args.command == "exemplars":
         from .exemplars import build as build_exemplars
 
+        if args.pool:
+            from .exemplars import build_pool
+
+            build_pool(args.data, args.journals.split(","), args.pool)
         for path in build_exemplars(args.data, args.skill, args.journals.split(","), args.per_section):
             print(path)
         if args.bank:

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import prompts
-from .corpus import SECTIONS, Paragraph, load
+from .corpus import JOURNALS, SECTIONS, Paragraph, load
 from .llm import Client, LLMError, Model
 
 
@@ -144,7 +144,7 @@ class Runner:
             corpus = [p for p in corpus if p.id not in excluded]
         items: list[Paragraph] = []
         for journal in cfg.journals:
-            picked = sample(corpus, journal, cfg.split, cfg.per_journal, cfg.sections, cfg.seed)
+            picked = sample(corpus, journal, cfg.split, cfg.per_journal, [s for s in cfg.sections if s in JOURNALS[journal].sections] or list(JOURNALS[journal].sections), cfg.seed)
             if len(picked) < cfg.per_journal:
                 self.log(f"{journal}: only {len(picked)} paragraphs available in {cfg.split}")
             items.extend(picked)
@@ -160,7 +160,7 @@ class Runner:
         def generate(job):
             condition, p, b = job
             notes = (b.get("function", "") + "\n" + "\n".join(map(str, b.get("points", [])))).strip()
-            text = self.client.complete(cfg.generator, condition.system(p.journal, p.section, notes), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b))
+            text = self.client.complete(cfg.generator, condition.system(p.journal, p.section, notes), prompts.generate_prompt(p.journal, p.title, p.section, p.words, b, p.pmcid))
             return {"id": p.id, "condition": condition.name, "text": text.strip()}
 
         generations = [g for g in self._parallel("generations", gen_jobs, generate) if g and g["text"]]
@@ -176,7 +176,7 @@ class Runner:
             real, fake = prompts.plain(p.text), prompts.plain(g["text"])
             first, second = (real, fake) if real_first else (fake, real)
             references = [prompts.plain(text) for text in references_for(corpus, p, cfg.references)]
-            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.judge_prompt(p.journal, p.title, p.section, first, second, references))
+            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.judge_prompt(p.journal, p.title, p.section, first, second, references, p.pmcid))
             picked = str(answer.get("published", "")).strip().upper()[:1]
             try:
                 confidence = float(answer.get("confidence", 0.5))
@@ -198,7 +198,7 @@ class Runner:
         def single(job):
             model, kind, p, condition, text = job
             references = [prompts.plain(t) for t in references_for(corpus, p, cfg.references)]
-            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.single_judge_prompt(p.journal, p.title, p.section, prompts.plain(text), references))
+            answer = self.client.complete_json(model, prompts.judge_system(p.journal), prompts.single_judge_prompt(p.journal, p.title, p.section, prompts.plain(text), references, p.pmcid))
             try:
                 probability = float(answer.get("published_probability"))
             except (TypeError, ValueError):
