@@ -139,17 +139,23 @@ export function headingLevelFor(source: WordParagraphSource): number | null {
 export function indexParagraphs(bodyText: string, sources: WordParagraphSource[]): WordParagraphInfo[] {
   const result: WordParagraphInfo[] = [];
   let cursor = 0;
+  // Paragraph texts are normalized (a soft line break, \v, becomes \n), so
+  // search a body normalized the same way. Google Docs keeps \v in the body;
+  // without this, a paragraph with a soft break was not found and kept the
+  // previous paragraph's end as its offset, so every edit in it landed one
+  // character off and was refused at apply. Same length, so offsets carry over.
+  const haystack = bodyText.replace(/\v/g, "\n");
   sources.forEach((source, index) => {
     const text = normalizeWordText(source.text ?? "");
     let offset = cursor;
     if (text.length) {
-      const found = bodyText.indexOf(text, cursor);
+      const found = haystack.indexOf(text, cursor);
       if (found >= 0) {
         offset = found;
         cursor = found + text.length;
       } else {
         const trimmed = text.trim();
-        const foundTrimmed = trimmed ? bodyText.indexOf(trimmed, cursor) : -1;
+        const foundTrimmed = trimmed ? haystack.indexOf(trimmed, cursor) : -1;
         if (foundTrimmed >= 0) {
           offset = foundTrimmed;
           cursor = foundTrimmed + trimmed.length;

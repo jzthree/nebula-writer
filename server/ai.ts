@@ -940,6 +940,7 @@ export function buildAgentTaskPrompt(request: AiRequest, run: Pick<AgentRunConte
     "- Every change your reply mentions must actually have been staged: if you write that you cut ten passages, ten suggestions exist.",
     "- Propose edits with writer_stage_suggestions, in small batches as you go. Each item's `original` must be copied VERBATIM from the " + (request.mode === "selection" ? "selection" : "document") + " — the tool validates every item and tells you which were rejected and why; fix those and retry.",
     "- Change only what the instruction asks for: carry every other token of original — markers, numbers, labels, links, formulas — into replacement unchanged.",
+    "- Keep each original as small as the change allows: the sentence or sentences you change, not the whole paragraph, unless the instruction asks you to rewrite the paragraph. The author often applies other edits to the same paragraph first, and a paragraph-sized original then no longer matches and cannot be applied.",
     ...(vettingEnabled()
       ? ["- Every sentence an edit adds or rewrites is vetted on its own before it is staged (accuracy against the source, logic, language, fit). An edit with a flagged sentence comes back rejected with each objection and a suggested correction: weigh them, combine the corrections into the edit, and stage it again with the same original. Write each sentence so it survives a careful second reading."]
       : []),
@@ -1180,6 +1181,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     "For a broad global R01 review, spread edits across the document instead of only editing the opening.",
     "To propose deleting a passage, set replacement to an empty string (\"\"). Never write a placeholder or filler sentence as the replacement for a deletion — the user's document would receive it verbatim.",
     "Change only what the instruction asks for: every other token of original — markers, numbers, labels, links, formulas — must appear unchanged in replacement.",
+    "Keep each original as small as the change allows: the sentence or sentences you change, not the whole paragraph, unless the instruction asks you to rewrite the paragraph. The author often applies other edits to the same paragraph first, and a paragraph-sized original then no longer matches and cannot be applied.",
     "If you cannot find safe exact source text, return an empty suggestions array.",
     "Do not include unrelated commentary outside JSON.",
     ...(options.coveragePass ? [] : describeUserHistoryLocations(resolveToolAccess(request))),

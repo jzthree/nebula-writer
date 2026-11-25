@@ -1093,6 +1093,35 @@ describe("Word task pane", () => {
     expect(mock.runCount - runsBefore).toBeLessThanOrEqual(6);
   });
 
+  it("autoheals an edit whose passage changed: merges it with later edits, or offers to redo it when they collide", async () => {
+    await renderPane();
+    send("Review the document.");
+    await screen.findByTitle(/Replace the text/);
+    // The author edits the same sentence elsewhere, in words the suggestion does not touch.
+    act(() => {
+      const at = mock.text.indexOf("of gene regulation");
+      mock.replaceRange(at, at + "of gene regulation".length, "of gene expression regulation");
+    });
+    fireEvent.click(screen.getByTitle(/Replace the text/));
+    await waitFor(() => expect(mock.text).toContain("Chromatin accessibility is a key determinant of gene expression regulation, and many studies have examined it."), { timeout: 8_000 });
+    await waitFor(() => expect(screen.getByText(/merged with the edits made to this passage/)).toBeInTheDocument());
+
+    // A second suggestion whose words the author already rewrote differently: not applied, and redo is offered.
+    send("Review it again.");
+    await waitFor(() => expect(captured.requests.length).toBe(2));
+    const card = await screen.findByLabelText("Suggestion: Tighten the opening claim");
+    act(() => {
+      const at = mock.text.indexOf("a key determinant");
+      mock.replaceRange(at, at + "a key determinant".length, "a decisive factor");
+    });
+    fireEvent.click(within(card).getByTitle(/Replace the text/));
+    const redo = await within(card).findByRole("button", { name: /Update to current text/ }, { timeout: 8_000 });
+    fireEvent.click(redo);
+    await waitFor(() => expect(captured.requests.length).toBe(3));
+    expect(captured.requests[2].instruction).toContain("redo this suggestion on the current text");
+    expect(captured.requests[2].focus?.title).toBe("Tighten the opening claim");
+  }, 30_000);
+
   it("stays off Word's thread while the author types, and re-reads once after the pause", async () => {
     await renderPane();
     await new Promise((resolve) => setTimeout(resolve, 300));

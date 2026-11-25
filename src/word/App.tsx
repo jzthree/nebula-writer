@@ -16,6 +16,7 @@ import { newAiRunId } from "../sidecarClient";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AI_ATTACHMENT_LIMIT, type AiActivityEntry, type AiAttachment, type AiConversationDecision, type AiConversationTurn, type AiModelOptions, type AiProviderCatalog, type AiSuggestion, type LocalAiProviderName, type SuggestionStatus, type WordLiveSuggestionRequest, type WordLiveSuggestionResponse, type AiRunRecord, type WriterChatMessage, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiImageReplacement, type AiFocusDecision, type AiRequestFocus, type SelectionContext, DEFAULT_WRITING_STYLE, WRITING_STYLES, type WritingStyleId } from "../shared";
+import { rebaseSuggestion } from "../autoheal";
 import type { HealthResponse } from "../sidecarClient";
 import { generalBuiltInRoutines, r01BuiltInRoutines } from "../writingRoutines";
 import {
@@ -1668,6 +1669,54 @@ export function App() {
       };
     });
     const outcomes = items.length ? await applySuggestions(snap, items, { trackChanges: settingsRef.current.trackChanges, highlightChanges: settingsRef.current.highlightChanges }) : [];
+    // Autoheal: an edit whose text was not where expected gets a fresh read
+    // of the document and one more try; if its passage changed since the
+    // suggestion was made, the suggestion is rebased onto the current text
+    // (src/autoheal.ts). Only edits that collide with the later changes are
+    // left for the author, with a way to have them redone.
+    const healed = new Map<string, string>();
+    const alreadyThere = new Set<string>();
+    const superseded = new Set<string>();
+    const locateFailed = outcomes.filter((outcome) => !outcome.ok && /no longer contains|moved or changed|could not find|has changed|no longer exists/i.test(outcome.error));
+    if (locateFailed.length) {
+      const fresh = (await refreshSnapshot({ full: true })) ?? snap;
+      const retry: typeof items = [];
+      for (const failure of locateFailed) {
+        const item = items.find((entry) => entry.id === failure.id);
+        if (!item) continue;
+        const suggestion = item.suggestion;
+        const collapsed = (text: string) => text.replace(/\s+/g, " ").trim();
+        if (collapsed(fresh.bodyText).includes(collapsed(suggestion.original))) {
+          retry.push({ ...item, matchIndex: null, preferredOffset: preferredOffset(suggestion, fresh) });
+          healed.set(item.id, "applied after re-reading the document");
+          continue;
+        }
+        const rebased = rebaseSuggestion(fresh.bodyText, suggestion);
+        if (rebased.kind === "clean") {
+          const updated = { ...suggestion, original: rebased.original, replacement: rebased.replacement, emphasis: null };
+          retry.push({ ...item, suggestion: updated, matchIndex: null, preferredOffset: preferredOffset(updated, fresh) });
+          healed.set(item.id, "merged with the edits made to this passage since it was suggested");
+        } else if (rebased.kind === "already") {
+          alreadyThere.add(item.id);
+        } else {
+          superseded.add(item.id);
+        }
+      }
+      const second = retry.length ? await applySuggestions(fresh, retry, {
+        trackChanges: settingsRef.current.trackChanges,
+        highlightChanges: settingsRef.current.highlightChanges
+      }) : [];
+      for (let index = 0; index < outcomes.length; index += 1) {
+        const id = outcomes[index].id;
+        const retried = second.find((outcome) => outcome.id === id);
+        if (retried) {
+          outcomes[index] = retried;
+          if (!retried.ok) healed.delete(id);
+        } else if (superseded.has(id)) {
+          outcomes[index] = { id, ok: false, error: "This passage was changed after the suggestion was made, and the changes overlap the suggested edit, so it was not applied. Update it to the current text to try again." };
+        }
+      }
+    }
     const byId = new Map(group.map((suggestion) => [suggestion.id, suggestion]));
     const applied: Array<{ suggestion: AiSuggestion; trackedChange: boolean }> = [];
     const failed: Array<{ suggestion: AiSuggestion; error: string }> = [];
@@ -1723,10 +1772,16 @@ export function App() {
       if (!suggestion) {
         continue;
       }
+      if (alreadyThere.has(outcome.id)) {
+        patchCard(suggestion.id, { outcome: "applied", detail: "already in the document", error: null, superseded: false });
+        applied.push({ suggestion, trackedChange: false });
+        continue;
+      }
       if (outcome.ok) {
         patchCard(suggestion.id, {
           outcome: "applied",
-          detail: `${outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)"}${outcome.result.restoredGaps ? ` · restored ${outcome.result.restoredGaps} missing space${outcome.result.restoredGaps === 1 ? "" : "s"}` : ""}${outcome.result.unformatted ? " · its bold/italic could not be set — check the formatting" : ""}`,
+          superseded: false,
+          detail: `${outcome.result.trackedChange ? "tracked change" : "direct edit (Track Changes was off)"}${healed.has(outcome.id) ? ` · ${healed.get(outcome.id)}` : ""}${outcome.result.restoredGaps ? ` · restored ${outcome.result.restoredGaps} missing space${outcome.result.restoredGaps === 1 ? "" : "s"}` : ""}${outcome.result.unformatted ? " · its bold/italic could not be set — check the formatting" : ""}`,
           error: null,
           matches: outcome.result.matches,
           matchIndex: outcome.result.matchIndex,
@@ -1734,7 +1789,7 @@ export function App() {
         });
         applied.push({ suggestion, trackedChange: outcome.result.trackedChange });
       } else {
-        patchCard(suggestion.id, { error: outcome.error });
+        patchCard(suggestion.id, { error: outcome.error, superseded: superseded.has(outcome.id) });
         failed.push({ suggestion, error: outcome.error });
       }
     }
@@ -1749,7 +1804,7 @@ export function App() {
       await Promise.all(applied.map((entry) => recordDecision(entry.suggestion, "accepted", entry.trackedChange ? `Applied in ${hostLabel()} as a tracked change` : `Applied in ${hostLabel()}`)));
     }
     return { applied: applied.map((entry) => entry.suggestion), failed };
-  }, [patchCard, preferredOffset, recordDecision]);
+  }, [patchCard, preferredOffset, recordDecision, refreshSnapshot]);
 
   const apply = useCallback((suggestion: AiSuggestion) => {
     const snap = snapshotRef.current;

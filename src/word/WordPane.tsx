@@ -80,6 +80,8 @@ export interface CardState {
   error: string | null;
   /** The tracked changes the apply created in Word, so Revert can reject them. */
   revisions?: TrackedRevision[] | null;
+  /** Its passage changed after it was made and the changes overlap it: offer to redo it on the current text. */
+  superseded?: boolean;
 }
 
 export interface CapabilityRow {
@@ -608,6 +610,9 @@ function ContextStrip(props: WordPaneProps["contextStrip"] & { hostStatus: HostS
 /* -------------------------------------------------------------------------- */
 
 const CUSTOM_MODEL = "__custom__";
+/** The note sent when a card's passage changed under it: the reply redoes the suggestion on today's text. */
+export const UPDATE_TO_CURRENT_TEXT = "This passage was changed after you suggested this edit, so it no longer applies. Read the passage as it is now and redo this suggestion on the current text, keeping the changes already made there.";
+
 /** Turns rendered at a time in the transcript. */
 const TRANSCRIPT_WINDOW = 40;
 
@@ -1358,7 +1363,16 @@ function SuggestionCard(props: {
       </p>
       <SuggestionText suggestion={suggestion} expanded={expanded} onToggle={() => setExpanded((current) => !current)} />
       <p className="wp-rationale">{tidy(suggestion.rationale)}</p>
-      {state.error ? <p className="wp-card-error" role="alert"><AlertTriangle size={12} aria-hidden="true" /> {state.error}</p> : null}
+      {state.error ? (
+        <p className="wp-card-error" role="alert">
+          <AlertTriangle size={12} aria-hidden="true" /> {state.error}
+          {state.superseded ? (
+            <button type="button" className="wp-text-button" onClick={() => props.onDiscuss(UPDATE_TO_CURRENT_TEXT)} disabled={props.busy}>
+              <RotateCcw size={12} aria-hidden="true" /> Update to current text
+            </button>
+          ) : null}
+        </p>
+      ) : null}
       <div className="wp-card-actions" onClick={(event) => event.stopPropagation()}>
         <button type="button" onClick={props.onLocate} disabled={props.busy || !props.hostReady} title="Select this passage in the document"><Crosshair size={13} aria-hidden="true" /> Locate</button>
         {suggestion.commentOnly ? null : (

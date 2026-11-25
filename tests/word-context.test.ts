@@ -44,6 +44,18 @@ function snapshotFromSources(): WordDocumentSnapshot {
 }
 
 describe("word context: paragraph indexing", () => {
+  it("indexes a paragraph that holds a soft line break where it really is (Google Docs keeps \\v in the body)", () => {
+    const texts = ["We propose three aims:", "\vAim 1. Models of chromatin activity.\vAim 2. Models of RNA processing.", "Impact."];
+    const body = texts.join("\n");
+    const paragraphs = indexParagraphs(body, texts.map((text) => ({ text })));
+    expect(paragraphs.map((paragraph) => paragraph.offset)).toEqual([0, texts[0].length + 1, texts[0].length + 1 + texts[1].length + 1]);
+    // The quote of Aim 1 maps to the same characters in the body as in its paragraph.
+    const second = paragraphs[1];
+    const at = body.indexOf("Aim 1.");
+    expect(body.slice(at, at + 6)).toBe(second.text.slice(at - second.offset, at - second.offset + 6));
+  });
+
+
   it("assigns each paragraph its offset in the normalized body text", () => {
     const snapshot = snapshotFromSources();
     expect(snapshot.bodyText).not.toContain("\r");
