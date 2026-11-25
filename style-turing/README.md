@@ -169,6 +169,18 @@ paragraph, so some of the authors' phrasing reaches the draft that way. The
 loop now retests positive near-misses together (`--retest-threshold 0.7`)
 and stops after rounds in a row without a win (`--patience`).
 
+**Many more examples.** Earlier rounds suggested more examples did not
+help (v5: 12 per section; v7r: retrieved ones). To check whether that was
+variance, `stl exemplars --pool 150` fetched more CC BY training papers
+(Nature 150, Nature Genetics 74, Nature Methods 53, Science 51), and the
+same v6 rules were tested with 25 (x25) and up to 100 (x100, one per paper)
+examples per section, 10–25 times as many as v6. On 240 dev paragraphs:
+v6 0.691, x25 0.688, x100 0.685; a second round of 240 fresh paragraphs,
+v6 0.684, x100 0.682. Pooled over 480 paragraphs x100 is better by 0.004
+(P(better) 0.89): more examples do not hurt, and may help a little, but the
+effect is far smaller than any rule change that shipped, at the cost of
+10,000–20,000 more words read per paragraph.
+
 **Where it stops.** From v6, rounds 14–16 tested nine more structural
 changes and three combined retests; none won (all within ±0.01, and pushing
 "keep what the content gives" from wording into sentence frames was clearly
