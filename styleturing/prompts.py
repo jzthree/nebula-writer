@@ -168,7 +168,8 @@ def judge_prompt(journal_key: str, title: str, section: str, first: str, second:
             "from notes listing that paragraph's content (facts, numbers, citations), without seeing its wording. "
             "Both are shown as plain text with the same normalization: citation markers as [n], straight quotes, no italics.\n\n"
             f"Paragraph A:\n<<<\n{first}\n>>>\n\nParagraph B:\n<<<\n{second}\n>>>\n\n"
-            "Which one did the applicants write? Judge how each is written. Differences in content are an artifact of the notes, not evidence.\n"
+            "Which one did the applicants write? Judge how each is written. Differences in content are an artifact of the notes, not evidence. "
+            "Neither are grammatical slips and typos: the AI is told to write correctly, and many applicants' text has none, so judge the style, not the error count.\n"
             'Answer with JSON: {"published": "A" or "B" (the one the applicants wrote), "confidence": a number from 0.5 (a guess) to 1.0 (certain), '
             '"tells": ["short, specific features of the paragraph you think the AI wrote that gave it away"]}'
         )
@@ -203,7 +204,7 @@ def single_judge_prompt(journal_key: str, title: str, section: str, text: str, r
             "It is either the paragraph as the applicants wrote it in the funded application, or a paragraph an AI model wrote from notes listing that paragraph's content. "
             "Half of the paragraphs you are shown are each kind. It is shown as plain text: citation markers as [n], straight quotes, no italics.\n\n"
             f"Paragraph:\n<<<\n{text}\n>>>\n\n"
-            "How likely is it that the applicants wrote this paragraph? Judge how it is written.\n"
+            "How likely is it that the applicants wrote this paragraph? Judge how it is written; grammatical slips and typos are not evidence either way.\n"
             'Answer with JSON: {"published_probability": a number from 0 to 1, "tells": ["short, specific features behind your judgment"]}'
         )
     calibration = ""

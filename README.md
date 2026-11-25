@@ -188,6 +188,35 @@ produce the opposite fault elsewhere (the loop saw this repeatedly); the
 last two are what the skill deliberately does not imitate. v6 is the
 plateau for changes to the skill under this protocol.
 
+## NIH grant applications
+
+The same test runs on funded NIH grant text (`--journals nih`). `stl grants`
+fetches the Project Summaries and Project Narratives of funded new awards
+(fiscal years 2019–2024; 300 projects each of R01, R21, R03, R35, K01, K08,
+K23, K99, F31, F32) from the NIH RePORTER API into `data/corpus/nih.jsonl`.
+Each project is one "paper": its core project number decides the split.
+Summaries of 70–450 words and narratives of 25–160 words are kept, about
+3,100 and 2,900 paragraphs.
+
+RePORTER states no license for this text, so it never leaves `data/`: it is
+what the grant rules are measured from and what the benchmark tests on.
+The skill's committed NIH examples are applications that their authors
+shared under CC BY 4.0 (found through Open Grants, ogrants.org). For more,
+`scripts/find_examples.py --journal nih` searches RePORTER live for funded
+awards on the user's topic and prints their summaries or narratives without
+storing them. In the benchmark, the same script searches a local bank of
+training-split projects instead, so it can never return the application
+being rewritten. NIAID's sample applications are copyrighted and posted with
+the authors' permission for education only, and the site does not allow
+automated downloads, so they are not used.
+
+The grant judge is told it is an NIH reviewer, sees the mechanism ("an NIH
+predoctoral fellowship (F31) application") and calibration paragraphs from
+other funded applications, and is told that grammatical slips and typos are
+not evidence. Funded applications are not copy-edited, and in a first run
+correcting the applicants' slips was the judges' most common tell; the skill
+must not add errors, so the test measures style, not error rate.
+
 ## The skill
 
 `skills/journal-style/` is a Claude Code / Codex skill: `SKILL.md` holds the
