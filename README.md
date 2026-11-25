@@ -51,6 +51,7 @@ uv venv && uv pip install -e ".[test]"
 stl corpus --papers 120                     # download and extract (cached in data/)
 stl profile                                 # measured style of each journal (train)
 stl exemplars                               # example bank for the skill (train, CC BY)
+stl grants                                  # funded NIH summaries and narratives from RePORTER (local only)
 stl run --name dev-v1 --per-journal 12 --condition baseline --condition skill=skills/journal-style
 stl improve runs/dev-v1 --condition skill   # revise each journal's reference from dev evidence
 stl run --name dev-v2 --seed 8 ...          # measure again on fresh dev paragraphs; repeat
@@ -216,6 +217,20 @@ other funded applications, and is told that grammatical slips and typos are
 not evidence. Funded applications are not copy-edited, and in a first run
 correcting the applicants' slips was the judges' most common tell; the skill
 must not add errors, so the test measures style, not error rate.
+
+**Results (Opus writes; Opus and Codex judge; graded detectability, 0.5 =
+chance, lower is better).** Without the skill both judges catch almost every
+rewrite (95–99%). On dev, v6 (no NIH rules) lowered detectability from 0.757
+to 0.681; NIH rules and CC BY examples (g1) to 0.672; showing the four
+funded paragraphs most similar to the notes as well (g1r) made it worse
+(0.691), as tailored examples did for journals. What still gave g1 away was
+polish: smoother than the applicants, tightened, tidied into parallel aims,
+glossed. A section telling the writer that funded text is not copy-edited
+(keep the applicants' constructions, do not tighten or tidy, add nothing for
+clarity) beat g1 on 93 fresh dev paragraphs (0.682 → 0.664, P 0.998) and
+shipped. Held out (93 test paragraphs): no skill 0.759, v6 0.693, shipped
+0.677 (P 0.988 against v6, 1.0 against no skill). Opus still detects 85%
+side by side and Codex 98%: grant text remains far from passing.
 
 ## The skill
 

@@ -1,6 +1,6 @@
 ---
 name: journal-style
-description: Write or revise scientific paragraphs so they read like text published in Nature, Science, Nature Genetics or Nature Methods. Use when drafting, rewriting or polishing manuscript prose (abstract, introduction, Results, Discussion, Methods) for one of these journals, or when the user asks for "Nature style", "Science style" or similar. Rules are measured against published papers and validated by a blind test in which expert readers compare skill-written paragraphs with published ones.
+description: Write or revise scientific paragraphs so they read like text published in Nature, Science, Nature Genetics or Nature Methods, or like a funded NIH grant application. Use when drafting, rewriting or polishing manuscript prose (abstract, introduction, Results, Discussion, Methods) for one of these journals, or NIH application text (Project Summary, Project Narrative, Specific Aims, Significance, Innovation, Approach), or when the user asks for "Nature style", "Science style", "NIH style" or similar. Rules are measured against published papers and validated by a blind test in which expert readers compare skill-written paragraphs with published ones.
 ---
 
 # Writing like a published paper in a top journal
@@ -16,9 +16,14 @@ file (`references/<journal>.md`) adds what is specific to it.
 1. Identify the journal and the section (abstract, introduction, Results,
    Discussion, Methods). Read `references/<journal>.md`:
    `nature.md`, `science.md`, `nature-genetics.md`, `nature-methods.md`.
+   For an NIH grant application, the "journal" is `nih.md` and the sections
+   are the application's (Project Summary, Project Narrative, Specific Aims,
+   Significance, Innovation, Approach); "published" below means the text of
+   funded applications.
 2. Read the published examples for that journal and section,
    `examples/<journal>/<section>.md` (abstract, introduction, results,
-   discussion, methods). Take their rhythm, density, voice and how they
+   discussion, methods; for NIH: project-summary, project-narrative,
+   specific-aims). Take their rhythm, density, voice and how they
    open and close; never their wording.
 3. Treat the content you are given as the authors' own material. The published paragraph was written from the same content in the authors' words, so a draft reads as theirs to the extent that it keeps what the content already gives. Before drafting, mark what is fixed:
    - terms, compounds and abbreviations, bare or defined;
