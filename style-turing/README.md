@@ -51,6 +51,7 @@ uv venv && uv pip install -e ".[test]"
 stl corpus --papers 120                     # download and extract (cached in data/)
 stl profile                                 # measured style of each journal (train)
 stl exemplars                               # example bank for the skill (train, CC BY)
+stl grants                                  # funded NIH summaries and narratives from RePORTER (local only)
 stl run --name dev-v1 --per-journal 12 --condition baseline --condition skill=skills/journal-style
 stl improve runs/dev-v1 --condition skill   # revise each journal's reference from dev evidence
 stl run --name dev-v2 --seed 8 ...          # measure again on fresh dev paragraphs; repeat
@@ -187,6 +188,49 @@ The first kind varies from paper to paper, so rules that push one way
 produce the opposite fault elsewhere (the loop saw this repeatedly); the
 last two are what the skill deliberately does not imitate. v6 is the
 plateau for changes to the skill under this protocol.
+
+## NIH grant applications
+
+The same test runs on funded NIH grant text (`--journals nih`). `stl grants`
+fetches the Project Summaries and Project Narratives of funded new awards
+(fiscal years 2019–2024; 300 projects each of R01, R21, R03, R35, K01, K08,
+K23, K99, F31, F32) from the NIH RePORTER API into `data/corpus/nih.jsonl`.
+Each project is one "paper": its core project number decides the split.
+Summaries of 70–450 words and narratives of 25–160 words are kept, about
+3,100 and 2,900 paragraphs.
+
+RePORTER states no license for this text, so it never leaves `data/`: it is
+what the grant rules are measured from and what the benchmark tests on.
+The skill's committed NIH examples are applications that their authors
+shared under CC BY 4.0 (found through Open Grants, ogrants.org). For more,
+`scripts/find_examples.py --journal nih` searches RePORTER live for funded
+awards on the user's topic and prints their summaries or narratives without
+storing them. In the benchmark, the same script searches a local bank of
+training-split projects instead, so it can never return the application
+being rewritten. NIAID's sample applications are copyrighted and posted with
+the authors' permission for education only, and the site does not allow
+automated downloads, so they are not used.
+
+The grant judge is told it is an NIH reviewer, sees the mechanism ("an NIH
+predoctoral fellowship (F31) application") and calibration paragraphs from
+other funded applications, and is told that grammatical slips and typos are
+not evidence. Funded applications are not copy-edited, and in a first run
+correcting the applicants' slips was the judges' most common tell; the skill
+must not add errors, so the test measures style, not error rate.
+
+**Results (Opus writes; Opus and Codex judge; graded detectability, 0.5 =
+chance, lower is better).** Without the skill both judges catch almost every
+rewrite (95–99%). On dev, v6 (no NIH rules) lowered detectability from 0.757
+to 0.681; NIH rules and CC BY examples (g1) to 0.672; showing the four
+funded paragraphs most similar to the notes as well (g1r) made it worse
+(0.691), as tailored examples did for journals. What still gave g1 away was
+polish: smoother than the applicants, tightened, tidied into parallel aims,
+glossed. A section telling the writer that funded text is not copy-edited
+(keep the applicants' constructions, do not tighten or tidy, add nothing for
+clarity) beat g1 on 93 fresh dev paragraphs (0.682 → 0.664, P 0.998) and
+shipped. Held out (93 test paragraphs): no skill 0.759, v6 0.693, shipped
+0.677 (P 0.988 against v6, 1.0 against no skill). Opus still detects 85%
+side by side and Codex 98%: grant text remains far from passing.
 
 ## The skill
 

@@ -21,12 +21,20 @@ from pathlib import Path
 API = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 
 
+SECTIONS = ("abstract", "intro", "results", "discussion", "methods")
+GRANT_SECTIONS = ("summary", "narrative")
+
+
 @dataclass(frozen=True)
 class Journal:
+    """A venue whose text is tested: a journal, or a funder's grant applications (kind "grant", built by grants.py)."""
+
     key: str
     name: str
     issn: str
     open_access_only: bool  # only open-access full texts can be downloaded as XML
+    kind: str = "paper"
+    sections: tuple[str, ...] = SECTIONS
 
 
 JOURNALS: dict[str, Journal] = {
@@ -36,10 +44,10 @@ JOURNALS: dict[str, Journal] = {
         Journal("science", "Science", "0036-8075", True),
         Journal("nature-genetics", "Nature Genetics", "1061-4036", True),
         Journal("nature-methods", "Nature Methods", "1548-7091", True),
+        Journal("nih", "NIH grant applications", "", False, "grant", GRANT_SECTIONS),
     ]
 }
-
-SECTIONS = ("abstract", "intro", "results", "discussion", "methods")
+PAPER_JOURNALS = tuple(k for k, j in JOURNALS.items() if j.kind == "paper")
 MIN_WORDS, MAX_WORDS = 70, 260
 
 

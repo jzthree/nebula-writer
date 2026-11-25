@@ -478,3 +478,31 @@ def test_several_proposers_share_the_candidates_and_an_unavailable_one_is_skippe
     assert [c.proposer for c in candidates] == ["agy:gemini-4-carbon-high", "agy:gemini-4-carbon-high", "claude"]
     assert [c.name for c in candidates] == ["c1", "c2", "c3"]
     assert any("proposer codex unavailable" in line for line in logs)
+
+
+def test_reporter_text_becomes_summary_and_narrative_paragraphs():
+    from styleturing import grants
+
+    record = {
+        "core_project_num": "R21HD000001", "project_title": "Placental perfusion", "fiscal_year": 2022,
+        "abstract_text": "PROJECT SUMMARY / ABSTRACT\nThe placenta is a vital fetal organ that serves to oxygenate and nourish fetal blood in\nutero. " + "Robust maternal perfusion is essential for this function. " * 8
+        + "\n\n" + "In Aim 1, we will measure perfusion in a sheep model of contractions. " * 6,
+        "phr_text": "PROJECT NARRATIVE\nContractions may reduce placental perfusion. " + "This project will test how often that happens and what it costs the fetus. " * 2,
+    }
+    paragraphs = grants.to_paragraphs(record)
+    assert [p.section for p in paragraphs] == ["summary", "summary", "narrative"]
+    assert paragraphs[0].text.startswith("The placenta is a vital fetal organ that serves to oxygenate and nourish fetal blood in utero.")
+    assert paragraphs[2].text.startswith("Contractions may reduce")
+    assert {p.pmcid for p in paragraphs} == {"R21HD000001"} and paragraphs[0].id == "nih:R21HD000001:0"
+
+
+def test_grant_prompts_name_the_mechanism_and_funded_applications():
+    from styleturing import prompts
+
+    generate = prompts.generate_prompt("nih", "Placental perfusion", "summary", 270, {"function": "summary", "points": ["a"]}, "R21HD000001")
+    assert "an NIH exploratory/developmental research grant (R21) application" in generate and "Project Summary/Abstract" in generate
+    judge = prompts.judge_prompt("nih", "Placental perfusion", "narrative", "x", "y", ["ref"], "F31HD000002")
+    assert "predoctoral fellowship (F31)" in judge and "other funded NIH applications" in judge and "Nature" not in judge
+    assert "NIH reviewer" in prompts.judge_system("nih")
+    # Journal prompts are unchanged by the grant branch.
+    assert prompts.generate_prompt("nature", "T", "results", 100, {"function": "f", "points": ["a"]}, "PMC1").startswith('Paper: "T", to be published in Nature.')
