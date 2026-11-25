@@ -96,9 +96,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   flex-direction: column;
   gap: 10px;
   height: 100vh;
+  height: 100dvh;
   padding: 10px 10px 12px;
-  overflow: hidden;
+  /* Never clip: if a very short panel cannot hold the composer, the pane scrolls. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
+.wp-shell > * { flex-shrink: 0; }
+.wp-shell > .wp-transcript { flex-shrink: 1; }
+
+
 
 .wp-header {
   display: flex;
@@ -461,7 +468,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .wp-transcript {
   flex: 1 1 auto;
-  min-height: 120px;
+  /* Room for a turn or two when there is space; it shrinks first when there is not. */
+  min-height: min(120px, 18vh);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -738,3 +746,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .downloadable-image img { max-width: 100%; }
 .image-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; padding: 2px 6px; border: 1px solid var(--line, #dadce0); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .image-download:hover { background: rgba(127, 127, 127, 0.12); }
+
+/* Short panels (a Chrome side panel in a short window, a small Word pane):
+   the composer stays whole and reachable; the conversation gives up height
+   first, then the location card and the composer condense. */
+@media (max-height: 700px) {
+  .wp-shell { gap: 7px; padding-top: 7px; padding-bottom: 8px; }
+  .wp-context { gap: 4px; padding: 6px 9px; }
+  .wp-context-chips, .wp-context-trail { display: none !important; }
+  .wp-composer { gap: 5px; padding: 7px 8px; }
+}
+@media (max-height: 560px) {
+  .wp-context-where span { display: none; }
+  .wp-scope-label { display: none; }
+  .wp-form textarea { min-height: 40px; height: 40px; }
+}
