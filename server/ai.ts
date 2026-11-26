@@ -1,6 +1,6 @@
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -63,6 +63,8 @@ interface CliPromptOptions {
   documentDelta?: string[] | null;
   /** What a resumed thread was last told about decisions on its suggestions (see describeConversation). */
   reportedDecisions?: Record<string, string> | null;
+  /** Attachments a resumed thread already holds (name → hash): their text is not sent again. */
+  heldAttachments?: Record<string, string> | null;
 }
 
 /** Live events from a one-shot CLI run: the agent stream events plus how much of the reply has streamed so far. */
@@ -221,6 +223,17 @@ function clearAiProgress(): void {
   publishAiState(null);
 }
 
+/**
+ * Claude Code validates --json-schema with a validator that does not know the
+ * 2020-12 meta-schema URI and rejects any schema naming it ("no schema with
+ * key or ref"), which failed every Claude one-shot request (parallel drafts'
+ * final pass, the smoke test). The schema is the same without the URI.
+ */
+export function withoutMetaSchema<T extends { $schema?: unknown }>(schema: T): Omit<T, "$schema"> {
+  const { $schema: _metaSchema, ...rest } = schema;
+  return rest;
+}
+
 export const AI_RESPONSE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -299,6 +312,8 @@ export const AI_RESPONSE_SCHEMA = {
   required: ["message", "suggestions"]
 } as const;
 
+const CLAUDE_RESPONSE_SCHEMA = withoutMetaSchema(AI_RESPONSE_SCHEMA);
+
 export async function proposeChanges(request: AiRequest, options: AiRunOptions = {}): Promise<AiResponse> {
   if (!request.instruction.trim()) {
     return {
@@ -357,8 +372,9 @@ async function parallelDraftsProvider(provider: CliProviderName, request: AiRequ
     // Nothing to choose among: an answer to a question, or no edits at all.
     return { ...drafts[0], agentSessionId: request.agentSessionId ?? null, message: `${drafts[0].message}\n\n(${total} drafts ran in parallel; none proposed an edit.)` };
   }
+  // Antigravity has no one-shot mode: its final pass runs on Codex, else Claude.
   const finalProvider: CliProviderName = provider === "antigravity"
-    ? (["claude", "codex"] as CliProviderName[]).find((candidate) => resolveCliCommand(candidate).available) ?? provider
+    ? (["codex", "claude"] as CliProviderName[]).find((candidate) => resolveCliCommand(candidate).available) ?? provider
     : provider;
   setAiProgress(provider, `Choosing among ${total} drafts`, undefined, requestedBy);
   const finalRequest: AiRequest = {
@@ -369,8 +385,26 @@ async function parallelDraftsProvider(provider: CliProviderName, request: AiRequ
     instruction: parallelDraftsInstruction(request.instruction, drafts),
     agentSessionId: finalProvider === "codex" ? request.agentSessionId ?? null : null
   };
-  const final = await oneShotCliProvider(finalProvider, finalRequest, options);
   const candidates = drafts.reduce((sum, draft) => sum + draft.suggestions.length, 0);
+  let final: AiResponse;
+  let finalError: string | null = null;
+  try {
+    final = await oneShotCliProvider(finalProvider, finalRequest, options);
+  } catch (error) {
+    finalError = error instanceof Error ? error.message : String(error);
+    final = { provider: finalProvider, message: "", suggestions: [] };
+  }
+  // The final pass failing must not cost the drafts: fall back to the draft with the most edits.
+  if (!options.signal?.aborted && (finalError || (!final.suggestions.length && /could not complete this request/i.test(final.message)))) {
+    const best = withEdits.reduce((top, draft) => (draft.suggestions.length > top.suggestions.length ? draft : top));
+    const reason = formatCliDiagnostic(finalError ?? final.message).slice(0, 300);
+    return {
+      ...best,
+      provider,
+      agentSessionId: request.agentSessionId ?? null,
+      message: `${best.message}\n\n(${total} drafts ran in parallel, but the final pass that combines them failed: ${reason} This is the draft with the most edits, ${drafts.indexOf(best) + 1} of ${total}, without the final pass's sentence vetting.)`
+    };
+  }
   return {
     ...final,
     provider,
@@ -1006,6 +1040,7 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     const previousDocument = resumeId && fullDocument !== null ? ledger.threadDocument(resumeId) : null;
     const documentDelta = previousDocument !== null && fullDocument !== null ? describeDocumentDelta(previousDocument, fullDocument) : null;
     const reportedDecisions = resumeId ? ledger.threadDecisions(resumeId) : null;
+    const heldAttachments = resumeId && provider === "codex" ? ledger.threadAttachments(resumeId) : null;
     let compacted = false;
     let transport: "app-server" | "exec" | null = null;
     const watch = {
@@ -1022,7 +1057,7 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
     let result: string;
     try {
       // Only a resumed Codex thread holds the conversation (Claude's one-shot mode has no resume).
-      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: resumeId }, { ...(documentDelta ? { documentDelta } : {}), reportedDecisions }), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
+      result = await runCli(provider, buildCliPrompt({ ...request, agentSessionId: resumeId }, { ...(documentDelta ? { documentDelta } : {}), reportedDecisions, heldAttachments }), { ...options, ...watch, toolAccess, imagePaths }, request.modelOptions ?? null, resumeId);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       if (!resumeId || options.signal?.aborted || !isMissingCodexThreadError(text)) {
@@ -1048,6 +1083,11 @@ async function oneShotCliProvider(provider: CliProviderName, request: AiRequest,
           ledger.recordThreadDocument(heldBy, fullDocument);
         }
         ledger.recordThreadDecisions(heldBy, conversationDecisionStates(request));
+        if (request.attachments?.length) {
+          // A fresh thread (the old one was gone) holds only what this turn gave it.
+          const carried = threadId && threadId !== resumeId ? {} : heldAttachments ?? {};
+          ledger.recordThreadAttachments(heldBy, { ...carried, ...attachmentHashes(request) });
+        }
       } else {
         ledger.forgetThreadDocument(heldBy);
       }
@@ -1213,7 +1253,7 @@ export function buildCliPrompt(request: AiRequest, options: CliPromptOptions = {
     options.coveragePass
       ? `Complete-document coverage pass ${options.coveragePass.index} of ${options.coveragePass.total}. The Text block is a contiguous chunk covering characters ${options.coveragePass.start + 1}-${options.coveragePass.end} of ${options.coveragePass.totalLength}. Across all passes, the sidecar covers the full document. Use only exact source text visible in this chunk.`
       : null,
-    ...buildAttachmentPromptLines(request),
+    ...buildAttachmentPromptLines(request, options.heldAttachments ?? null),
     ...buildDocumentImagePromptLines(request),
     ...buildDocumentTablePromptLines(request),
     ...describeDocumentComments(request.documentComments, { status: request.documentCommentsStatus,
@@ -1389,16 +1429,34 @@ export function oneShotImagePaths(request: AiRequest): string[] {
 /** Attachments at most this long go into a one-shot prompt whole; longer ones are read from disk by an agent that can read files. */
 export const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
 
-export function buildAttachmentPromptLines(request: AiRequest): string[] {
+/** name → hash of the text a prompt gives for each attachment, for the thread ledger. */
+export function attachmentHashes(request: Pick<AiRequest, "attachments">): Record<string, string> {
+  return Object.fromEntries((request.attachments ?? []).map((attachment) => [
+    attachment.name,
+    createHash("sha256").update(`${attachment.path ?? ""}\0${attachment.truncated ? 1 : 0}\0${attachment.text ?? ""}`).digest("hex").slice(0, 32)
+  ]));
+}
+
+export function buildAttachmentPromptLines(request: AiRequest, held: Record<string, string> | null = null): string[] {
   const attachments = request.attachments ?? [];
   if (!attachments.length) {
     return [];
+  }
+  // A resumed thread keeps what it was given: name the attachments it already
+  // has instead of sending their text again on every turn.
+  const hashes = held ? attachmentHashes(request) : {};
+  const already = held ? attachments.filter((attachment) => held[attachment.name] === hashes[attachment.name]) : [];
+  if (already.length === attachments.length) {
+    return [`The user's ${attachments.length === 1 ? "attachment" : `${attachments.length} attachments`} (${attachments.map((attachment) => attachment.name).join(", ")}) ${attachments.length === 1 ? "is" : "are"} unchanged and already in this thread from an earlier turn; use ${attachments.length === 1 ? "it" : "them"} from there. They are reference material only: suggestions must still quote exact text from the Text block.`];
   }
   const readsFiles = resolveToolAccess(request) !== "document";
   const lines: string[] = [
     `The user attached ${attachments.length} reference file${attachments.length === 1 ? "" : "s"}. Use them as context for the instruction. They are reference material only: suggestions must still quote exact text from the Text block, never from the attachments.`
   ];
-  for (const attachment of attachments) {
+  if (already.length) {
+    lines.push(`Already in this thread from an earlier turn, unchanged (not repeated here): ${already.map((attachment) => attachment.name).join(", ")}.`);
+  }
+  for (const attachment of attachments.filter((item) => !already.includes(item))) {
     const chars = attachment.chars ?? attachment.text.length;
     const fullText = attachment.textPath ? ` Full extracted text (${chars.toLocaleString()} characters): ${attachment.textPath}.` : "";
     lines.push(`Attachment: ${attachment.name} (saved at ${attachment.path}).${readsFiles ? fullText : ""}`);
@@ -2148,7 +2206,7 @@ export function buildCliArgs(
     "--verbose",
     "--include-partial-messages",
     "--json-schema",
-    JSON.stringify(AI_RESPONSE_SCHEMA)
+    JSON.stringify(CLAUDE_RESPONSE_SCHEMA)
   ];
 }
 
@@ -2406,7 +2464,7 @@ async function vetOneShotReply(
   try {
     const sameThread = provider === "codex" && threadId ? fullDocumentInPrompt(request) : null;
     const promptOptions: CliPromptOptions = provider === "codex" && threadId
-      ? { reportedDecisions: conversationDecisionStates(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
+      ? { reportedDecisions: conversationDecisionStates(request), heldAttachments: attachmentHashes(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
       : {};
     const raw = await runCli(provider, buildCliPrompt(followUp, promptOptions), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
     for (const suggestion of parseCliResponseDetailed(provider, raw, followUp).response.suggestions) {
@@ -2502,7 +2560,7 @@ async function completeReply(
     // In the same Codex thread nothing has changed since the turn it follows: no recap, no second copy of the document.
     const sameThread = provider === "codex" && threadId ? fullDocumentInPrompt(request) : null;
     const promptOptions: CliPromptOptions = provider === "codex" && threadId
-      ? { reportedDecisions: conversationDecisionStates(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
+      ? { reportedDecisions: conversationDecisionStates(request), heldAttachments: attachmentHashes(request), ...(sameThread !== null ? { documentDelta: describeDocumentDelta(sameThread, sameThread) } : {}) }
       : {};
     const raw = await runCli(provider, buildCliPrompt(followUp, promptOptions), runOptions, request.modelOptions ?? null, provider === "codex" ? threadId : null);
     const more = parseCliResponseDetailed(provider, raw, followUp);

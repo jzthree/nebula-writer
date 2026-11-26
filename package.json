@@ -23,7 +23,8 @@
     "gdocs:setup": "bash scripts/gdocs-setup.sh",
     "chrome:build": "node scripts/chrome-build.mjs",
     "chrome:setup": "bash scripts/chrome-setup.sh",
-    "codex:forget-writer-threads": "node scripts/codex-forget-writer-threads.mjs"
+    "codex:forget-writer-threads": "node scripts/codex-forget-writer-threads.mjs",
+    "sidecar:restart": "bash scripts/restart-sidecar-when-idle.sh"
   },
   "dependencies": {
     "@tiptap/extension-collaboration": "^2.27.2",

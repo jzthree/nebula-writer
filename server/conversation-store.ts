@@ -121,6 +121,11 @@ export class ConversationStore {
         json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_attachments (
+        thread_id TEXT PRIMARY KEY,
+        json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     if (path !== ":memory:") {
       // Conversations are private: owner-only, like the CLIs' own session stores.
@@ -289,6 +294,30 @@ export class ConversationStore {
   forgetThreadDocument(threadId: string): void {
     this.statement("DELETE FROM thread_documents WHERE thread_id = ?").run(threadId);
     this.statement("DELETE FROM thread_decisions WHERE thread_id = ?").run(threadId);
+    this.statement("DELETE FROM thread_attachments WHERE thread_id = ?").run(threadId);
+  }
+
+  /**
+   * The attachments a resumed CLI thread already holds (name → hash of the
+   * text it was given), so a later turn sends only new or changed ones.
+   * Recorded on the same terms as the document. Null: not known.
+   */
+  threadAttachments(threadId: string): Record<string, string> | null {
+    const row = this.statement("SELECT json FROM thread_attachments WHERE thread_id = ?").get(threadId) as { json: string } | undefined;
+    if (!row) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(row.json) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, string> : null;
+    } catch {
+      return null;
+    }
+  }
+
+  recordThreadAttachments(threadId: string, held: Record<string, string>): void {
+    this.statement(`INSERT INTO thread_attachments (thread_id, json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`).run(threadId, JSON.stringify(held), new Date().toISOString());
   }
 
   /**
