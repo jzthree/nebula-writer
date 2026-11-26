@@ -681,3 +681,68 @@ export function deleteImageRequest(index: DocsIndex, imageIndex: number): Record
   const start = index.imageStarts[imageIndex];
   return start === undefined ? null : { deleteContentRange: { range: { startIndex: start, endIndex: start + 1 } } };
 }
+
+export interface GuardedApplyIo {
+  /** The pane's most recent read of this document, when there is one. */
+  cached: ParsedDocument | null;
+  /** A fresh documents.get, parsed. */
+  readFresh: () => Promise<ParsedDocument>;
+  /** batchUpdate; with a revision, Docs refuses it if the document changed since that revision. */
+  write: (requests: Array<Record<string, unknown>>, requiredRevisionId: string | null) => Promise<void>;
+}
+
+export interface GuardedApplyResult {
+  outcomes: DocsOpOutcome[];
+  /** "cached": planned on the pane's last read; "fresh": read the document first (as before). */
+  read: "cached" | "fresh";
+}
+
+/** Docs refused a write because the document changed since the required revision. */
+export function isRevisionMismatch(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /revision/i.test(message);
+}
+
+/**
+ * Apply text operations without downloading the whole document first when it
+ * has not changed since the pane last read it. The plan is built on that read
+ * and the write carries its revision (writeControl.requiredRevisionId), so
+ * Docs itself refuses it if anyone changed the document in between; then, or
+ * when the last read cannot place every operation, the document is read
+ * fresh and the operations are planned and written as before.
+ */
+export async function applyWithRevisionGuard(ops: DocsReplaceOp[], io: GuardedApplyIo): Promise<GuardedApplyResult> {
+  const settle = async (parsed: ParsedDocument, requiredRevisionId: string | null): Promise<DocsOpOutcome[]> => {
+    const plan = buildBatchPlan(parsed, ops);
+    const outcomes: DocsOpOutcome[] = [...plan.rejected];
+    if (plan.requests.length) {
+      await io.write(plan.requests, requiredRevisionId);
+    }
+    outcomes.push(...plan.accepted.map((id) => ({ id, ok: true as const })));
+    return outcomes;
+  };
+  const cached = io.cached;
+  if (cached && cached.index.revisionId) {
+    const plan = buildBatchPlan(cached, ops);
+    if (!plan.rejected.length && plan.requests.length) {
+      try {
+        await io.write(plan.requests, cached.index.revisionId);
+        return { outcomes: plan.accepted.map((id) => ({ id, ok: true as const })), read: "cached" };
+      } catch (error) {
+        if (!isRevisionMismatch(error)) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { outcomes: plan.accepted.map((id) => ({ id, ok: false as const, error: message })), read: "cached" };
+        }
+        // The document changed since the pane's read: read it now and plan again.
+      }
+    }
+  }
+  const fresh = await io.readFresh();
+  try {
+    return { outcomes: await settle(fresh, null), read: "fresh" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const plan = buildBatchPlan(fresh, ops);
+    return { outcomes: [...plan.rejected, ...plan.accepted.map((id) => ({ id, ok: false as const, error: message }))], read: "fresh" };
+  }
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiIndexOf, buildBatchPlan, imageContentUri, parseDocument, type ApiDocument } from "../src/chrome/docsApi";
+import { apiIndexOf, applyWithRevisionGuard, buildBatchPlan, imageContentUri, parseDocument, type ApiDocument } from "../src/chrome/docsApi";
 import { DOCS_CHANGE_HIGHLIGHT } from "../src/gdocs/protocol";
 
 /** A documents.get response shaped like the real thing: indices are contiguous UTF-16 units, paragraph marks included. */
@@ -188,5 +188,56 @@ describe("chrome extension: batchUpdate plans", () => {
     const styles = plan.requests.filter((request) => "updateTextStyle" in request).slice(1) as Array<{ updateTextStyle: { textStyle: Record<string, unknown>; fields: string } }>;
     expect(styles.map((request) => request.updateTextStyle.fields)).toEqual(["foregroundColor", "baselineOffset,foregroundColor", "foregroundColor"]);
     expect(styles[1].updateTextStyle.textStyle.baselineOffset).toBe("SUBSCRIPT");
+  });
+});
+
+describe("chrome extension: Apply without re-reading the document", () => {
+  const change = { id: "a", paragraphIndex: 1, start: 12, endParagraphIndex: 1, end: 22, expected: "hypothesis", text: "premise", emphasis: null, highlight: false };
+  const withRevision = () => {
+    const doc = fixture();
+    doc.revisionId = "rev-1";
+    return parseDocument(doc);
+  };
+
+  it("plans on the pane's last read and makes Docs refuse the write if the document changed since", async () => {
+    const writes: Array<string | null> = [];
+    let reads = 0;
+    const result = await applyWithRevisionGuard([change], {
+      cached: withRevision(),
+      readFresh: async () => { reads += 1; return withRevision(); },
+      write: async (_requests, revision) => { writes.push(revision); }
+    });
+    expect(result).toEqual({ outcomes: [{ id: "a", ok: true }], read: "cached" });
+    expect(reads).toBe(0);
+    expect(writes).toEqual(["rev-1"]);
+  });
+
+  it("reads the document and writes as before when Docs reports a newer revision, or there is no recent read", async () => {
+    const writes: Array<string | null> = [];
+    let reads = 0;
+    const result = await applyWithRevisionGuard([change], {
+      cached: withRevision(),
+      readFresh: async () => { reads += 1; return withRevision(); },
+      write: async (_requests, revision) => {
+        writes.push(revision);
+        if (revision) throw new Error("Google Docs API: The required revision ID 'rev-1' does not match the document's latest revision.");
+      }
+    });
+    expect(result.read).toBe("fresh");
+    expect(result.outcomes).toEqual([{ id: "a", ok: true }]);
+    expect(reads).toBe(1);
+    expect(writes).toEqual(["rev-1", null]);
+    const none = await applyWithRevisionGuard([change], { cached: null, readFresh: async () => withRevision(), write: async () => undefined });
+    expect(none.read).toBe("fresh");
+  });
+
+  it("re-reads when the last read cannot place a change, and reports a failed write on its changes", async () => {
+    let reads = 0;
+    const stale = { ...change, expected: "something else" };
+    const moved = await applyWithRevisionGuard([stale], { cached: withRevision(), readFresh: async () => { reads += 1; return withRevision(); }, write: async () => undefined });
+    expect(reads).toBe(1);
+    expect(moved.outcomes).toEqual([{ id: "a", ok: false, error: expect.stringContaining("moved or changed") }]);
+    const failed = await applyWithRevisionGuard([change], { cached: withRevision(), readFresh: async () => withRevision(), write: async () => { throw new Error("Google Docs API: quota exceeded"); } });
+    expect(failed.outcomes).toEqual([{ id: "a", ok: false, error: "Google Docs API: quota exceeded" }]);
   });
 });

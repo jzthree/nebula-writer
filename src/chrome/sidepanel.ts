@@ -6,7 +6,7 @@
  * chrome.identity. Only the pane's origin may talk to this page.
  */
 
-import { applyTableOp, buildBatchPlan, deleteImageRequest, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
+import { applyTableOp, applyWithRevisionGuard, deleteImageRequest, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
 import { bindPanelTab, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
@@ -501,20 +501,34 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaApply(ops) {
     const { docId } = await activeDoc();
-    const parsed = await fetchParsed(docId);
-    const plan = buildBatchPlan(parsed, ops as DocsReplaceOp[]);
-    const outcomes: DocsOpOutcome[] = [...plan.rejected];
-    if (plan.requests.length) {
-      try {
-        await api(`/${encodeURIComponent(docId)}:batchUpdate`, { method: "POST", body: JSON.stringify({ requests: plan.requests }) });
-        outcomes.push(...plan.accepted.map((id) => ({ id, ok: true })));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        outcomes.push(...plan.accepted.map((id) => ({ id, ok: false, error: message })));
+    const changes = ops as DocsReplaceOp[];
+    const started = performance.now();
+    let readMs = 0;
+    let writeMs = 0;
+    // Plan on the pane's last read when the document has not changed since
+    // (Docs refuses the write otherwise), instead of downloading the whole
+    // document before every Apply: several MB for a long one with images.
+    const { outcomes, read } = await applyWithRevisionGuard(changes, {
+      cached: lastParsed?.docId === docId ? lastParsed.parsed : null,
+      readFresh: async () => {
+        const at = performance.now();
+        const parsed = await fetchParsed(docId);
+        readMs += performance.now() - at;
+        return parsed;
+      },
+      write: async (requests, requiredRevisionId) => {
+        const at = performance.now();
+        try {
+          await api(`/${encodeURIComponent(docId)}:batchUpdate`, {
+            method: "POST",
+            body: JSON.stringify({ requests, ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) })
+          });
+        } finally {
+          writeMs += performance.now() - at;
+        }
       }
-    } else {
-      outcomes.push(...plan.accepted.map((id) => ({ id, ok: true })));
-    }
+    });
+    console.info(`[writer] Apply: ${changes.length} change${changes.length === 1 ? "" : "s"} in ${Math.round(performance.now() - started)} ms (${read === "cached" ? "planned on the last read" : `document read ${Math.round(readMs)} ms`}, Google Docs write ${Math.round(writeMs)} ms)`);
     lastParsed = null;
     return outcomes;
   },
