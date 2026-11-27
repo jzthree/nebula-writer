@@ -107,14 +107,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 
 
+/* The title keeps its natural width; when the status pills do not fit beside
+   it (a narrow Chrome side panel or task pane) they move to a second row,
+   right-aligned, instead of squeezing the title under them. */
 .wp-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px 8px;
 }
 
-.wp-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wp-brand { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; min-width: 0; }
 .wp-brand h1 { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.1; }
 .wp-brand-mark {
   display: inline-grid;
@@ -130,7 +134,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .wp-eyebrow { margin: 0; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 
-.wp-status-pills { display: flex; align-items: center; gap: 5px; flex: none; }
+.wp-status-pills { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 5px; min-width: 0; margin-left: auto; }
 
 .wp-pill {
   display: inline-flex;
