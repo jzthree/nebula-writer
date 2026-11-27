@@ -4494,7 +4494,9 @@ export function App() {
   }
 
   function queueInstruction(text: string, focus: AiRequestFocus | null) {
-    queuedInstructionRef.current = { text, focus };
+    // A further message joins what already waits instead of replacing it.
+    const earlier = queuedInstructionRef.current;
+    queuedInstructionRef.current = earlier ? { text: `${earlier.text}\n\n${text}`, focus: focus ?? earlier.focus } : { text, focus };
     setQueuedInstruction(queuedInstructionRef.current);
   }
 

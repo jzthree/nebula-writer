@@ -172,6 +172,13 @@ interface QueuedMessage {
   afterRunId: string | null;
 }
 
+const QUEUED_NOTICE = "This turn can't take new input right now — your message is queued and goes out when it finishes.";
+
+/** A further message for the queue joins what already waits there instead of replacing it. */
+function joinQueued(earlier: QueuedMessage | null, next: QueuedMessage): QueuedMessage {
+  return earlier ? { text: `${earlier.text}\n\n${next.text}`, focus: next.focus ?? earlier.focus, afterRunId: next.afterRunId } : next;
+}
+
 interface AskOverrides {
   instruction?: string;
   focus?: AiRequestFocus | null;
@@ -1088,6 +1095,13 @@ export function App() {
     setRequestState("running");
   };
 
+  /** The queue is empty again, and so is the note that said a message waits there. */
+  const clearQueue = () => {
+    queuedRef.current = null;
+    setQueued(null);
+    setNotice((current) => (current?.text === QUEUED_NOTICE ? null : current));
+  };
+
   /** A run ended: what it waited for goes out, and the pane settles once none is left. */
   const finishRun = (run: PaneRun, outcome: RequestState) => {
     if (runsRef.current.get(run.runId) !== run) {
@@ -1104,8 +1118,7 @@ export function App() {
     }
     const next = queuedRef.current;
     if (next && (!next.afterRunId || next.afterRunId === run.runId || !runsRef.current.has(next.afterRunId))) {
-      queuedRef.current = null;
-      setQueued(null);
+      clearQueue();
       void askRef.current?.({ instruction: next.text, focus: next.focus, into: null });
     }
   };
@@ -1114,7 +1127,7 @@ export function App() {
   const applyRunResponse = useCallback((response: WordLiveSuggestionResponse, run: { turnId: string; provider: LocalAiProviderName; engine: string; sessionKey: string; runId?: string; parallel?: boolean }): { fresh: AiSuggestion[]; replyText: string } => {
     if (response.ai.undeliveredSteers?.length) {
       // Sent during the run but no session could take them: they become the next turn.
-      queuedRef.current = { text: response.ai.undeliveredSteers.join("\n\n"), focus: null, afterRunId: run.runId ?? null };
+      queuedRef.current = joinQueued(queuedRef.current, { text: response.ai.undeliveredSteers.join("\n\n"), focus: null, afterRunId: run.runId ?? null });
       setQueued(queuedRef.current);
     }
     sessionIdRef.current = response.session?.id ?? sessionIdRef.current;
@@ -1314,7 +1327,7 @@ export function App() {
 
   /** Hold a message for after a run (in the same thread). */
   const queueMessage = useCallback((text: string, focus: AiRequestFocus | null, afterRunId: string | null) => {
-    queuedRef.current = { text, focus, afterRunId };
+    queuedRef.current = joinQueued(queuedRef.current, { text, focus, afterRunId });
     setQueued(queuedRef.current);
   }, []);
 
@@ -1341,7 +1354,7 @@ export function App() {
     }
     if (runsRef.current.has(runId)) {
       queueMessage(text, focus, runId);
-      setNotice({ tone: "info", text: "This turn can't take new input right now — your message is queued and goes out when it finishes." });
+      setNotice({ tone: "info", text: QUEUED_NOTICE });
     } else {
       void askRef.current?.({ instruction: text, focus, into: null });
     }
@@ -1377,8 +1390,7 @@ export function App() {
     if (waitingFor) {
       if (await steerRunning(next.text, next.focus, waitingFor.runId)) {
         if (queuedRef.current === next) {
-          queuedRef.current = null;
-          setQueued(null);
+          clearQueue();
         }
         return;
       }
@@ -1391,8 +1403,7 @@ export function App() {
   }, [ask, steerRunning]);
 
   const cancelQueued = useCallback(() => {
-    queuedRef.current = null;
-    setQueued(null);
+    clearQueue();
   }, []);
 
   /** "Stop" on one running reply. */

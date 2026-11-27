@@ -885,6 +885,36 @@ describe("Word task pane", () => {
     await waitFor(() => expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument());
   });
 
+  it("a second message for a turn that cannot take input joins the queued one; the queued note goes when the queue is discarded", async () => {
+    captured.steerOk = false;
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    send("remove panel a");
+    await waitFor(() => expect(screen.getByText(/Queued: "remove panel a"/)).toBeInTheDocument());
+    send("and panel d");
+    await waitFor(() => expect(screen.getByText(/Queued: "remove panel a and panel d"/)).toBeInTheDocument());
+    expect(screen.getByText(/can't take new input right now/)).toBeInTheDocument();
+    expect(screen.queryByText(/Sent into the running turn/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Discard the queued message"));
+    expect(screen.queryByText(/Queued:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/can't take new input right now/)).not.toBeInTheDocument();
+  });
+
+  it("messages queued for a turn that cannot take input go out together as the next turn", async () => {
+    captured.steerOk = false;
+    await renderPane();
+    send("Slow: first request");
+    await waitFor(() => expect(screen.getByLabelText("Stop the request")).toBeInTheDocument());
+    send("remove panel a");
+    await waitFor(() => expect(screen.getByText(/Queued: "remove panel a"/)).toBeInTheDocument());
+    send("and panel d");
+    await waitFor(() => expect(screen.getByText(/Queued: "remove panel a and panel d"/)).toBeInTheDocument());
+    await waitFor(() => expect(captured.requests.length).toBe(2), { timeout: 3_000 });
+    expect(captured.requests[1].instruction).toBe("remove panel a\n\nand panel d");
+    await waitFor(() => expect(screen.queryByText(/can't take new input right now/)).not.toBeInTheDocument());
+  });
+
   it("holds a message for the next turn with Queue, and Send now delivers it into the running turn", async () => {
     await renderPane();
     send("Slow: first request");

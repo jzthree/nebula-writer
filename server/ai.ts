@@ -372,10 +372,7 @@ async function parallelDraftsProvider(provider: CliProviderName, request: AiRequ
     // Nothing to choose among: an answer to a question, or no edits at all.
     return { ...drafts[0], agentSessionId: request.agentSessionId ?? null, message: `${drafts[0].message}\n\n(${total} drafts ran in parallel; none proposed an edit.)` };
   }
-  // Antigravity has no one-shot mode: its final pass runs on Codex, else Claude.
-  const finalProvider: CliProviderName = provider === "antigravity"
-    ? (["codex", "claude"] as CliProviderName[]).find((candidate) => resolveCliCommand(candidate).available) ?? provider
-    : provider;
+  const finalProvider = parallelFinalProvider(provider);
   setAiProgress(provider, `Choosing among ${total} drafts`, undefined, requestedBy);
   const finalRequest: AiRequest = {
     ...request,
@@ -565,23 +562,65 @@ async function cliProvider(provider: CliProviderName, request: AiRequest, option
       suggestions: []
     };
   }
-  const engine = process.env.WRITER_AI_ENGINE?.trim().toLowerCase();
-  // Antigravity has no one-shot mode in Writer: it only takes the agentic engine (ACP).
-  if (engine === "oneshot" && provider !== "antigravity") {
-    return withModelOptions(request, await oneShotCliProvider(provider, request, options));
-  }
-  if (engine === "agentic") {
-    return withModelOptions(request, await agenticCliProvider(provider, request, options));
-  }
-  // Per-provider default (docs/agentic-ai.md): Claude and Antigravity run the
-  // agentic engine (Writer's MCP tools). Codex stays on the one-shot
-  // pipeline: codex 0.142's non-interactive `exec` cancels MCP tool calls
-  // through an approval elicitation no config override disables ("user
-  // cancelled MCP tool call"), so its agentic mode is opt-in via
-  // WRITER_AI_ENGINE=agentic until a codex release fixes that.
-  return withModelOptions(request, provider === "codex"
+  return withModelOptions(request, cliEngine(provider) === "oneshot"
     ? await oneShotCliProvider(provider, request, options)
     : await agenticCliProvider(provider, request, options));
+}
+
+/**
+ * The engine a CLI provider runs on: WRITER_AI_ENGINE when set, else the
+ * per-provider default (docs/agentic-ai.md). Claude and Antigravity run the
+ * agentic engine (Writer's MCP tools). Codex stays on the one-shot pipeline:
+ * codex 0.142's non-interactive `exec` cancels MCP tool calls through an
+ * approval elicitation no config override disables ("user cancelled MCP tool
+ * call"), so its agentic mode is opt-in via WRITER_AI_ENGINE=agentic until a
+ * codex release fixes that.
+ */
+function cliEngine(provider: CliProviderName, env: NodeJS.ProcessEnv = process.env): "oneshot" | "agentic" {
+  // Antigravity has no one-shot mode in Writer: it only takes the agentic engine (ACP).
+  if (provider === "antigravity") {
+    return "agentic";
+  }
+  const engine = env.WRITER_AI_ENGINE?.trim().toLowerCase();
+  if (engine === "oneshot" || engine === "agentic") {
+    return engine;
+  }
+  return provider === "codex" ? "oneshot" : "agentic";
+}
+
+/**
+ * Whether a message sent while this request runs can reach the model inside
+ * the same reply (server/steering.ts). Only two sessions take input mid-turn:
+ * Claude's agentic session (a stream-json input line) and Codex's app-server
+ * (`turn/steer`, which serves Codex's one-shot replies). Antigravity over ACP,
+ * a one-shot Claude reply, agentic Codex (`codex exec`) and the demo provider
+ * cannot, so a message sent meanwhile goes out as the next turn. Parallel
+ * drafts carry no run id; only their final pass can take it.
+ */
+export function takesMidTurnInput(request: Pick<AiRequest, "provider" | "parallelDrafts">, env: NodeJS.ProcessEnv = process.env): boolean {
+  const provider = request.provider;
+  if (provider !== "codex" && provider !== "claude" && provider !== "antigravity") {
+    return false;
+  }
+  if ((request.parallelDrafts ?? 0) >= 2) {
+    // The final pass is one-shot: steerable only on Codex's app-server.
+    return parallelFinalProvider(provider) === "codex" && codexTransport(env) === "app-server";
+  }
+  const engine = cliEngine(provider, env);
+  if (provider === "claude") {
+    return engine === "agentic";
+  }
+  if (provider === "codex") {
+    return engine === "oneshot" && codexTransport(env) === "app-server";
+  }
+  return false;
+}
+
+/** Who runs parallel drafts' final pass: Antigravity has no one-shot mode, so Codex, else Claude. */
+function parallelFinalProvider(provider: CliProviderName): CliProviderName {
+  return provider === "antigravity"
+    ? (["codex", "claude"] as CliProviderName[]).find((candidate) => resolveCliCommand(candidate).available) ?? provider
+    : provider;
 }
 
 /**

@@ -8,7 +8,9 @@
  * Each running process registers under the client-chosen run id of the
  * request it serves; POST /api/ai/steer looks it up. A run with nothing
  * registered (finished, demo provider, an older CLI) reports why, and the
- * client queues the message for the next turn instead.
+ * client queues the message for the next turn instead. So does a run whose
+ * agent cannot take input mid-turn at all (Antigravity over ACP, a one-shot
+ * Claude reply, `codex exec`): the client must not say the message went in.
  */
 
 /** `held`: the run is queued or still starting; the message is delivered the moment its session is ready. */
@@ -22,8 +24,12 @@ export interface Steerable {
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 const active = new Map<string, Steerable>();
-/** Run ids whose request is in flight, even while no process is registered (queued, starting, between a turn and its follow-up). */
-const inFlight = new Set<string>();
+/**
+ * Run ids whose request is in flight, even while no process is registered
+ * (queued, starting, between a turn and its follow-up), and whether that run
+ * has a session that can take a message mid-turn.
+ */
+const inFlight = new Map<string, { midTurnInput: boolean }>();
 /** Messages for an in-flight run that had no live session yet; delivered when one registers. */
 const held = new Map<string, string[]>();
 
@@ -37,11 +43,11 @@ export function isRunId(value: unknown): value is string {
  * ended without a session that could take them), so the client can send
  * them as the next turn instead of losing them.
  */
-export function markRunInFlight(runId: string | null | undefined): () => string[] {
+export function markRunInFlight(runId: string | null | undefined, options: { midTurnInput?: boolean } = {}): () => string[] {
   if (!runId) {
     return () => [];
   }
-  inFlight.add(runId);
+  inFlight.set(runId, { midTurnInput: options.midTurnInput ?? true });
   return () => {
     inFlight.delete(runId);
     active.delete(runId);
@@ -80,8 +86,14 @@ export function registerSteerable(runId: string | null | undefined, steerable: S
 export async function steerRun(runId: string, text: string): Promise<SteerResult> {
   const steerable = active.get(runId);
   if (!steerable) {
-    if (!inFlight.has(runId)) {
+    const run = inFlight.get(runId);
+    if (!run) {
       return { ok: false, reason: "not-running" };
+    }
+    if (!run.midTurnInput) {
+      // Nothing in this run will ever take it before the reply ends: the
+      // client queues it as the next turn (and says so).
+      return { ok: false, reason: "not-steerable" };
     }
     held.set(runId, [...(held.get(runId) ?? []), text]);
     return { ok: true, held: true };

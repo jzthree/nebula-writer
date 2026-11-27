@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { exportDocx, exportTrackedChangesFromSourceWithReport, importDocx, type TrackedChangeExportReport, extractDocxComments, extractDocxImages } from "./docx";
-import { getAiProgress, getAiRuns, MAX_PARALLEL_DRAFTS, proposeChanges, smokeTestProvider, vettingCliRunner } from "./ai";
+import { getAiProgress, getAiRuns, MAX_PARALLEL_DRAFTS, proposeChanges, smokeTestProvider, takesMidTurnInput, vettingCliRunner } from "./ai";
 import { AI_ATTACHMENT_LIMIT, AI_ATTACHMENT_TEXT_CHAR_LIMIT, AI_ATTACHMENTS_TOTAL_CHAR_LIMIT, type AiAttachment, type AiProviderName, type AiRequest, type AiSuggestion, type DocxBodySafeAnchor, type DocxFeatureSummary, type ExportRequest, type ImportedDocument, type LocalAiProviderName, type SelectionContext, type SourceTrackedChangePreview, type WordLiveSuggestionRequest, type WriterAutosavedSessionSummary, type WriterChatMessage, type WriterReviewSourceDocument, type WriterRoutineRun, type WriterRoutineRunReport, type WriterSessionDocument, type WriterSessionSnapshot, type WriterSessionSummary, isAiToolAccess, AI_DOCUMENT_IMAGE_LIMIT, type AiDocumentImage, type AiRequestFocus } from "../src/shared";
 import { cliEnablementDiagnostic, isCliExecutionEnabled, resolveCliCommand, resolveCliTimeoutConfig } from "./cli-runtime";
 import { currentHostContext, getAgentRun, readAgentRunAttachment, readAgentRunDocument, searchAgentRunDocument, setLiveHostContextSource, stageAgentRunSuggestions, stageAgentRunSuggestionsVetted, type AgentRunContext } from "./agent-run";
@@ -1121,7 +1121,7 @@ export function createWriterApp() {
         return;
       }
       let undeliveredSteers: string[] = [];
-      const releaseRun = markRunInFlight(parsed.request.runId);
+      const releaseRun = markRunInFlight(parsed.request.runId, { midTurnInput: takesMidTurnInput(parsed.request) });
       const ai = await proposeChanges(parsed.request, { signal, runId: parsed.request.runId ?? null }).finally(() => {
         undeliveredSteers = releaseRun();
       });
@@ -1763,7 +1763,7 @@ export function createWriterApp() {
         ? withImages
         : { ...withImages, documentComments: await sessionDocumentComments(withImages) };
       let undeliveredSteers: string[] = [];
-      const releaseRun = markRunInFlight(aiRequest.runId);
+      const releaseRun = markRunInFlight(aiRequest.runId, { midTurnInput: takesMidTurnInput(aiRequest) });
       const ai = await proposeChanges(aiRequest, { signal, runId: aiRequest.runId ?? null }).finally(() => {
         undeliveredSteers = releaseRun();
       });
@@ -1952,7 +1952,7 @@ async function suggestForWordPane(request: WordLiveSuggestionRequest, signal: Ab
   rememberWordHostContext(wordLiveDocumentName(request.documentName), request.hostContext, request.documentImages, request.documentComments, request.documentCommentsStatus, request.documentTables);
   const baseSession = wordLiveSessionForRequest(request);
   let undeliveredSteers: string[] = [];
-  const releaseRun = markRunInFlight(request.runId);
+  const releaseRun = markRunInFlight(request.runId, { midTurnInput: takesMidTurnInput(request) });
   const ai = await proposeChanges(request, { signal, runId: request.runId ?? null }).finally(() => {
     undeliveredSteers = releaseRun();
   });

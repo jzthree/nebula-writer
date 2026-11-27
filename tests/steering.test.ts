@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { proposeChanges } from "../server/ai";
+import { proposeChanges, takesMidTurnInput } from "../server/ai";
 import { translateAppServerNotification } from "../server/codex-app-server";
 import { markRunInFlight, resetSteering, steerRun } from "../server/steering";
 import type { AiRequest } from "../src/shared";
@@ -173,6 +173,12 @@ describe("mid-turn steering: registry", () => {
     expect(await steerRun("between", "hi")).toEqual({ ok: false, reason: "not-running" });
   });
 
+  it("refuses a message for a run whose agent cannot take input mid-turn, so the client queues it instead of saying it went in", async () => {
+    const release = markRunInFlight("acp-run", { midTurnInput: false });
+    expect(await steerRun("acp-run", "remove panel a")).toEqual({ ok: false, reason: "not-steerable" });
+    expect(release()).toEqual([]);
+  });
+
   it("delivers a held message as soon as the run's session starts", async () => {
     process.env.WRITER_CODEX_TRANSPORT = "app-server";
     process.env.WRITER_CODEX_PATH = writeScript("fake-codex", FAKE_APP_SERVER);
@@ -182,5 +188,30 @@ describe("mid-turn steering: registry", () => {
     const response = await proposeChanges(request({ runId: "early" }), { runId: "early" });
     expect(response.message).toContain("BANANA");
     expect(release()).toEqual([]);
+  });
+});
+
+describe("mid-turn steering: which runs take a message mid-turn", () => {
+  const env = (extra: Record<string, string> = {}) => ({ ...process.env, WRITER_AI_ENGINE: "", WRITER_CODEX_TRANSPORT: "", ...extra });
+
+  it("Claude's agentic session and Codex's app-server do; Antigravity (ACP), one-shot Claude, codex exec and the demo do not", () => {
+    expect(takesMidTurnInput({ provider: "claude" }, env())).toBe(true);
+    expect(takesMidTurnInput({ provider: "claude" }, env({ WRITER_AI_ENGINE: "oneshot" }))).toBe(false);
+    expect(takesMidTurnInput({ provider: "codex" }, env())).toBe(true);
+    expect(takesMidTurnInput({ provider: "codex" }, env({ WRITER_CODEX_TRANSPORT: "exec" }))).toBe(false);
+    expect(takesMidTurnInput({ provider: "codex" }, env({ WRITER_AI_ENGINE: "agentic" }))).toBe(false);
+    expect(takesMidTurnInput({ provider: "antigravity" }, env())).toBe(false);
+    expect(takesMidTurnInput({ provider: "antigravity" }, env({ WRITER_AI_ENGINE: "oneshot" }))).toBe(false);
+    expect(takesMidTurnInput({ provider: "demo" }, env())).toBe(false);
+  });
+
+  it("parallel drafts take one only in a final pass on Codex's app-server", () => {
+    process.env.WRITER_CODEX_PATH = writeScript("fake-codex", ["process.exit(0);"]);
+    expect(takesMidTurnInput({ provider: "codex", parallelDrafts: 3 }, env())).toBe(true);
+    expect(takesMidTurnInput({ provider: "antigravity", parallelDrafts: 2 }, env())).toBe(true);
+    expect(takesMidTurnInput({ provider: "claude", parallelDrafts: 2 }, env())).toBe(false);
+    process.env.WRITER_CODEX_PATH = join(tempDir, "no-codex");
+    process.env.WRITER_CLAUDE_PATH = join(tempDir, "no-claude");
+    expect(takesMidTurnInput({ provider: "antigravity", parallelDrafts: 2 }, env())).toBe(false);
   });
 });
