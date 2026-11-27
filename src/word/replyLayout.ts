@@ -39,6 +39,7 @@ export interface ReplyLayout {
 const REF_TOKEN = /\[\[?\s*S(\d+)\s*\]\]?|\{\{\s*S(\d+)\s*\}\}/gi;
 const HEADING_LINE = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
 const BOLD_HEADING_LINE = /^\s*\*\*([^*]{2,80})\*\*:?\s*$/;
+const FENCE_LINE = /^\s{0,3}(`{3,}|~{3,})/;
 
 export function parseAssistantReply(text: string, suggestions: AiSuggestion[]): ReplyLayout {
   const byRef = new Map<string, AiSuggestion>();
@@ -57,16 +58,14 @@ export function parseAssistantReply(text: string, suggestions: AiSuggestion[]): 
   let current: ReplyGroup = { heading: null, blocks: [], ids: [] };
   let structured = false;
 
-  const pushText = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return;
-    }
+  // Lines go in as written (indentation and blank lines included) so the
+  // reply's Markdown (paragraphs, nested lists, code, tables) renders intact.
+  const pushText = (line: string) => {
     const last = current.blocks[current.blocks.length - 1];
     if (last && last.kind === "text") {
-      last.text = `${last.text}\n${trimmed}`;
-    } else {
-      current.blocks.push({ kind: "text", text: trimmed });
+      last.text = `${last.text}\n${line}`;
+    } else if (line.trim()) {
+      current.blocks.push({ kind: "text", text: line });
     }
   };
   const pushCards = (ids: string[]) => {
@@ -87,12 +86,27 @@ export function parseAssistantReply(text: string, suggestions: AiSuggestion[]): 
     structured = true;
   };
   const closeGroup = () => {
+    current.blocks = current.blocks
+      .map((block) => (block.kind === "text" ? { ...block, text: block.text.replace(/^(?:[ \t]*\n)+/, "").trimEnd() } : block))
+      .filter((block) => block.kind !== "text" || block.text.trim());
     if (current.blocks.length || current.heading !== null) {
       groups.push(current);
     }
   };
 
+  let fence: string | null = null;
   for (const rawLine of text.replace(/\r\n?/g, "\n").split("\n")) {
+    // Inside a code fence every line is code: no headings, no refs.
+    const fenceMatch = FENCE_LINE.exec(rawLine);
+    if (fence !== null || fenceMatch) {
+      if (fence === null) {
+        fence = fenceMatch![1];
+      } else if (fenceMatch && fenceMatch[1].startsWith(fence) && !rawLine.trim().slice(fenceMatch[1].length).trim()) {
+        fence = null;
+      }
+      pushText(rawLine);
+      continue;
+    }
     const headingMatch = HEADING_LINE.exec(rawLine) ?? BOLD_HEADING_LINE.exec(rawLine);
     if (headingMatch) {
       closeGroup();
@@ -107,8 +121,15 @@ export function parseAssistantReply(text: string, suggestions: AiSuggestion[]): 
       }
       return "";
     });
-    const cleaned = remainder.replace(/^\s*[-*•]\s*$/, "").replace(/\s{2,}/g, " ");
-    pushText(cleaned);
+    if (refs.length || remainder !== rawLine) {
+      // A ref came out: close the gap it left, and drop a line it emptied.
+      const body = remainder.replace(/^\s*[-*•]\s*$/, "").replace(/\s{2,}/g, " ").trim();
+      if (body) {
+        pushText(`${/^\s*/.exec(rawLine)![0]}${body}`);
+      }
+    } else {
+      pushText(rawLine.trimEnd());
+    }
     if (refs.length) {
       pushCards(refs);
     }

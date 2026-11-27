@@ -1,0 +1,26 @@
+/* Agent replies rendered from Markdown (ReplyMarkdown). Shared by the web editor's chat and the Word / Google Docs / Chrome pane. */
+.reply-md { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+.wp-turn .reply-md { font-size: 12.5px; line-height: 1.45; }
+.reply-md > :first-child { margin-top: 0; }
+.reply-md > :last-child { margin-bottom: 0; }
+.reply-md p { margin: 0 0 0.55em; }
+.reply-md ul, .reply-md ol { margin: 0 0 0.55em; padding-left: 1.35em; }
+.reply-md li { margin: 0.15em 0; }
+.reply-md li > p { margin: 0; }
+.reply-md h1, .reply-md h2, .reply-md h3, .reply-md h4, .reply-md h5, .reply-md h6 { margin: 0.7em 0 0.35em; font-size: 1em; font-weight: 700; }
+.reply-md strong { font-weight: 700; }
+.reply-md code { font-family: var(--mono); font-size: 0.92em; padding: 0.05em 0.3em; border-radius: 4px; background: var(--surface-soft); border: 1px solid var(--line-soft); overflow-wrap: anywhere; }
+.reply-md pre { margin: 0 0 0.55em; padding: 6px 8px; border-radius: 6px; background: var(--surface-soft); border: 1px solid var(--line-soft); overflow-x: auto; white-space: pre; }
+.reply-md pre code { padding: 0; border: 0; background: none; font-size: 0.9em; overflow-wrap: normal; }
+.reply-md blockquote { margin: 0 0 0.55em; padding-left: 8px; border-left: 3px solid var(--line-strong); color: var(--ink-soft); }
+.reply-md hr { border: 0; border-top: 1px solid var(--line); margin: 0.7em 0; }
+.reply-md a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+.reply-md a.md-file-link { cursor: copy; }
+.reply-md .md-table { max-width: 100%; overflow-x: auto; margin: 0 0 0.55em; border: 1px solid var(--line); border-radius: 6px; }
+.reply-md table { border-collapse: collapse; font-size: 0.95em; min-width: 100%; }
+.reply-md th, .reply-md td { padding: 4px 7px; border-bottom: 1px solid var(--line-soft); vertical-align: top; text-align: left; overflow-wrap: normal; min-width: 5em; }
+.reply-md th { background: var(--surface-soft); font-weight: 700; }
+.reply-md td code, .reply-md th code { white-space: nowrap; overflow-wrap: normal; }
+.reply-md tr:last-child td { border-bottom: 0; }
+.reply-md th + th, .reply-md td + td { border-left: 1px solid var(--line-soft); }
+.reply-md-copied { margin: 2px 0 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }

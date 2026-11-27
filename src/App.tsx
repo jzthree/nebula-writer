@@ -1,3 +1,4 @@
+import { ReplyMarkdown } from "./ReplyMarkdown";
 import { newAiRunId } from "./sidecarClient";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { wordDiffSegments } from "./wordDiff";
@@ -6961,7 +6962,7 @@ export function App() {
                         {message.author}
                       </span>
                     ) : null}
-                    {message.content}
+                    {message.role === "assistant" ? <ReplyMarkdown text={message.content} /> : message.content}
                   </article>
                 );
               })}

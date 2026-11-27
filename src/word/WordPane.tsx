@@ -46,6 +46,7 @@ import { wordDiffSegments } from "../wordDiff";
 import { planTableMorph, rectangular, type AiTableEdit } from "../tables";
 import { revertSuggestionOf } from "../revertSuggestion";
 import { parseAssistantReply, type ReplyGroup } from "./replyLayout";
+import { ReplyMarkdown } from "../ReplyMarkdown";
 import type { RequestScope } from "./wordContext";
 import { excerpt } from "./wordContext";
 import type { TrackedRevision } from "./hostBridge";
@@ -1046,7 +1047,7 @@ function TurnView(props: {
             ) : null}
             {group.blocks.map((block, blockIndex) => (
               block.kind === "text"
-                ? <p key={blockIndex} className="wp-turn-text">{block.text}</p>
+                ? <ReplyMarkdown key={blockIndex} text={block.text} />
                 : <div key={blockIndex}>{renderCards(block.ids)}</div>
             ))}
           </section>
