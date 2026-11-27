@@ -746,3 +746,21 @@ export async function applyWithRevisionGuard(ops: DocsReplaceOp[], io: GuardedAp
     return { outcomes: [...plan.rejected, ...plan.accepted.map((id) => ({ id, ok: false as const, error: message }))], read: "fresh" };
   }
 }
+
+/**
+ * The document as of its current revision: the last read when a revisionId-only
+ * request shows nothing changed since (no download of the whole document with
+ * its styles and images), else a fresh read.
+ */
+export async function documentAtCurrentRevision(cached: ParsedDocument | null, io: {
+  revision: () => Promise<string | null>;
+  readFresh: () => Promise<ParsedDocument>;
+}): Promise<{ parsed: ParsedDocument; source: "last read" | "fresh read" }> {
+  if (cached?.index.revisionId) {
+    const current = await io.revision();
+    if (current && current === cached.index.revisionId) {
+      return { parsed: cached, source: "last read" };
+    }
+  }
+  return { parsed: await io.readFresh(), source: "fresh read" };
+}

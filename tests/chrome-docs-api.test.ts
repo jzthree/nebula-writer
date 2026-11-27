@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiIndexOf, applyWithRevisionGuard, buildBatchPlan, imageContentUri, parseDocument, type ApiDocument } from "../src/chrome/docsApi";
+import { apiIndexOf, applyWithRevisionGuard, buildBatchPlan, documentAtCurrentRevision, imageContentUri, parseDocument, type ApiDocument } from "../src/chrome/docsApi";
 import { DOCS_CHANGE_HIGHLIGHT } from "../src/gdocs/protocol";
 
 /** A documents.get response shaped like the real thing: indices are contiguous UTF-16 units, paragraph marks included. */
@@ -239,5 +239,19 @@ describe("chrome extension: Apply without re-reading the document", () => {
     expect(moved.outcomes).toEqual([{ id: "a", ok: false, error: expect.stringContaining("moved or changed") }]);
     const failed = await applyWithRevisionGuard([change], { cached: withRevision(), readFresh: async () => withRevision(), write: async () => { throw new Error("Google Docs API: quota exceeded"); } });
     expect(failed.outcomes).toEqual([{ id: "a", ok: false, error: "Google Docs API: quota exceeded" }]);
+  });
+});
+
+describe("Locate reads the document only when it changed", () => {
+  it("uses the last read at an unchanged revision, and reads fresh when the revision moved or nothing was read", async () => {
+    const last = parseDocument(fixture());
+    const fresh = parseDocument({ ...fixture(), revisionId: "rev-2" });
+    let reads = 0;
+    const io = (revision: string) => ({ revision: async () => revision, readFresh: async () => { reads += 1; return fresh; } });
+    expect(await documentAtCurrentRevision(last, io("rev-1"))).toEqual({ parsed: last, source: "last read" });
+    expect(reads).toBe(0);
+    expect(await documentAtCurrentRevision(last, io("rev-2"))).toEqual({ parsed: fresh, source: "fresh read" });
+    expect(await documentAtCurrentRevision(null, io("rev-1"))).toEqual({ parsed: fresh, source: "fresh read" });
+    expect(reads).toBe(2);
   });
 });

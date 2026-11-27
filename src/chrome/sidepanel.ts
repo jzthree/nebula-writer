@@ -6,7 +6,7 @@
  * chrome.identity. Only the pane's origin may talk to this page.
  */
 
-import { applyTableOp, applyWithRevisionGuard, deleteImageRequest, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
+import { applyTableOp, applyWithRevisionGuard, deleteImageRequest, documentAtCurrentRevision, imageContentUri, parseDocument, tableLocateParagraph, type ApiDocument, type ParsedDocument } from "./docsApi";
 import { bindPanelTab, resolveDocumentTab } from "./documentTab";
 import { locateDocsSelection } from "./selectionMatch";
 import { readDocumentSelection } from "./selectionBridge";
@@ -14,7 +14,7 @@ import { DRIVE_API_ORIGIN, DRIVE_FILE_SCOPE, readDriveComments, unavailableComme
 import { openCommentPicker } from "./commentPicker";
 import { authUrl, parseAuthRedirect, tokenAccount } from "./accountAuth";
 import { describeConnection, describeDocsApiError, describeSignInError, docsAccessDeniedMessage, documentNameFromTitle, isAccountRefusal, looksLikeOfficeFile, OFFICE_FILE_MESSAGE, type DocsConnectionState } from "./docsAccess";
-import { planDocsLocate } from "./locate";
+import { planDocsLocate, type DocsLocatePlan } from "./locate";
 import { commentInDocumentTab, locateInDocumentTab } from "./locateBridge";
 import { ensureCurrentContent, readCodeIds, type CodeIds } from "./extensionUpdate";
 import { DOCS_SCRIPT_FUNCTIONS, type DocsFocusPayload, type DocsImageBytesPayload, type DocsLocateRequest, type DocsOpOutcome, type DocsReplaceOp, type DocsScriptFunction, type DocsTableOp } from "../gdocs/protocol";
@@ -395,6 +395,28 @@ async function fetchParsed(docId: string): Promise<ParsedDocument> {
   return parsed;
 }
 
+/**
+ * The document as of its current revision: the pane's last read when the
+ * revision has not moved (a revisionId-only request, instead of downloading
+ * the whole document with its styles and images), else a fresh read.
+ */
+function parsedAtCurrentRevision(docId: string): Promise<{ parsed: ParsedDocument; source: "last read" | "fresh read" }> {
+  return documentAtCurrentRevision(lastParsed?.docId === docId ? lastParsed.parsed : null, {
+    revision: async () => (await api<{ revisionId?: string }>(`/${encodeURIComponent(docId)}?fields=revisionId`)).revisionId ?? null,
+    readFresh: () => fetchParsed(docId)
+  });
+}
+
+/** Find the passage in the open Doc through its Find box, and log where the time went. */
+async function locateTimed(what: string, tabId: number, docId: string, plan: (parsed: ParsedDocument) => DocsLocatePlan,
+  drive: (plan: DocsLocatePlan) => Promise<void>): Promise<void> {
+  const started = performance.now();
+  const { parsed, source } = await parsedAtCurrentRevision(docId);
+  const read = performance.now();
+  await drive(plan(parsed));
+  console.info(`[writer] ${what}: ${Math.round(performance.now() - started)} ms (document ${source} ${Math.round(read - started)} ms, Google Docs Find ${Math.round(performance.now() - read)} ms)`);
+}
+
 let selectionNotice = false;
 let officeNotice = false;
 
@@ -484,17 +506,15 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaSelect(range) {
     const { tabId, docId } = await activeDoc();
-    const parsed = await fetchParsed(docId);
-    const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
-    await locateInDocumentTab(tabId, docId, plan, sendToTab);
+    await locateTimed("Locate", tabId, docId, (parsed) => planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest),
+      (plan) => locateInDocumentTab(tabId, docId, plan, sendToTab));
     return null;
   },
 
   async nebulaComment(range, text) {
     const { tabId, docId } = await activeDoc();
-    const parsed = await fetchParsed(docId);
-    const plan = planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest);
-    await commentInDocumentTab(tabId, docId, plan, String(text ?? ""), sendToTab);
+    await locateTimed("Comment", tabId, docId, (parsed) => planDocsLocate(parsed.payload.paragraphs, range as DocsLocateRequest),
+      (plan) => commentInDocumentTab(tabId, docId, plan, String(text ?? ""), sendToTab));
     commentsVersion += 1;
     return null;
   },
@@ -601,14 +621,14 @@ const handlers: Record<DocsScriptFunction, (...args: unknown[]) => Promise<unkno
 
   async nebulaSelectTable(index) {
     const { tabId, docId } = await activeDoc();
-    const parsed = await fetchParsed(docId);
-    const paragraphIndex = tableLocateParagraph(parsed, Number(index));
-    if (paragraphIndex === null) {
-      throw new Error("This table has no text to locate it by. Scroll to it in the document.");
-    }
-    const text = parsed.payload.paragraphs[paragraphIndex].text;
-    const plan = planDocsLocate(parsed.payload.paragraphs, { paragraphIndex, start: 0, endParagraphIndex: paragraphIndex, end: text.length, expected: text });
-    await locateInDocumentTab(tabId, docId, plan, sendToTab);
+    await locateTimed("Locate table", tabId, docId, (parsed) => {
+      const paragraphIndex = tableLocateParagraph(parsed, Number(index));
+      if (paragraphIndex === null) {
+        throw new Error("This table has no text to locate it by. Scroll to it in the document.");
+      }
+      const text = parsed.payload.paragraphs[paragraphIndex].text;
+      return planDocsLocate(parsed.payload.paragraphs, { paragraphIndex, start: 0, endParagraphIndex: paragraphIndex, end: text.length, expected: text });
+    }, (plan) => locateInDocumentTab(tabId, docId, plan, sendToTab));
     return null;
   }
 };

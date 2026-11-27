@@ -68,6 +68,14 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
   doc.addEventListener("keydown", cancel, true);
   let dialog: HTMLElement | null = null;
   let complete = false;
+  // Where Locate spends its time, logged in the Docs tab's console.
+  const timings: string[] = [];
+  let mark = win.performance.now();
+  const lap = (step: string) => {
+    const now = win.performance.now();
+    timings.push(`${step} ${Math.round(now - mark)} ms`);
+    mark = now;
+  };
   try {
     guard();
     const menu = doc.getElementById("docs-edit-menu");
@@ -76,10 +84,12 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
     const command = await waitFor(() => Array.from(doc.querySelectorAll('[role="menuitem"]')).filter(visible)
       .find((item) => !!item.querySelector(".docs-icon-editors-ia-find-replace") || /^Find and replace\b/.test(item.textContent?.trim() ?? "")) ?? null,
     "Google Docs' Find command is unavailable. Open the document in editing mode and try again.");
+    lap("Edit menu");
     click(command);
     // An already open Find dialog is reused, as Docs itself does: Locate replaces its search text.
     const fallbackAt = Date.now() + 1_500;
     dialog = await waitFor(() => focusedDialog() ?? (Date.now() > fallbackAt ? visibleDialog() : null), "Google Docs did not open Find. Refresh the document and try Locate again.");
+    lap(focusedDialog() ? "Find box" : "Find box (found without focus)");
     const input = dialog.querySelector<HTMLInputElement>('input[aria-label="Find"]');
     const counter = dialog.querySelector<HTMLElement>('[class*="FindInputCounter"]');
     const options = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
@@ -102,6 +112,7 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
       return match ? { index: Number(match[1].replace(/,/g, "")) - 1, count: Number(match[2].replace(/,/g, "")) } : null;
     };
     let result = await waitFor(readCount, "Google Docs found no searchable match for this passage. Refresh Writer and try again.");
+    lap("search");
     if (result.count !== expected.count || result.index < 0) throw new Error("Google Docs found a different set of occurrences than Writer. Refresh Writer before locating this passage.");
     if (Math.abs(result.index - expected.index) > 50) throw new Error("Too many repeated matches to locate safely. Use a longer passage.");
     while (result.index !== expected.index) {
@@ -113,6 +124,7 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
       click(button);
       result = await waitFor(() => { const current = readCount(); return current?.index === nextIndex && current.count === expected.count ? current : null; }, "Google Docs did not move to the requested occurrence.");
     }
+    lap(`step to match ${expected.index + 1} of ${expected.count}`);
     guard();
     const close = dialog.querySelector<HTMLElement>('button[aria-label="Close"]');
     if (!close || !visible(close)) throw new Error("Google Docs' Find dialog could not close safely.");
@@ -122,6 +134,8 @@ export async function locateDocsPassage(doc: Document, plan: DocsLocatePlan, isC
     while (Date.now() < until && dialog.isConnected && visible(dialog)) {
       await new Promise((resolve) => win.setTimeout(resolve, 40));
     }
+    lap("close");
+    win.console.info(`[writer] Locate in Google Docs: ${timings.join(", ")}`);
     complete = true;
     return plan.query;
   } finally {
