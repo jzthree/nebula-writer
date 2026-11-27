@@ -2364,13 +2364,20 @@ const DIGEST_TURN_LIMIT = 16;
 export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSuggestion[], cards: Record<string, CardState>): AiConversationTurn[] {
   const byId = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
   const digest: AiConversationTurn[] = [];
+  let lastReply: Extract<ChatTurn, { role: "assistant" }> | null = null;
   for (const turn of turns) {
     if (turn.role === "user") {
       // What was selected when the user wrote it: "is this accurate?" means nothing later without it.
       const passage = turn.sent?.mode === "selection" ? turn.sent.excerptStart : turn.selectionExcerpt ?? null;
       const about = turn.focus ? `[About ${turn.focus.ref ? `${turn.focus.ref} ` : ""}"${turn.focus.title}"] ` : "";
-      digest.push({ role: "user", content: `${about}${passage ? `[On the passage "${passage}"] ` : ""}${turn.text}` });
-    } else if (turn.role === "assistant" && turn.status !== "running" && turn.origin !== "session") {
+      // Sent into a running reply: that agent's session already has it.
+      const into = turn.steered ? (turn.steeredInto ? turns.find((other) => other.id === turn.steeredInto) : lastReply) : null;
+      const steeredInto = into?.role === "assistant" && !into.parallel && into.status !== "error" ? into.provider ?? null : null;
+      digest.push({ role: "user", content: `${about}${passage ? `[On the passage "${passage}"] ` : ""}${turn.text}`, ...(steeredInto ? { steeredInto } : {}) });
+    } else if (turn.role === "assistant" && turn.origin !== "session") {
+      lastReply = turn;
+    }
+    if (turn.role === "assistant" && turn.status !== "running" && turn.origin !== "session") {
       const decisions = turn.suggestionIds
         .map((id) => byId.get(id))
         .filter((suggestion): suggestion is AiSuggestion => suggestion !== undefined)
@@ -2383,7 +2390,15 @@ export function buildConversationDigest(turns: ChatTurn[], suggestions: AiSugges
             note: !state?.outcome && state?.detail === REVERTED_DETAIL ? "applied, then reverted by the user" : state?.outcome === "dismissed" ? state.detail : state?.outcome === "decided-elsewhere" ? state.detail : state?.outcome === "revised" ? "replaced by a revision after the user's feedback" : null
           };
         });
-      digest.push({ role: "assistant", content: turn.text || (turn.status === "error" ? "(the request failed)" : ""), ...(decisions.length ? { decisions } : {}) });
+      digest.push({
+        role: "assistant",
+        content: turn.text || (turn.status === "error" ? "(the request failed)" : ""),
+        ...(decisions.length ? { decisions } : {}),
+        // Which agent answered: a resumed session of another one is told what it missed.
+        ...(turn.provider ? { provider: turn.provider } : {}),
+        ...(turn.status === "error" ? { failed: true } : {}),
+        ...(turn.parallel ? { parallel: true } : {})
+      });
     }
   }
   return digest.slice(-DIGEST_TURN_LIMIT);

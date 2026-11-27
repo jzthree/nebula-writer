@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
+import { type AiConversationTurn, type AiModelOptions, AI_CONTEXT_CHAR_LIMIT, type AiProviderName, type AiRequest, type AiResponse, type AiSuggestion, type ProviderSmokeResponse, DEFAULT_AI_TOOL_ACCESS, isAiToolAccess, type AiToolAccess } from "../src/shared";
 
 import { describeDocumentComments, suggestionAnchorFor } from "../src/shared";
 import { matchCommentsToSelection } from "../src/commentMatching";
@@ -761,33 +761,86 @@ export function conversationDecisionStates(request: AiRequest): Record<string, s
  */
 export function describeConversation(request: AiRequest, reported: Record<string, string> | null = null): string[] {
   const turns = request.conversation ?? [];
-  if (request.agentSessionId && reported) {
-    return describeDecisionsSince(request, reported);
+  const resumed = Boolean(request.agentSessionId);
+  // A resumed session holds only its own turns: what went to another agent,
+  // or was stopped before an answer, is not in it.
+  const missed = resumed ? turnsMissedBySession(turns, request.provider) : null;
+  if (resumed && reported) {
+    const since = describeDecisionsSince(request, reported);
+    return missed?.length ? [...describeMissedTurns(missed, request.provider), ...since] : since;
   }
   if (!turns.length) {
     return [];
   }
-  const resumed = Boolean(request.agentSessionId);
   const recent = turns.slice(-CONVERSATION_PROMPT_TURNS);
   const lines: string[] = ["", resumed
-    ? "Conversation so far (you have this transcript; the decisions in brackets are what the user did with your suggestions since):"
+    ? "Conversation so far (you have your own turns in this transcript; turns marked as another agent's, or as stopped, are not in it; the decisions in brackets are what the user did with the suggestions since):"
     : "Conversation so far (oldest first). Follow-up instructions refer to this:"];
   for (const turn of recent) {
-    const content = clipForPrompt(turn.content, resumed && turn.role === "assistant" ? 240 : 700);
+    const own = isOwnTurn(turn, request.provider);
+    const content = clipForPrompt(turn.content, resumed && own ? 240 : 700);
     if (turn.role === "user") {
       lines.push(`User: ${content}`);
       continue;
     }
-    const decisions = (turn.decisions ?? []).map((decision) => {
-      const label = decision.ref ? `${decision.ref} "${decision.title}"` : `"${decision.title}"`;
-      const note = decision.note ? ` ("${clipForPrompt(decision.note, 120)}")` : "";
-      return `${label} — ${decision.status}${note}`;
-    });
-    lines.push(`You: ${content}${decisions.length ? ` [${decisions.join("; ")}]` : ""}`);
+    lines.push(`${speakerOf(turn, request.provider)}: ${content}${describeTurnDecisions(turn)}`);
   }
   const pendingCount = recent.flatMap((turn) => turn.decisions ?? []).filter((decision) => decision.status === "pending").length;
   lines.push(`Treat "dismissed" as feedback to avoid similar edits, "applied" as the direction the user wants${pendingCount ? `, and do not re-stage the ${pendingCount} still-pending suggestion${pendingCount === 1 ? "" : "s"}` : ""}. When the new request refers to an earlier suggestion ("make it shorter", "same for Aim 2"), stage a revised version rather than repeating it.`);
   return lines;
+}
+
+/** An assistant turn this provider's own session answered (as opposed to another agent, a parallel one, or a stopped request). */
+function isOwnTurn(turn: AiConversationTurn, provider: string): boolean {
+  return turn.role === "assistant" && !turn.failed && !turn.parallel && (turn.provider ?? provider) === provider;
+}
+
+function speakerOf(turn: AiConversationTurn, provider: string): string {
+  const who = !turn.provider || turn.provider === provider ? (turn.parallel ? "A parallel agent like you" : "You") : `Another agent (${providerDisplayName(turn.provider)})`;
+  return turn.failed ? `${who} (stopped or failed before answering)` : who;
+}
+
+function providerDisplayName(provider: string): string {
+  return provider === "codex" || provider === "claude" || provider === "antigravity" ? providerLabel(provider) : provider;
+}
+
+function describeTurnDecisions(turn: AiConversationTurn): string {
+  const decisions = (turn.decisions ?? []).map((decision) => {
+    const label = decision.ref ? `${decision.ref} "${decision.title}"` : `"${decision.title}"`;
+    const note = decision.note ? ` ("${clipForPrompt(decision.note, 120)}")` : "";
+    return `${label} — ${decision.status}${note}`;
+  });
+  return decisions.length ? ` [${decisions.join("; ")}]` : "";
+}
+
+/**
+ * The turns a resumed session of `provider` has not seen: everything after
+ * its last answer. Null when the client does not say which agent answered
+ * (an older pane), so nothing can be told apart.
+ */
+export function turnsMissedBySession(turns: AiConversationTurn[], provider: string): AiConversationTurn[] | null {
+  if (!turns.some((turn) => turn.role === "assistant" && turn.provider)) {
+    return null;
+  }
+  let last = -1;
+  turns.forEach((turn, index) => {
+    if (isOwnTurn(turn, provider) && turn.provider) {
+      last = index;
+    }
+  });
+  // A message sent into one of its running replies is already in its session.
+  return turns.slice(last + 1).filter((turn) => !(turn.role === "user" && turn.steeredInto === provider));
+}
+
+function describeMissedTurns(missed: AiConversationTurn[], provider: string): string[] {
+  const shown = missed.slice(-CONVERSATION_PROMPT_TURNS);
+  return [
+    "",
+    `Since your last turn the conversation went on without you (the user asked another agent, or a request was stopped before it finished). You have not seen ${missed.length > shown.length ? `these, the latest ${shown.length} of ${missed.length} turns` : "these turns"}; follow-ups such as "continue" refer to them:`,
+    ...shown.map((turn) => turn.role === "user"
+      ? `User: ${clipForPrompt(turn.content, 700)}`
+      : `${speakerOf(turn, provider)}: ${clipForPrompt(turn.content, 700)}${describeTurnDecisions(turn)}`)
+  ];
 }
 
 /** Other agents running on this document at the same time: their parts are theirs. */

@@ -229,6 +229,14 @@ export interface AiConversationTurn {
   content: string;
   /** For assistant turns: what happened to each suggestion it staged. */
   decisions?: AiConversationDecision[];
+  /** For assistant turns: the agent that answered (or was asked), so a resumed session of another agent is told what it missed. */
+  provider?: string | null;
+  /** For assistant turns: stopped or failed before an answer, so that agent's session may not hold the request. */
+  failed?: boolean;
+  /** For assistant turns: a parallel agent, whose session is its own (not the conversation's). */
+  parallel?: boolean;
+  /** For user turns sent into a running reply: that reply's agent, whose session already has it. */
+  steeredInto?: string | null;
 }
 
 /** Per-request model selection, passed straight to the CLI (--model/--effort or -m/-c). */

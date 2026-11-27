@@ -2158,7 +2158,7 @@ describe("conversation memory in prompts", () => {
     expect(prompt.indexOf("Conversation so far")).toBeLessThan(prompt.indexOf("How to work:"));
 
     const resumed = buildAgentTaskPrompt({ ...baseRequest, mode: "global", selection: null, conversation, agentSessionId: "sess-1" }, { maxSuggestions: null, attachments: [] });
-    expect(resumed).toContain("you have this transcript");
+    expect(resumed).toContain("you have your own turns in this transcript");
     expect(resumed).toContain("dismissed");
 
     const oneShot = buildCliPrompt({ ...baseRequest, mode: "global", selection: null, conversation });
