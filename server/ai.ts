@@ -700,7 +700,8 @@ async function agenticCliProvider(provider: CliProviderName, request: AiRequest,
       // The session now holds the conversation as of these decisions.
       conversationStore().recordThreadDecisions(result.sessionId, conversationDecisionStates(request));
     }
-    const summary = formatCliDiagnostic(result.text) || defaultAgentSummary(suggestions.length);
+    // The agent's answer is shown whole; only a failure's output is trimmed like a diagnostic.
+    const summary = (result.ok ? agentReplyText(result.text) : formatCliDiagnostic(result.text)) || defaultAgentSummary(suggestions.length);
     return {
       provider,
       activity: [...run.activity],
@@ -2748,7 +2749,7 @@ function parseCliResponseDetailed(provider: CliProviderName, raw: string, reques
       }
     }
   });
-  const message = formatCliDiagnostic(parsed.message || `The ${provider} provider returned ${suggestions.length} exact-source suggestion${suggestions.length === 1 ? "" : "s"}.`);
+  const message = agentReplyText(parsed.message || `The ${provider} provider returned ${suggestions.length} exact-source suggestion${suggestions.length === 1 ? "" : "s"}.`);
   const notes = [
     ...(repaired.length ? [`${repaired.length} quote${repaired.length === 1 ? " was" : "s were"} repaired to match the document exactly: ${repaired.slice(0, 3).map((entry) => `"${entry.title}" (${entry.note})`).join("; ")}${repaired.length > 3 ? `, +${repaired.length - 3} more` : ""}.`] : []),
     ...(skipped.length ? [describeSkippedSuggestions(skipped)] : [])
@@ -3240,6 +3241,22 @@ function sanitizeCliOutput(raw: string): string {
     .replace(/\u0000/g, "")
     .replace(/\u001B\[[0-9;]*m/g, "")
     .trim();
+}
+
+/** Past this an agent's reply is runaway output, not an answer: its end is cut, with a note. */
+const MAX_AGENT_REPLY_CHARS = 60_000;
+
+/**
+ * An agent's answer as the user reads it: cleaned of terminal codes and kept
+ * whole. Diagnostics (error output, unparseable output) are trimmed in the
+ * middle by formatCliDiagnostic; a reply must not be, or a long answer loses
+ * its middle to "... provider output truncated ...".
+ */
+function agentReplyText(value: string): string {
+  const cleaned = sanitizeCliOutput(value);
+  return cleaned.length <= MAX_AGENT_REPLY_CHARS
+    ? cleaned
+    : `${cleaned.slice(0, MAX_AGENT_REPLY_CHARS)}\n\n(The reply ran past ${MAX_AGENT_REPLY_CHARS.toLocaleString("en-US")} characters; the rest is not shown.)`;
 }
 
 function formatCliDiagnostic(value: string): string {
